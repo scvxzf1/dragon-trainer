@@ -25,7 +25,7 @@
 | **D1** debug 检查误报 | 读到仍乘 scale 的梯度 → 例行溢出抛 `FloatingPointError` | **已修复**：判定改为按所有权，`GradScaler` 存在时该读数归 scaler，只告警不中止；`check_trainable_grads_finite(..., scaler_owned=True)` 回传 offenders |
 | **D2** 默认路径无保护 | 非有限梯度直接进 `optimizer.step` | **已修复**：无 scaler 时在优化器边界丢弃该步更新（zero_grad + 不 step），`LoopState.nonfinite_grad_skips` 计数并告警；多进程时先 `reduce(max)` 对齐，避免分支发散挂死 |
 | **E5** 所有权判定 | 全仓 0 处实现 | **已实现**：`scaled_gradient_overflow_is_scaler_owned(accelerator, grads)` 真值表成立，规格用例已从 `strict xfail` 转正 |
-| **D3** adaptive 把跳步当致命 | `training_runtime.py` 抛 `RuntimeError`，第 1 次溢出即终止 worker | **已改（C 增强版，2026-11-06）**：新增 `nonfinite_skip` 结果分类；`--adaptive_max_nonfinite_skips` 提供小额连续跳步预算（默认 0 保持严格契约），给 GradScaler 留 backoff 窗口；跳步不计入 `completed_steps`，也不进入步时采样；超预算或跑完步数上限仍凑不够有效步数，才以 `nonfinite_skip` 终止并交 supervisor 处理 |
+| **D3** adaptive 把跳步当致命 | `training_runtime.py` 抛 `RuntimeError`，第 1 次溢出即终止 worker | **已改（C 增强版，2026-11-06）**：新增 `nonfinite_skip` 结果分类；`--adaptive_max_nonfinite_skips` 提供小额连续跳步预算（默认 0 保持严格契约），给 GradScaler 留 backoff 窗口；跳步**不计入 `effective_steps`、也不进入步时采样**（`completed_steps` 仍是 resume 游标身份 = `global_step`，验收请读 `effective_steps`）；超预算或跑完步数上限仍凑不够有效步数，才以 `nonfinite_skip` 终止并交 supervisor 处理 |
 | **latent NaN 覆盖** | 只在 VAE 现场编码分支 | **已修复**：`_prepare_latents()` 对缓存与编码两个来源都做 NaN 处置，并区分日志来源 |
 | **E3** 窗口记账 | 只有可执行规格 | **仍未实现**：保持 `strict xfail`，本条未动 |
 
@@ -72,6 +72,10 @@
   连续语义不一致；现三处统一为连续，真实更新即归零。
   口径确认：有效步数不足时按严格做法终止（不延长 `max_train_steps`）；被跳过的步仍照常
   提交 checkpoint（游标前进、权重未变），以保持 resume 数据游标一致。
+- **F3 补正（2026-11-06）**：`_record_recent_step_seconds` 原先在同步边界无条件记录，
+  跳步的墙钟时间会进入 `recent_step_seconds`，而 `block_swap_auto` 的 `maybe_promote`
+  正是读它当 `step_ms`。现跳步只推进时间基线、不追加样本，`_recent_step_seconds` 与
+  自动提升决策不再被溢出驱动的尖峰稀释。
 - 仍未处理：E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 

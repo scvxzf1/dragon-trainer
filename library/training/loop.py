@@ -279,11 +279,23 @@ def _median_positive_finite(values: deque[float]) -> float | None:
 
 
 def _record_recent_step_seconds(
-    state: LoopState, step: int, now: float | None = None
+    state: LoopState, step: int, now: float | None = None, *, record: bool = True
 ) -> None:
+    """Track seconds-per-step over the last few boundaries.
+
+    ``record=False`` advances the timestamp baseline without appending a sample.
+    A skipped update moves no weights, so its wall time is not a sample of the
+    workload the block-swap policy is trying to measure; skipping the sample keeps
+    ``_recent_step_seconds`` (and therefore ``block_swap_auto`` promotion) free of
+    overflow-driven spikes.
+    """
     current_step = int(step)
     current_ts = time.monotonic() if now is None else float(now)
     if current_step <= 0 or not math.isfinite(current_ts):
+        return
+
+    if not record:
+        state.recent_step_rate_last = (current_ts, current_step)
         return
 
     last = state.recent_step_rate_last
@@ -707,7 +719,11 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             if accelerator.sync_gradients:
                 state.progress_bar.update(1)
                 state.global_step += 1
-                _record_recent_step_seconds(state, state.global_step)
+                _record_recent_step_seconds(
+                    state,
+                    state.global_step,
+                    record=not bool(getattr(state, "update_skipped", False)),
+                )
                 _sample_at_step(trainer, state)
                 state.saver.maybe_save_step(state.network, state.global_step, epoch)
                 state.optimizer_train_fn()

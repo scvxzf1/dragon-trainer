@@ -330,3 +330,23 @@ def test_large_finite_fp16_grads_are_not_reported():
     # 同一构造函数里注入真正的溢出仍需被抓到
     network.weight.grad[0, 0] = float("inf")
     assert inspect_trainable_grads(network)
+
+
+def test_skipped_step_does_not_enter_step_time_samples():
+    """F3：跳步只推进时间基线，不追加步时样本。
+
+    ``block_swap_auto`` 的 maybe_promote 读 ``_recent_step_seconds``，溢出步的墙钟
+    时间若混进去会稀释/尖峰化步时判断。
+    """
+    from library.training.loop import _recent_step_seconds, _record_recent_step_seconds
+
+    state = SimpleNamespace(recent_step_rate_last=None, recent_step_seconds=[])
+
+    _record_recent_step_seconds(state, 1, now=100.0)
+    _record_recent_step_seconds(state, 2, now=101.0, record=False)  # 跳步：不采样
+    assert list(state.recent_step_seconds) == []
+    assert state.recent_step_rate_last == (101.0, 2), "跳步仍要推进基线"
+
+    _record_recent_step_seconds(state, 3, now=103.0)  # 真实更新：只量这一步
+    assert list(state.recent_step_seconds) == [2.0]
+    assert _recent_step_seconds(state) == 2.0
