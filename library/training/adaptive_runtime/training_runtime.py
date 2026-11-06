@@ -127,7 +127,14 @@ class TrainingRuntime:
         # tests that drive ``commit`` directly.
         counters_match = state.global_step == self.effective_steps + self.skipped_steps
         cursor_match = state.global_step == self.completed_steps + 1
-        if not self.optimizer_started or not (counters_match or cursor_match):
+        # When the measurement counters claim this boundary, they must also sum to
+        # the cursor; otherwise a snapshot would be written with counters that
+        # ``resume_checkpoint._counters`` later rejects.
+        counters_sound = not counters_match or (
+            self.attempted_steps == self.effective_steps + self.skipped_steps
+            == state.global_step
+        )
+        if not self.optimizer_started or not (counters_match or cursor_match) or not counters_sound:
             raise RuntimeError("Adaptive worker observed an invalid optimizer boundary")
         self.stage = "checkpoint"
         from .resume_runtime import enabled, commit

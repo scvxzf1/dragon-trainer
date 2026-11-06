@@ -10,9 +10,10 @@ from library.training import loop
 from library.training.adaptive_runtime.training_runtime import TrainingRuntime
 
 
-def setup_loop(tmp_path, monkeypatch, *, failure=None, skipped=False):
+def setup_loop(tmp_path, monkeypatch, *, failure=None, skipped=False, budget=None):
     model = torch.nn.Linear(2, 1)
-    runtime = TrainingRuntime(tmp_path)
+    args = None if budget is None else SimpleNamespace(adaptive_max_nonfinite_skips=budget)
+    runtime = TrainingRuntime(tmp_path, args=args)
 
     def forward(*args, **kwargs):
         if failure == "forward":
@@ -106,3 +107,24 @@ def test_real_loop_scaler_skip_stops_before_scheduler_progress_or_snapshot(tmp_p
     assert state.global_step == runtime.completed_steps == 0
     assert state.lr_scheduler.last_epoch == scheduler_step
     assert not list(tmp_path.iterdir())
+
+
+def test_real_loop_tolerates_skip_within_budget_then_requires_effective_steps(tmp_path, monkeypatch):
+    """预算 > 0 的端到端路径：跳步经真实 loop 被容忍、照常 commit，但不算有效步。
+
+    覆盖 t14 指出的 M4 后半段：跳步不调用 optimizer.step、scheduler 与游标照常推进、
+    commit 写完快照，最后由 finish() 因有效步数不足报 nonfinite_skip。
+    """
+    from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
+    trainer, state, runtime, events = setup_loop(tmp_path, monkeypatch, skipped=True, budget=2)
+    loop._run_epoch_steps(trainer, state, 0)
+
+    # 跳步仍走完整边界：optimizer 边界 → 进度条 → 训练模式（scheduler/快照照常推进）
+    assert events == ["optimizer", "progress", "train_mode"]
+    assert (runtime.attempted_steps, runtime.effective_steps, runtime.skipped_steps) == (1, 0, 1)
+    assert runtime.completed_steps == state.global_step == 1, "游标照常推进"
+    assert runtime.saved_state, "被容忍的跳步照常提交 checkpoint"
+
+    with pytest.raises(NonfiniteSkip, match="effective steps"):
+        runtime.finish(state)

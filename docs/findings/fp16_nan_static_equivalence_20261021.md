@@ -86,6 +86,14 @@
   当前相关套件合计 **190 passed + 1 xfailed**（唯一 xfail 仍为 E3 规格）。
 - **probe 采样器限制**：AUTO probe 用固定采样器，被容忍的跳步不会延长采样长度，因此
   「预算 > 0」在该探针里只能推迟报错、不能真正补采有效样本；这一点在预算语义里已注明。
+- **R2/R3 收尾（2026-11-06）**：`commit()` 在测量计数与游标一致时自检
+  `attempted == effective + skipped == global_step`，避免写出恢复阶段会被
+  `resume_checkpoint._counters` 拒绝的快照；新增 loop 级端到端用例（预算 2、真实
+  `_run_epoch_steps`）确认「跳步被容忍 → scheduler 与游标照常推进 → 照常 commit →
+  `finish()` 因有效步数不足报 `nonfinite_skip`」。相关套件 191 passed + 1 xfailed。
+- **已知残留（low，未改）**：`training_state.save_training_state` 保存失败后残留
+  `.state-XXXXXXXX.partial`，同一步重试会抛 `FileExistsError` 掩盖真实原因（先于本批
+  变更存在，落盘失败本就终止 trial）。
 - 仍未处理：E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 
