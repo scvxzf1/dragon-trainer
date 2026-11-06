@@ -21,6 +21,9 @@ class NativeStartupRuntime:
         self.attempted_steps = 0
         self.effective_steps = 0
         self.skipped_steps = 0
+        # Native startup trials never run the skip budget, but ``result()`` is
+        # shared with TrainingRuntime and reports it, so the field must exist.
+        self.max_nonfinite_skips = 0
         self.saved_state = None
         self.precision_report_path = None
         self.capacity = getattr(args, "_adaptive_swap_capacity", None)

@@ -194,3 +194,35 @@ def test_completed_steps_tracks_cursor_not_effective_steps(tmp_path):
     runtime.completed_steps = state.global_step
     assert runtime.completed_steps == 4
     assert runtime.effective_steps == 2, "有效步数是测量口径，不被游标覆盖"
+
+
+def test_native_startup_runtime_reports_skip_budget(tmp_path):
+    """B1 回归：NativeStartupRuntime 没有预算字段时 result() 会 AttributeError。
+
+    result() 与 TrainingRuntime 共用，native_fp16 自适应路径的 ok/error/cuda_oom
+    都会经过它；缺字段会让 execute 抛错且不写 result.json，真实分类丢失。
+    """
+    from library.training.adaptive_runtime.native_runtime import NativeStartupRuntime
+
+    runtime = NativeStartupRuntime(
+        tmp_path,
+        precision_contract_id=None,
+        args=SimpleNamespace(model_family="anima", max_train_steps=1),
+    )
+    for status in ("running", "error"):
+        result = runtime.result(status)
+        assert result["max_nonfinite_skips"] == 0
+        assert result["skipped_steps"] == 0
+
+
+def test_commit_rejects_counter_mismatch(tmp_path):
+    """M4：commit 的新不变式必须有直接断言（计数与游标都对不上时拒绝）。"""
+    runtime = _runtime(tmp_path, budget=5, max_steps=4)
+    runtime.optimizer_started = True
+    runtime.effective_steps = 0
+    runtime.skipped_steps = 0
+    runtime.completed_steps = 0
+
+    state = _state(skipped=False, global_step=7, max_steps=4)  # 既非 0+0 也非 0+1
+    with pytest.raises(RuntimeError, match="invalid optimizer boundary"):
+        runtime.commit(state)

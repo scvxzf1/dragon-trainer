@@ -76,6 +76,16 @@
   跳步的墙钟时间会进入 `recent_step_seconds`，而 `block_swap_auto` 的 `maybe_promote`
   正是读它当 `step_ms`。现跳步只推进时间基线、不追加样本，`_recent_step_seconds` 与
   自动提升决策不再被溢出驱动的尖峰稀释。
+- **B1/H1/H2 修复（2026-11-06，审查方提出）**：① `NativeStartupRuntime` 缺
+  `max_nonfinite_skips` 导致共享 `result()` 抛 `AttributeError`（native_fp16 自适应路径的
+  ok/error/cuda_oom 全崩且不写 `result.json`），已补字段并在共享 `result()` 加兜底；
+  ② `commit()` 的 pending 前置过严，破坏原子保存重试语义，改为接受「计数匹配」或
+  「游标 `global_step == completed_steps + 1`」两者之一；③ online 跳步消息保留了
+  `requires finite, completed optimizer updates` 短语，既有正则断言不再失配；
+  ④ 进入优化器块前清空 `state.update_skipped`，异常路径不会读到陈旧值。
+  当前相关套件合计 **190 passed + 1 xfailed**（唯一 xfail 仍为 E3 规格）。
+- **probe 采样器限制**：AUTO probe 用固定采样器，被容忍的跳步不会延长采样长度，因此
+  「预算 > 0」在该探针里只能推迟报错、不能真正补采有效样本；这一点在预算语义里已注明。
 - 仍未处理：E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 

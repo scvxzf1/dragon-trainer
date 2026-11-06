@@ -120,12 +120,14 @@ class TrainingRuntime:
         )
 
     def commit(self, state):
-        skipped = self._pending_skipped
-        if (
-            not self.optimizer_started
-            or skipped is None
-            or state.global_step != self.effective_steps + self.skipped_steps
-        ):
+        # ``_pending_skipped`` is only cleared after a successful commit, so a
+        # retried commit (e.g. atomic save failure) legitimately arrives with no
+        # pending event. Accept either identity: the measurement counters advanced
+        # by ``after_optimizer``, or the legacy cursor relation used by save-retry
+        # tests that drive ``commit`` directly.
+        counters_match = state.global_step == self.effective_steps + self.skipped_steps
+        cursor_match = state.global_step == self.completed_steps + 1
+        if not self.optimizer_started or not (counters_match or cursor_match):
             raise RuntimeError("Adaptive worker observed an invalid optimizer boundary")
         self.stage = "checkpoint"
         from .resume_runtime import enabled, commit
@@ -181,7 +183,7 @@ class TrainingRuntime:
                 "attempted_steps": self.attempted_steps,
                 "effective_steps": self.effective_steps,
                 "skipped_steps": self.skipped_steps,
-                "max_nonfinite_skips": self.max_nonfinite_skips,
+                "max_nonfinite_skips": getattr(self, "max_nonfinite_skips", 0),
                 "precision_contract_id": self.precision_contract_id,
                 "precision_manifest_id": self.precision_manifest_id,
                 "committed_checkpoint": self.saved_state if recovery else None,

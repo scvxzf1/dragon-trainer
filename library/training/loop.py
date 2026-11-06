@@ -980,6 +980,9 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         _probe_step(memory_probe, state, "before_optimizer")
         adaptive_notify(trainer, "optimizer")
         try:
+            # Cleared before the step so an exception cannot leave the previous
+            # boundary's answer behind for a later reader.
+            state.update_skipped = None
             precision_observe("optimizer", state)
             if skip_update:
                 state.update_skipped = True

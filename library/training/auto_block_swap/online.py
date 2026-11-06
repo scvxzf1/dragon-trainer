@@ -233,7 +233,8 @@ class OnlineSwapController:
             budget = max(0, int(getattr(self.args, "adaptive_max_nonfinite_skips", 0) or 0))
             if self.consecutive_skips > budget:
                 raise NonfiniteSkip(
-                    "Dynamic AUTO stopped: loss scaler skipped optimizer update "
+                    "Dynamic AUTO requires finite, completed optimizer updates: "
+                    "loss scaler skipped optimizer update "
                     f"({self.consecutive_skips} consecutive > budget {budget}); "
                     "skipped updates are never used as timing samples"
                 )
