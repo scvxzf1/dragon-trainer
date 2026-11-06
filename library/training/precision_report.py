@@ -204,7 +204,9 @@ class PrecisionReport:
         updates = self.data["updates"]
         if after:
             # ``skipped`` lets the no-scaler gradient guard report a dropped update
-            # the same way a GradScaler skip is reported.
+            # the same way a GradScaler skip is reported. Known limitation: this
+            # bucket merges both causes (scaler overflow vs guard skip), so the
+            # report cannot tell them apart yet.
             if skipped is None:
                 skipped = bool(state.accelerator.optimizer_step_was_skipped)
             updates["skipped" if skipped else "effective"] += 1

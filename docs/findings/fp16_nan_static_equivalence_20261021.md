@@ -31,7 +31,7 @@
 
 修复后的验证（同一分支，2026-11-06）：
 
-- CPU：`tests/test_fp16_nan_static_equivalence.py` 33 passed + 1 xfailed（仅剩 E3 规格）、`tests/test_scaler_ownership_guard.py` 10 passed、`tests/test_latent_nan_guard.py` 4 passed，以及 `test_distributed_gradient_sync.py` / `test_completed_training_step_graph.py` / `test_adaptive_training_loop.py` / `test_training_loop_runtime.py` 全绿。
+- CPU：`tests/test_fp16_nan_static_equivalence.py` 23 passed + 1 xfailed（仅剩 E3 规格）、`tests/test_scaler_ownership_guard.py` 14 passed、`tests/test_latent_nan_guard.py` 4 passed，以及 `test_distributed_gradient_sync.py` / `test_completed_training_step_graph.py` / `test_adaptive_training_loop.py` / `test_training_loop_runtime.py` 合计 23 passed；总计 64 passed + 1 xfailed。
 - CUDA（Tesla V100-SXM2-16GB ×2，各自独占）：有 scaler 时溢出步 `guard_raised=null`、`scaler_owned=true`、`step_was_skipped=true`、权重逐位不变、scale 65536→32768；无 scaler 时 `must_skip=true`、`skip_counter=1`、权重保持有限且逐位不变；有限梯度负控制 `must_skip=false` 且权重确实移动。两卡结果一致。
 
 审查修订（2026-11-06，独立验收提出）：

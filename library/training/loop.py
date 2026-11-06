@@ -257,6 +257,8 @@ class LoopState:
     profile_started: bool = False
     #: Steps whose optimizer update was dropped because no GradScaler existed to
     #: absorb a non-finite gradient (see ``library/training/scaler_ownership.py``).
+    #: Known limitation: only warned and counted for now — it is not published into
+    #: ``precision_report.json``, so it is not yet a first-class metric.
     nonfinite_grad_skips: int = 0
     recent_step_rate_last: Optional[tuple[float, int]] = None
     recent_step_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=9))
