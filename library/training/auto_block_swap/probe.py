@@ -180,6 +180,7 @@ def _probe_updates(trainer, state, cases: list[dict], group) -> list[dict]:
     budget = _cuda_budget(device)
     microsteps = 0
     loss_sum = 0.0
+    skipped = 0
     for batch in loader:
         if started is None:
             torch.cuda.synchronize(device)
@@ -194,8 +195,28 @@ def _probe_updates(trainer, state, cases: list[dict], group) -> list[dict]:
         if not state.accelerator.sync_gradients:
             continue
         torch.cuda.synchronize(device)
-        if microsteps != accumulation or state.accelerator.optimizer_step_was_skipped:
+        if microsteps != accumulation:
             raise RuntimeError("AUTO probe did not complete a full optimizer update")
+        if state.accelerator.optimizer_step_was_skipped:
+            # No weights moved, so this step is not a valid timing/memory sample.
+            from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
+            skipped += 1
+            # ``skip_budget`` is deliberately a separate name: reusing ``budget``
+            # here overwrote the CUDA memory budget used for ``headroom`` below.
+            skip_budget = max(
+                0, int(getattr(state.args, "adaptive_max_nonfinite_skips", 0) or 0)
+            )
+            if skipped > skip_budget:
+                raise NonfiniteSkip(
+                    "AUTO probe stopped: loss scaler skipped optimizer update "
+                    f"({skipped} skips > budget {skip_budget})"
+                )
+            microsteps = 0
+            loss_sum = 0.0
+            state.global_step += 1
+            started = None
+            continue
         budget = min(budget, _cuda_budget(device))
         samples.append(
             {
@@ -215,6 +236,18 @@ def _probe_updates(trainer, state, cases: list[dict], group) -> list[dict]:
         started = None
         microsteps = 0
         loss_sum = 0.0
+    if skipped:
+        counts = {}
+        for sample in samples:
+            counts[sample["case"]] = counts.get(sample["case"], 0) + 1
+        short = {case: count for case, count in counts.items() if count < updates}
+        if short or len(counts) < len(cases):
+            from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
+            raise NonfiniteSkip(
+                "AUTO probe did not collect enough effective updates after "
+                f"{skipped} skipped steps: {short or 'missing cases'}"
+            )
     if len(samples) != updates * len(cases) or microsteps:
         raise RuntimeError("AUTO probe ended before all bucket updates completed")
     return samples

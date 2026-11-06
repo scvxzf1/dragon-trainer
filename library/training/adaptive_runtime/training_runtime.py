@@ -8,6 +8,15 @@ from library.training.auto_block_swap.process import write_result
 from .training_state import save_training_state
 
 
+class NonfiniteSkip(RuntimeError):
+    """The trial produced more non-finite optimizer skips than its budget allows.
+
+    Reported as its own ``nonfinite_skip`` result so the supervisor can tell an
+    fp16 overflow pattern (retryable, configuration-related) from a real error or
+    a CUDA OOM.
+    """
+
+
 class TrainingRuntime:
     def __init__(self, directory, *, precision_contract_id=None, args=None):
         self.directory = Path(directory)
@@ -17,6 +26,16 @@ class TrainingRuntime:
         self.stage = "setup"
         self.optimizer_started = False
         self.completed_steps = 0
+        # A fraction of fp16 overflow is normal scaler warm-up, so a trial may
+        # tolerate a small consecutive skip budget; 0 keeps the strict contract.
+        self.max_nonfinite_skips = max(
+            0, int(getattr(args, "adaptive_max_nonfinite_skips", 0) or 0)
+        ) if args is not None else 0
+        self.attempted_steps = 0
+        self.effective_steps = 0
+        self.skipped_steps = 0
+        self.consecutive_skips = 0
+        self._pending_skipped = None
         self.saved_state = None
         self.finished = False
         self.capacity = getattr(args, "_adaptive_swap_capacity", None) if args is not None else None
@@ -69,18 +88,49 @@ class TrainingRuntime:
             raise ValueError("precision_contract_mismatch: realized dtype manifest drifted")
 
     def after_optimizer(self, state):
-        if state.accelerator.optimizer_step_was_skipped:
-            raise RuntimeError("Adaptive worker stopped: loss scaler skipped optimizer update")
+        if not self.optimizer_started or self._pending_skipped is not None:
+            raise RuntimeError("Adaptive worker observed an invalid optimizer event")
+        skipped = bool(state.accelerator.optimizer_step_was_skipped)
+        self._pending_skipped = skipped
+        self.attempted_steps += 1
+        if not skipped:
+            self.effective_steps += 1
+            self.consecutive_skips = 0
+            return
+        # A skipped step is not an effective step: weights did not move, so it can
+        # never count toward completed_steps or the measured step time.
+        self.skipped_steps += 1
+        self.consecutive_skips += 1
+        if self.consecutive_skips > self.max_nonfinite_skips:
+            raise NonfiniteSkip(
+                "Adaptive worker stopped: loss scaler skipped optimizer update "
+                f"({self.consecutive_skips} consecutive skips > budget "
+                f"{self.max_nonfinite_skips}; effective={self.effective_steps}, "
+                f"skipped={self.skipped_steps})"
+            )
+        logging.getLogger(__name__).warning(
+            "Adaptive worker tolerated a skipped optimizer update "
+            "(%d/%d consecutive); it does not count as an effective step",
+            self.consecutive_skips,
+            self.max_nonfinite_skips,
+        )
 
     def commit(self, state):
-        if not self.optimizer_started or state.global_step != self.completed_steps + 1:
+        skipped = self._pending_skipped
+        if (
+            not self.optimizer_started
+            or skipped is None
+            or state.global_step != self.effective_steps + self.skipped_steps
+        ):
             raise RuntimeError("Adaptive worker observed an invalid optimizer boundary")
         self.stage = "checkpoint"
         from .resume_runtime import enabled, commit
         saved = commit(self, state) if enabled(self.args) else save_training_state(state, self.directory)
         previous = self.saved_state
         self.saved_state = str(saved)
-        self.completed_steps = state.global_step
+        # Effective steps only; the skipped counters keep the global_step identity.
+        self.completed_steps = self.effective_steps
+        self._pending_skipped = None
         write_result(self.directory / "latest-state.json", self.result("running"))
         if previous is not None and not enabled(self.args):
             try:
@@ -90,8 +140,19 @@ class TrainingRuntime:
         self.stage = "between_steps"
 
     def finish(self, state):
-        if not (self.completed_steps > 0 and self.completed_steps == state.global_step
-                and state.global_step == state.args.max_train_steps):
+        if self._pending_skipped is not None:
+            raise RuntimeError("Adaptive worker returned mid-step")
+        target = int(getattr(state.args, "max_train_steps", 0) or 0)
+        if self.effective_steps < target:
+            # Ran out of step budget before collecting enough real updates.
+            raise NonfiniteSkip(
+                f"Adaptive worker collected {self.effective_steps} effective steps "
+                f"< target {target} ({self.skipped_steps} skipped)"
+            )
+        if (
+            self.completed_steps <= 0
+            or self.effective_steps + self.skipped_steps != state.global_step
+        ):
             raise RuntimeError("Adaptive worker returned without completing requested optimizer steps")
         self.finished = True
         self.stage = "finished"
@@ -111,6 +172,10 @@ class TrainingRuntime:
                 "host_budget_reason": self.host_budget_reason,
                 "optimizer_started": self.optimizer_started,
                 "completed_steps": self.completed_steps, "saved_state": self.saved_state,
+                "attempted_steps": self.attempted_steps,
+                "effective_steps": self.effective_steps,
+                "skipped_steps": self.skipped_steps,
+                "max_nonfinite_skips": self.max_nonfinite_skips,
                 "precision_contract_id": self.precision_contract_id,
                 "precision_manifest_id": self.precision_manifest_id,
                 "committed_checkpoint": self.saved_state if recovery else None,

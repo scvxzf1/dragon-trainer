@@ -176,6 +176,11 @@ def run_recovery(initial, limits, runner, *, record, expected_precision_contract
             if expected_precision_contract is not None:
                 extra["precision_contract_id"] = expected_precision_contract
             return report("ok", **extra)
+        if status == "nonfinite_skip":
+            # Distinct from a generic error: the trial produced more scaler skips
+            # than its budget allows, which is a precision/config signal.
+            history[-1]["stop_reason"] = "nonfinite_skip"
+            break
         if status != "cuda_oom":
             break
         progress = result.get("optimizer_started")

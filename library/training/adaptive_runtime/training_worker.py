@@ -12,7 +12,7 @@ import torch
 from library.training.auto_block_swap.process import write_result
 from library.training.auto_block_swap.capacity import HostLimitReached
 from .training_config import islands_enabled, require_training_contract, retry_configuration_errors, resolved_mode
-from .training_runtime import TrainingRuntime
+from .training_runtime import NonfiniteSkip, TrainingRuntime
 
 
 def _possible_oom(exc):
@@ -111,6 +111,16 @@ def execute(args, directory, trainer_factory):
             result = {**runtime.result("cuda_oom"), "error_type": type(exc).__name__, "error": str(exc)}
     except HostLimitReached as exc:
         result = {**runtime.result("host_limit"), "error_type": type(exc).__name__, "error": str(exc)}
+    except NonfiniteSkip as exc:
+        # Distinct from ``error``/``cuda_oom``: the trial overflowed its skip budget,
+        # which is a configuration/precision signal the supervisor can act on.
+        result = {
+            **runtime.result("nonfinite_skip"),
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "failure_kind": "nonfinite_skip",
+            "reason": "nonfinite_skip",
+        }
     except Exception as exc:
         result = _error_result(runtime, exc)
     if result["status"] in {"ok", "cuda_oom"} or result.get("failure_kind") == "possible_oom":

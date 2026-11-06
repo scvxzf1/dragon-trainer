@@ -55,6 +55,10 @@ def add_arguments(parser):
     parser.add_argument("--adaptive_oom_retry_max_swap", type=int, default=0,
                         help="Maximum swap blocks; 0 uses the local model's structural limit.")
     parser.add_argument("--adaptive_oom_retry_timeout", type=float, default=3600.0)
+    parser.add_argument("--adaptive_max_nonfinite_skips", type=int, default=0,
+                        help="Consecutive loss-scaler skips the adaptive trial tolerates before "
+                             "failing with a nonfinite_skip result (0 keeps the strict contract); "
+                             "skipped steps never count as effective steps or timing samples.")
 
 
 def configuration_errors(config, *, world_size=1):

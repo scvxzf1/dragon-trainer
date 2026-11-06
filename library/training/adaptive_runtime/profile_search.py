@@ -103,6 +103,10 @@ def search_profiles(initial, limits, profiles, runner, comparator, *, record):
                 record(report)
                 continue
             item["next_reason"] = "profile_memory_budget_exhausted"
+        elif status == "nonfinite_skip":
+            item["next_reason"] = "nonfinite_skip"
+            item["stop_reason"] = "nonfinite_skip"
+            break
         elif status == "error" and result.get("failure_kind") == "nonfinite":
             item["next_reason"] = "nonfinite_profile"
         else:

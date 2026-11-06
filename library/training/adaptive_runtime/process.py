@@ -149,6 +149,12 @@ class IsolatedRunner:
             result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             return {"status": "error", "error": str(exc)}
-        if not isinstance(result, dict) or result.get("status") not in {"ok", "cuda_oom", "error", "host_limit"}:
+        if not isinstance(result, dict) or result.get("status") not in {
+            "ok",
+            "cuda_oom",
+            "error",
+            "host_limit",
+            "nonfinite_skip",
+        }:
             return {"status": "error", "error": "invalid structured worker result"}
         return result

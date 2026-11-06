@@ -25,7 +25,7 @@
 | **D1** debug 检查误报 | 读到仍乘 scale 的梯度 → 例行溢出抛 `FloatingPointError` | **已修复**：判定改为按所有权，`GradScaler` 存在时该读数归 scaler，只告警不中止；`check_trainable_grads_finite(..., scaler_owned=True)` 回传 offenders |
 | **D2** 默认路径无保护 | 非有限梯度直接进 `optimizer.step` | **已修复**：无 scaler 时在优化器边界丢弃该步更新（zero_grad + 不 step），`LoopState.nonfinite_grad_skips` 计数并告警；多进程时先 `reduce(max)` 对齐，避免分支发散挂死 |
 | **E5** 所有权判定 | 全仓 0 处实现 | **已实现**：`scaled_gradient_overflow_is_scaler_owned(accelerator, grads)` 真值表成立，规格用例已从 `strict xfail` 转正 |
-| **D3** adaptive 把跳步当致命 | `training_runtime.py:72` 抛 `RuntimeError` | **未改（待决策）**：该行为由 `tests/test_adaptive_training_loop.py::test_real_loop_scaler_skip_stops_before_scheduler_progress_or_snapshot` 显式锁定为契约，改成非致命会推翻「跳步即停止并在 scheduler/快照之前退出」的既有语义，需产品决策 |
+| **D3** adaptive 把跳步当致命 | `training_runtime.py` 抛 `RuntimeError`，第 1 次溢出即终止 worker | **已改（C 增强版，2026-11-06）**：新增 `nonfinite_skip` 结果分类；`--adaptive_max_nonfinite_skips` 提供小额连续跳步预算（默认 0 保持严格契约），给 GradScaler 留 backoff 窗口；跳步不计入 `completed_steps`，也不进入步时采样；超预算或跑完步数上限仍凑不够有效步数，才以 `nonfinite_skip` 终止并交 supervisor 处理 |
 | **latent NaN 覆盖** | 只在 VAE 现场编码分支 | **已修复**：`_prepare_latents()` 对缓存与编码两个来源都做 NaN 处置，并区分日志来源 |
 | **E3** 窗口记账 | 只有可执行规格 | **仍未实现**：保持 `strict xfail`，本条未动 |
 
@@ -54,7 +54,13 @@
   会读到上一步的 stale stash（数值不错误，但可能过期）；② `updates.skipped` 同时统计
   scaler 跳步与 guard 跳步两种成因，未拆分；③ `LoopState.nonfinite_grad_skips` 目前只有
   warning 与计数，尚未对外发布为正式指标。
-- 仍未处理：D3（待决策）、E3 窗口记账。
+- **D3 落地细节（C 增强版）**：`NonfiniteSkip` 携带 `attempted/effective/skipped/max_nonfinite_skips`；
+  worker 结果状态为 `nonfinite_skip`（与 `error` / `cuda_oom` 区分）；`process._result` 白名单已放行该状态，
+  `retry` 记 `stop_reason=nonfinite_skip`，`profile_search` 单独归类；`auto_block_swap` 的 online 控制器与
+  AUTO probe 同样跳过采样并在超预算时抛 `NonfiniteSkip`。跳步分支在创建计时事件与 `policy.observe` 之前
+  return，因此不污染步时统计；顺带修掉 probe 里 `budget` 变量遮蔽 CUDA 显存预算的缺陷。
+  默认值 0 下第一次跳步即终止，既有契约用例（`test_real_loop_scaler_skip_stops_before_scheduler_progress_or_snapshot`）保持原断言。
+- 仍未处理：E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 
 ## 判据 E1–E5 与等效强度分级

@@ -40,6 +40,8 @@ class OnlineSwapController:
         self.pending = None
         self.microsteps = 0
         self.shapes = []
+        self.skipped_updates = 0
+        self.consecutive_skips = 0
         group = getattr(state, "train_dataset_group", None)
         if group is None:
             group = getattr(getattr(state, "train_dataloader", None), "dataset", None)
@@ -212,9 +214,29 @@ class OnlineSwapController:
             return
         started = time.perf_counter()
         if state.accelerator.optimizer_step_was_skipped:
-            raise RuntimeError(
-                "Dynamic AUTO requires finite, completed optimizer updates"
+            # A skipped update moved no weights, so its wall time is not a sample of
+            # the workload the policy is trying to measure. Drop it and keep the
+            # microstep/shape accumulators clean for the next effective step.
+            from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
+            self.skipped_updates += 1
+            self.consecutive_skips += 1
+            self._record(
+                {"event": "skipped_update", "step": state.global_step + 1,
+                 "consecutive": self.consecutive_skips}
             )
+            self.shapes.clear()
+            self.microsteps = 0
+            self.controller_seconds += time.perf_counter() - started
+            budget = max(0, int(getattr(self.args, "adaptive_max_nonfinite_skips", 0) or 0))
+            if self.consecutive_skips > budget:
+                raise NonfiniteSkip(
+                    "Dynamic AUTO stopped: loss scaler skipped optimizer update "
+                    f"({self.consecutive_skips} consecutive > budget {budget}); "
+                    "skipped updates are never used as timing samples"
+                )
+            return
+        self.consecutive_skips = 0
         end = torch.cuda.Event(enable_timing=True)
         end.record()
         end.synchronize()
