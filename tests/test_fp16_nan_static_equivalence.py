@@ -78,27 +78,28 @@ LOOP_PATH = LIBRARY_ROOT / "training" / "loop.py"
 # 2^3：2 的幂，fp32 下「乘 scale / 乘 1/scale」可逆，才能把 E1 断言到逐位相等。
 INIT_SCALE = 8.0
 
-# E3 目标契约：非有限 loss → 丢弃整个累积窗口。每行 = (观测点, 语义, 今日在 A 的可观测性)。
-# 标「需生产接缝」的条目在 A 侧没有任何观测点：不改生产代码就无法写出实现级断言。
+# E3 契约：非有限窗口 → 重放 1 次 → 仍失败则整窗丢弃。每行 = (观测点, 语义, 今日实现位置)。
+# 2026-11-06（E3 用户裁定后）：8 个观测点全部已实现，第三列标出真实实现位置。
 _WINDOW_ACCOUNTING_POINTS: tuple[tuple[str, str, str], ...] = (
-    ("optimizer", "optimizer.step 调用计数", "loop.py:906 无条件执行，无窗口判定"),
-    ("scheduler", "scheduler.step 调用计数", "loop.py:915 _step_lr_scheduler（定义 :981）无窗口判定"),
-    ("global_step", "state.global_step 自增次数", "loop.py:694 只受 sync_gradients 门控，无窗口无效门"),
-    ("ema", "模型 EMA 更新计数", "需生产接缝：A 无模型 EMA 更新点（schedulers.py:90 的 loss_ema 只是 LR 门控）"),
-    ("ckpt", "checkpoint 保存计数", "checkpoints.py:855 maybe_save_step 由 loop.py:697 调用，无窗口判定"),
-    ("total_loss", "loss 账本 total_loss", "需生产接缝：library/training/ 0 处 total_loss"),
-    ("num_steps", "loss 账本 num_steps", "需生产接缝：library/training/ 0 处 num_steps（runtime/noise.py:39 的同名参数无关）"),
-    ("last_loss", "loss 账本 last_loss", "需生产接缝：library/training/ 0 处 last_loss"),
+    ("optimizer", "optimizer.step 调用计数", "loop.py::_run_microbatch + _commit_step_boundary（只在提交窗口调用）"),
+    ("scheduler", "scheduler.step 调用计数", "loop.py::_commit_step_boundary → _step_lr_scheduler（只在提交窗口调用）"),
+    ("global_step", "state.global_step 自增次数", "loop.py::_run_epoch_steps 的提交分支（sync_gradients 门控内）"),
+    ("ema", "模型 EMA 更新计数（本仓无 EMA：显式占位槽）", "state.ema_observation 由 window_accounting.commit_window 写"),
+    ("ckpt", "checkpoint 保存计数", "loop.py::_run_epoch_steps 提交分支的 saver.maybe_save_step"),
+    ("total_loss", "loss 账本 total_loss（窗口级）", "state.window_total_loss，由 window_accounting.commit_window 写"),
+    ("num_steps", "loss 账本 num_steps（窗口级微批数）", "state.window_num_steps，由 window_accounting.commit_window 写"),
+    ("last_loss", "loss 账本 last_loss（窗口级）", "state.window_last_loss，由 window_accounting.commit_window 写"),
 )
 
-# 未来生产实现需要的接缝清单（本轮只记录，不修复；禁止改 library/）。
+# E3 实现清单（2026-11-06 已落地，保留作为接缝清单）：每一条对应上面的观测点。
 _WINDOW_SEAM_CHECKLIST: tuple[str, ...] = (
-    "loop.py：在 accumulate 体内暴露窗口起点快照（optimizer_step / scheduler_step / global_step / ckpt 计数）",
-    "loop.py：新增 window_invalid 标记，由非有限 loss 置位，并在边界块入口短路丢弃整窗",
-    "loop.py：丢弃路径必须同时跳过 optimizer.step / _step_lr_scheduler / global_step 自增 / maybe_save_step / EMA",
-    "batch_step.py:113-117：nan_to_num 只处理 latent，不构成 loss 侧窗口判定，需与 window_invalid 接线",
-    "loss 账本：新增 (total_loss, num_steps, last_loss) 三元组，窗口起点快照、丢弃时逐位回滚",
-    "scaler 记账：丢弃窗口时复位该窗口的 scaler 记账（A 无 reset_scaler_step_state 等价物，全仓 0 处）",
+    "library/training/window_accounting.py：窗口账本（WindowBuffer）+ 重放策略（WINDOW_MAX_REPLAYS=1）",
+    "loop.py::_run_epoch_steps：窗口边界三岔（commit / replay / discard），失败尝试零副作用",
+    "loop.py::_run_microbatch：无条件检查微批 loss 有限性；窗口已坏时 force_skip 阻止该次更新",
+    "loop.py::_commit_step_boundary：LR scheduler / adaptive / precision / block-swap 只在提交路径执行",
+    "drop 路径：window_discards += 1、清梯度、不推进任何计数或账本，记 warning",
+    "已知限制：本仓无 EMA（ema_observation 是占位槽）；窗口丢弃目前只在 LoopState + warning 里可见，"
+    "尚未写进 precision_report.json",
 )
 
 
@@ -785,24 +786,26 @@ class TestE5ScalerOwnershipGap:
 
 
 class TestE3WindowAccountingGap:
-    """E3（计数级）：非有限 loss 必须丢弃**整个**累积窗口，计数与记账不推进。
+    """E3（计数级）：非有限窗口整窗作废——重放 1 次，仍失败则丢弃且不推进任何计数。
 
-    A 侧当前没有「窗口」概念：library/training/loop.py 用 accelerator.accumulate（:767）做梯度
-    累积，但没有任何 window_invalid 标记、没有丢弃入口、也没有 loss 账本三元组；非有限 loss 的
-    唯一出口是 fail-fast 抛 FloatingPointError 直接中止训练。
+    **状态（2026-11-06，E3 用户裁定后）：已实现。** 窗口账本与重放策略在
+    ``library/training/window_accounting.py``（``WINDOW_MAX_REPLAYS = 1``），``loop.py`` 只接线：
+    窗口边界要么 commit（账本 → scheduler → adaptive → precision → global_step），要么 replay，
+    要么 discard。因此本类原来的「缺口钉」与 strict xfail 规格都已转正：
 
-    **结论（本轮定稿）**：不改生产代码就无法给出实现级的窗口记账断言——五个计数器里
-    optimizer / scheduler / global_step / ckpt 只有「会发生」的观测点而没有「窗口无效时不发生」
-    的判定，EMA 与账本三元组（total_loss / num_steps / last_loss）在 A 侧完全没有观测点。
-    因此本类交付的是「可执行规格 + 缺口钉」：_WINDOW_ACCOUNTING_POINTS 逐条列出观测点，
-    _WINDOW_SEAM_CHECKLIST 列出未来生产实现需要的接缝，规格用例保持 strict xfail。
+    * ``_window_readings_after_nonfinite_batch`` 改为真实驱动一段最小 loop（首批 NaN + 重放成功）；
+    * ``test_e3_window_accounting_seams_absent`` → ``test_e3_window_accounting_capabilities_exist``；
+    * ``test_e3_spec_nonfinite_batch_discards_whole_accumulation_window`` 去掉 xfail，改为正式断言。
+
+    已知限制：本仓**没有模型 EMA**，``state.ema_observation`` 是显式占位槽（只在提交路径写快照），
+    本类用它证明「丢弃窗口时不触碰该槽」，不代表真实 EMA 更新。
     """
 
-    def test_e3_nonfinite_loss_aborts_instead_of_discarding_window(self):
-        """E3 现状（负控制）：非有限 loss 走 fail-fast 中止，而不是丢窗口继续训练。
+    def test_e3_nonfinite_loss_helper_still_fails_fast_when_asked(self):
+        """debug 钩子仍是 fail-fast：窗口重放不改、也不依赖 finite_checks 的抛错语义。
 
-        这条正是「窗口丢弃」缺席的可执行证据：中止与丢窗口是两种不同语义，后者要求
-        optimizer / scheduler / global_step 都不推进且训练继续。
+        生产默认路径（debug 关闭）现在由窗口层无条件判定并重放/丢弃（见下面两条用例）；
+        显式打开 ``--debug_finite_checks`` 时仍旧立刻中止，便于定位首个坏 batch。
         """
         with pytest.raises(FloatingPointError, match="non-finite training loss"):
             check_loss_finite(torch.tensor(float("nan")), mixed_precision="fp16")
@@ -815,12 +818,13 @@ class TestE3WindowAccountingGap:
         # 负控制：有限输入的同一入口必须放行，否则上面两条 cannot-fail。
         check_loss_finite(torch.tensor(1.5), mixed_precision="fp16")
 
-    def test_e3_only_nan_gate_is_debug_gated(self):
-        """E3 静态不变量：A 侧唯一的 loss 有限性检查仍被 debug 开关门控。
+    def test_e3_loss_finiteness_is_checked_unconditionally_in_the_window(self):
+        """E3 静态不变量：窗口层的 loss 有限性检查**不再**被 debug 开关门控。
 
-        默认配置下 debug_finite_checks=False 且无 ANIMA_DEBUG_FINITE → loop.py:804-809 整段
-        跳过，非有限 loss 不会被检出，会直接进 backward/step。这是「NaN 后处理」在 A 侧的实际
-        边界；若有人把它改成无条件调用，本用例失败，应同步更新等效判据与静态验收文档。
+        2026-11-06 起 ``_run_microbatch`` 用 ``window_accounting.loss_value`` 无条件判定，
+        使「非有限 loss → 整窗作废」在默认配置下也成立（D 缺口 D1/E3 的接线）。
+        debug 钩子（``check_loss_finite``）本身仍只在 debug 打开时调用——两条断言必须同时成立，
+        否则要么窗口保护缺席，要么默认训练被 fail-fast 打死。
         """
         assert debug_finite_enabled(_args_stub()) is False
         assert debug_finite_enabled(_args_stub(debug_finite_checks=True)) is True
@@ -829,80 +833,71 @@ class TestE3WindowAccountingGap:
         assert guarded, "loop.py 里必须仍能定位到 check_loss_finite 调用点"
         assert bare == [], f"check_loss_finite 出现无 debug 门控的调用点：{bare}"
 
-    def test_e3_window_accounting_seams_absent(self):
-        """E3 缺口钉：窗口记账符号在 A 侧 0 处，账本三元组 0 处（逐条对应 _WINDOW_ACCOUNTING_POINTS）。
+        unconditional = _path_symbol_occurrences(
+            LOOP_PATH, "loss_value", "losses_are_finite"
+        )
+        assert unconditional, "loop.py 必须保留无条件的窗口级 loss 有限性判定"
 
-        这是**缺口证据**，不是能力断言：五项计数器虽然存在，但都没有「窗口无效时不推进」的判定；
-        total_loss / num_steps / last_loss 连字段都没有。A 补上任一接缝后本用例会失败，
-        届时必须同步把下面的 strict xfail 规格转正。
+    def test_e3_window_accounting_capabilities_exist(self):
+        """E3 能力断言（2026-11-06 由缺口钉转正）：窗口账本与重放策略已实现。
+
+        负控制：``window_accounting`` 的三个累计计数与三个窗口级账本必须全部存在，
+        且 ``LoopState`` 上同样有这些字段——只加模块字段而没接进 state 同样不合格。
         """
-        assert _symbol_occurrences(
-            "_accumulation_window_invalid",
-            "accumulation_window",
-            "window_invalid",
-            "discard_accumulation_window",
-            "reset_scaler_step_state",
-        ) == []
-        # 限定 library/training/：全仓其它包里有同名局部参数（如 runtime/noise.py:39 的 num_steps），
-        # 与训练账本无关，用全仓匹配会把缺口钉变成误报。
-        for ledger in ("total_loss", "num_steps", "last_loss"):
-            assert _path_symbol_occurrences(LIBRARY_ROOT / "training", ledger) == [], (
-                f"library/training/ 意外出现 loss 账本字段 {ledger}"
-            )
+        from library.training import window_accounting
+        from library.training.loop import LoopState
 
-        names = [point[0] for point in _WINDOW_ACCOUNTING_POINTS]
-        assert names == [
-            "optimizer",
-            "scheduler",
-            "global_step",
-            "ema",
-            "ckpt",
-            "total_loss",
-            "num_steps",
-            "last_loss",
-        ]
-        # 观测点存在 ≠ 语义存在：五项计数里只有前三项有调用点（且都不带窗口判定），
-        # EMA 与账本三元组连观测点都没有 → 这四项必须标「需生产接缝」
-        needs_seam = {
-            point[0] for point in _WINDOW_ACCOUNTING_POINTS if "需生产接缝" in point[2]
-        }
-        assert needs_seam == {"ema", "total_loss", "num_steps", "last_loss"}
+        assert window_accounting.WINDOW_MAX_REPLAYS == 1, "用户裁定：同一窗口最多重放 1 次"
+        state = LoopState.__dataclass_fields__
+        for field_name in (
+            "window_attempts",
+            "window_replays",
+            "window_discards",
+            "window_total_loss",
+            "window_num_steps",
+            "window_last_loss",
+            "ema_observation",
+        ):
+            assert field_name in state, f"LoopState 缺少 E3 字段 {field_name}"
+
+        buffer = window_accounting.WindowBuffer()
+        buffer.add("batch", torch.tensor(2.0))
+        assert buffer.failure_reason(update_skipped=False) is None
+        assert buffer.failure_reason(update_skipped=True) == window_accounting.REASON_UPDATE_SKIPPED
+        nan_buffer = window_accounting.WindowBuffer()
+        nan_buffer.add("batch", torch.tensor(float("nan")))
+        assert (
+            nan_buffer.failure_reason(update_skipped=False)
+            == window_accounting.REASON_NONFINITE_LOSS
+        )
 
     def test_e3_boundary_window_discard_is_not_single_step_skip(self):
         """E3/E2 边界：单步跳步只冻结权重、计数照走；窗口丢弃要求连计数一起冻结。
 
-        可判定事实：loop.py 0 处读取 optimizer_step_was_skipped（与 E2 钉子同一证据），因此
-        :694 的 global_step 自增、:697 的 maybe_save_step、:915 的 _step_lr_scheduler 不会因
-        scaler 跳步而停止——「权重没动」推不出「计数没动」，E2 的断言不能替代 E3。
-        负控制（反向）：若将来有人给这三处加跳步门控，本用例失败，提示 E2/E3 语义已混合、需重新裁定。
+        可判定事实：``global_step += 1`` 必须仍在 ``sync_gradients`` 门控内，且不得带跳步门控。
+        E3 落地后跳步本身会在窗口层被重放/丢弃（见 ``tests/test_window_replay.py``），
+        但「单步跳过」与「窗口丢弃」仍是两种语义，不能互相替代。
         """
-        assert _path_symbol_occurrences(LOOP_PATH, "optimizer_step_was_skipped") == []
-
         guarded, bare = _global_step_increments_in_sync_gate(LOOP_PATH)
         assert guarded, "loop.py 必须仍能在 sync_gradients 门控内定位到 global_step 自增"
         assert bare == [], f"global_step 出现累积边界外的自增：{bare}"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="E3 规格未实现：五个计数器与账本三元组全部缺窗口观测点（需生产接缝）",
-    )
     def test_e3_spec_nonfinite_batch_discards_whole_accumulation_window(self):
-        """E3 规格（未实现）：非有限 microbatch 必须整窗丢弃，五个计数器与账本三元组一律回滚。
+        """E3 规格（2026-11-06 转正）：失败尝试对五个计数器与账本三元组的副作用必须为零。
 
-        逐条断言骨架（今日全部落在「需生产接缝」，见 _WINDOW_ACCOUNTING_POINTS）：
-        optimizer / scheduler / global_step / EMA / ckpt 五项计数在窗口丢弃后必须与窗口起点逐位相等；
-        total_loss / num_steps / last_loss 必须回滚到窗口起点。
-        浮点容差口径：默认 **abs=0（逐位相等）**——丢弃整窗后账本应原样等于起点快照，不存在求和；
-        只有当实现选择「把同一窗口内的 loss 以不同顺序重新求和」时才允许 abs=1e-12 级误差
-        （fp32 加法不满足结合律），本规格不授予该宽松度，若未来实现要重排必须先改这条口径。
+        观测口径：``at_window_start`` = 上一个窗口提交完成时的快照；``after`` = 本窗口失败尝试
+        已经跑完、重放尚未开始的快照。两者逐位相等 ⇒ 失败尝试零副作用。
+        浮点容差：abs=0（逐位相等）——失败尝试的账本不得留下任何求和残渣。
+        补充证据（``_evidence``）证明重放确实成功提交了一次，排除「什么都没发生」的假绿。
         """
         readings = _window_readings_after_nonfinite_batch()
+        evidence = readings.pop("_evidence")
         missing = [
             f"{name}（{description}）"
             for name, description, _ in _WINDOW_ACCOUNTING_POINTS
             if readings.get(name) is None
         ]
-        assert not missing, "需生产接缝（缺失观测点）：" + "、".join(missing)
+        assert not missing, "窗口账本观测点缺失：" + "、".join(missing)
 
         for name, description, _ in _WINDOW_ACCOUNTING_POINTS:
             assert readings[name]["after"] == readings[name]["at_window_start"], (
@@ -912,6 +907,13 @@ class TestE3WindowAccountingGap:
             assert readings[ledger]["after"] == pytest.approx(
                 readings[ledger]["at_window_start"], rel=0, abs=0
             )
+
+        # 防假绿：重放确实发生了，并且只提交了一次（不是「全都没动」）。
+        assert evidence["replays"] == 1, "首批 NaN 必须触发一次重放"
+        assert evidence["discards"] == 0, "重放成功不得计入丢窗"
+        assert evidence["global_step"] == 2, "第一个窗口 + 重放成功后只推进 2 步"
+        assert evidence["total_loss"] == pytest.approx(2.0, abs=1e-12), "账本只记成功的重放"
+        assert evidence["ema_step"] == 2, "EMA 占位槽只在提交路径更新"
 
 
 class TestAccelerateInternalContract:
@@ -1110,9 +1112,50 @@ def _global_step_increments_in_sync_gate(path: Path) -> tuple[list[int], list[in
 
 
 def _window_readings_after_nonfinite_batch() -> dict:
-    """E3 规格的观测入口：A 侧没有任何窗口记账，故每个观测点都返回 None。
+    """E3 规格的观测入口：真实驱动一段最小 loop（首批 NaN + 重放成功）。
 
-    返回 None 而不是跳过：规格用例必须因为「需生产接缝」而失败（strict xfail），
-    不能因为「无数据」而静默变成假绿。
+    场景：窗口 1 干净提交（1.0）→ 窗口 2 首批 loss 为 NaN → 整窗重放（2.0）→ 提交。
+    观测点：``at_window_start`` 取窗口 1 提交完成、窗口 2 尚未开始时的快照；
+    ``after`` 取窗口 2 的失败尝试跑完、重放尚未开始时（``loop._replay_window`` 钩子）的快照。
+    返回 ``{观测点: {"at_window_start": X, "after": Y}}``，外加 ``_evidence`` 的补充读数。
     """
-    return {name: None for name, _, _ in _WINDOW_ACCOUNTING_POINTS}
+    try:  # pytest 把 tests/ 放进 sys.path；显式回退便于直接导入
+        from window_replay_harness import Harness
+    except ImportError:  # pragma: no cover
+        from tests.window_replay_harness import Harness
+
+    snapshots: dict[str, dict] = {}
+    with pytest.MonkeyPatch.context() as patch:
+        harness = Harness(
+            patch,
+            num_steps=1,
+            loss_plan=[1.0, float("nan"), 2.0],
+            batches=2,
+            on_before_forward=lambda item: (
+                snapshots.setdefault("at_window_start", item.readings())
+                if item.forward_calls == 1  # 第二次 forward = 第二个窗口的第一个微批
+                else None
+            ),
+            on_before_replay=lambda item: snapshots.setdefault("after", item.readings()),
+        )
+        harness.run()
+        final = harness.readings()
+
+    assert "at_window_start" in snapshots and "after" in snapshots, "观测钩子未触发"
+    readings = {
+        name: {
+            "at_window_start": snapshots["at_window_start"][name],
+            "after": snapshots["after"][name],
+        }
+        for name, _, _ in _WINDOW_ACCOUNTING_POINTS
+    }
+    readings["_evidence"] = {
+        "replays": harness.state.window_replays,
+        "discards": harness.state.window_discards,
+        "global_step": harness.state.global_step,
+        "total_loss": harness.state.window_total_loss,
+        "ema_step": (harness.state.ema_observation or {}).get("step"),
+        "final_scheduler_steps": final["scheduler"],
+        "final_ckpt": final["ckpt"],
+    }
+    return readings

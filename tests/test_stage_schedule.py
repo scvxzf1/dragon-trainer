@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from library.training.stage_schedule import (
     StageSpec,
@@ -615,11 +616,14 @@ def test_stage_epoch_recycles_short_loader_to_full_dataset_budget(monkeypatch):
     monkeypatch.setattr(training_loop, "_maybe_apply_stage_schedule", lambda *_a, **_k: None)
     monkeypatch.setattr(training_loop, "_profiler_step_begin", lambda *_a, **_k: None)
     monkeypatch.setattr(training_loop, "_profiler_step_end", lambda *_a, **_k: None)
+    # E3 起 epoch 循环按微批驱动 ``_run_microbatch``，窗口提交在 ``_commit_step_boundary``；
+    # 本用例只关心 loader 回收，因此把这两处都换成计数/空实现。
     monkeypatch.setattr(
         training_loop,
-        "_run_step",
-        lambda *_a, **_k: calls.__setitem__("steps", calls["steps"] + 1) or 0.0,
+        "_run_microbatch",
+        lambda *_a, **_k: calls.__setitem__("steps", calls["steps"] + 1) or torch.tensor(0.0),
     )
+    monkeypatch.setattr(training_loop, "_commit_step_boundary", lambda *_a, **_k: None)
     monkeypatch.setattr(
         training_loop,
         "_maybe_scale_norm",

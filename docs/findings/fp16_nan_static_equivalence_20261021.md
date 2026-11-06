@@ -11,7 +11,7 @@
 - **E1（无 scaler 位级不变）成立（L0）**：与不缩放参照路径对照时 loss 对象身份保持、grads/params 逐位相等（P5），4 条用例通过。
 - **E4（scaler 状态机）成立（L0 轨迹 + L2 顺序）**：真 scaler 轨迹 8→8→16→16→32、溢出 32→16，state_dict 往返用不同 init/growth_interval 复现同一序列（P1）。
 - **E2（跳步语义）部分成立**：executed ≠ applied 在 accelerate 层成立（P2：调用点执行、内层 `optimizer.step` 未被调用、权重逐位不变、scale 1024→512）；但 A 无 `optimizer_step_executed` / `optimizer_update_applied` 双字段，主循环 0 处消费 `optimizer_step_was_skipped`。子判据「grad_norm 账本不被 inf 污染」在 A **不适用**（`loop.py:1194` `mean_grad_norm — not tracked here`），不得记成通过。
-- **E3（窗口记账）未实现**：交付形态是可执行规格 + 缺口钉，`strict xfail`，**规格未实现**；不改生产代码无法给出真实的窗口记账断言。
+- **E3（窗口记账）已实现（2026-11-06，重放 1 次 + 退化丢弃）**：`library/training/window_accounting.py` 持有窗口账本与重放策略，`loop.py` 只做接线；失败尝试零进度副作用（事务语义），重放仍失败则丢窗并计入 `window_discards`，`--adaptive_max_nonfinite_skips` 预算保留为终止升级层。原 `strict xfail` 规格已转正，详见「E3 窗口重放（2026-11-06 实现）」。
 - **E5（所有权判定）原为「未实现且违反（缺陷 D1）」；2026-11-06 已修复，见下方「修复状态」**：`--debug_finite_checks` 打开时 `loop.py:861` 的梯度有限性检查早于 `:898` 的 unscale/clip，读到仍乘 scale 的梯度；CPU 实测（P3）有限 loss + scale=65536 + 真梯度 2.0 → 梯度 inf → `check_trainable_grads_finite` 抛 `FloatingPointError`，同一时刻真 scaler 会 skip 且权重不变。（修复前状态；2026-11-06 已修复。）
 - 三条缺口必须分开写：**D1** 诊断工具误报（见下）、**D2** 默认路径根本没有有限性检查、**D3** adaptive 路径把跳步当致命错误。
 - 数字来源限定：本文所有 CPU 数字引自 P1–P9；P4 是依赖 `scale=65536` 的**比值**，P8 是**权重增量**，两者分开引，不混用。
@@ -27,7 +27,7 @@
 | **E5** 所有权判定 | 全仓 0 处实现 | **已实现**：`scaled_gradient_overflow_is_scaler_owned(accelerator, grads)` 真值表成立，规格用例已从 `strict xfail` 转正 |
 | **D3** adaptive 把跳步当致命 | `training_runtime.py` 抛 `RuntimeError`，第 1 次溢出即终止 worker | **已改（C 增强版，2026-11-06）**：新增 `nonfinite_skip` 结果分类；`--adaptive_max_nonfinite_skips` 提供小额连续跳步预算（默认 0 保持严格契约），给 GradScaler 留 backoff 窗口；跳步**不计入 `effective_steps`、也不进入步时采样**（`completed_steps` 仍是 resume 游标身份 = `global_step`，验收请读 `effective_steps`）；超预算或跑完步数上限仍凑不够有效步数，才以 `nonfinite_skip` 终止并交 supervisor 处理 |
 | **latent NaN 覆盖** | 只在 VAE 现场编码分支 | **已修复**：`_prepare_latents()` 对缓存与编码两个来源都做 NaN 处置，并区分日志来源 |
-| **E3** 窗口记账 | 只有可执行规格 | **仍未实现**：保持 `strict xfail`，本条未动 |
+| **E3** 窗口记账 | 只有可执行规格 | **已实现（2026-11-06）**：窗口级 loss 有限性无条件判定 → 整窗重放 1 次 → 仍失败丢窗（`window_discards`）；`_step_lr_scheduler` / `adaptive_notify("after_optimizer")` / `precision_observe(after=True)` 收口到外层提交路径；规格用例已转正 |
 
 修复后的验证（同一分支，2026-11-06）：
 
@@ -105,7 +105,7 @@
 |---|---|---|---|
 | E1 位级不变 | `seam(loss) is loss`；每个 grad / step 后参数 `view(torch.uint8)` 与参考路径逐字节相等；无副作用 —— 仅「不创建 scaler」被断言，`requires_grad`/`grad` 集合与 `stride`/`dtype`/`device` 不变**未断言**（见已知边界） | L0 | 成立（数值/身份部分） |
 | E2 跳步语义分裂 | executed（调用点正常返回）≠ applied（内层 `optimizer.step` 调用 0 次 + 权重字节不变 + scale 退档）；账本子判据不适用 | L0（权重/scale）+ L2（事件） | 部分成立；无命名双字段 |
-| E3 窗口记账 | 一次非有限累积窗口后：optimizer/scheduler/global_step/EMA/ckpt 计数不变，loss 账本回到窗口起点；连续两窗口序列 + 负控制 | L0（快照/计数） | 未实现（规格未实现） |
+| E3 窗口记账 | 一次非有限累积窗口后：optimizer/scheduler/global_step/EMA/ckpt 计数不变，loss 账本回到窗口起点；连续两窗口序列 + 负控制 | L0（快照/计数） | **已实现**（重放 1 次 + 退化丢弃；`tests/test_window_replay.py` + 转正后的规格用例） |
 | E4 scaler 状态机 | 固定 init_scale/growth_interval 的轨迹表逐项相等；state_dict 往返用**不同** init/growth_interval 构造恢复对象后序列一致 | L0（轨迹）+ L2（顺序） | 成立 |
 | E5 所有权判定 | 2×2 真值表（scaler 有/无 × grads 有限/非有限）：owned=True → 保护层不动作且真 scaler 随后 skip；owned=False → 原行为异常类型/消息前缀一致 | L2（真值表）+ L0（owned=False 分支） | 未实现，且当前实现违反（D1） |
 
@@ -166,7 +166,7 @@ CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
 | `TestE1BitwiseInvariance` | 4 | 无 scaler 位级直通、scaled 精确 ×scale 负控制、unscale 后与参考逐位相同、已知范数 2.0 vs 16.0 | passed |
 | `TestE2SkipSemanticSplit` | 4 | executed≠applied、溢出步 clip 返回 inf、A 侧仅计数语义、attempted/effective/skipped 三计数 | passed |
 | `TestE5ScalerOwnershipGap` | 4 | 缺口钉（全仓 0 处 scaler_owned）、所有权成对断言（有/无 scaler）、D1 复现 | 3 passed + **1 xfailed（规格未实现）** |
-| `TestE3WindowAccountingGap` | 5 | 非有限 loss 只 abort、门控仅 debug、8 个观测点缺席、E2/E3 边界、窗口记账完整规格 | 4 passed + **1 xfailed（规格未实现）** |
+| `TestE3WindowAccountingGap` | 5 | debug 钩子仍 fail-fast、窗口层无条件 loss 检查、窗口账本能力断言、E2/E3 边界、**8 观测点完整规格（真实驱动最小 loop）** | **5 passed（规格已转正）** |
 | `TestAccelerateInternalContract` | 1 | accelerate 1.13.0 canary（版本/属性/unscale 门双向语义） | passed |
 | 模块级 `test_patch_accelerator_for_fp16_training_allows_fp16_unscale` | 1 | A 的 `_unscale_grads_` 补丁使 fp16 参数档可 unscale | passed |
 
@@ -241,20 +241,59 @@ CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
 
 `library/training/adaptive_runtime/training_runtime.py:71-73` 对 `optimizer_step_was_skipped` 直接 `raise RuntimeError("Adaptive worker stopped: loss scaler skipped optimizer update")`，与「溢出 ≠ 失败」的 scaler 语义相反。这是独立缺口，不并入 D1。
 
-### E3 的交付形态与接缝清单
+### E3 窗口重放（2026-11-06 实现）
 
-**结论：不改生产代码无法给出真实的窗口记账断言。** 五个计数器里 optimizer / scheduler / global_step / ckpt 只有「会发生」的观测点、没有「窗口无效时不发生」的判定；模型 EMA 与账本三元组（`total_loss` / `num_steps` / `last_loss`）在 A 侧连字段都没有（`library/training/` 0 处）。因此 E3 只交付可执行规格 + 缺口钉，`strict xfail`，**规格未实现**，不声称支持。
+**裁定来源**：用户在 `codex/fp16-nan-guards` 上直接裁定（重放范围覆盖 scaler 跳步、重试上限 1、
+退化丢弃、窗口级最小账本），并由 captain 补充裁定「以 E3 为准 + 保留 D3 预算防抖层」与原则
+「未完成真实权重更新的窗口绝不推进进度副作用」（事务提交语义）。
 
-`_WINDOW_SEAM_CHECKLIST`（未来实现接缝，本轮只记录不修复）：
+**实现位置**：`library/training/window_accounting.py`（新增：账本 + 失败判定 + 重放策略）、
+`library/training/loop.py`（只接线：`_run_epoch_steps` 窗口三岔、`_run_microbatch`、
+`_commit_step_boundary`、`_replay_window`、`_forced_accumulate`）。热点文件 `loop.py` 不承载业务逻辑。
 
-1. `loop.py`：在 accumulate 体内暴露窗口起点快照（optimizer_step / scheduler_step / global_step / ckpt 计数）。
-2. `loop.py`：新增 `window_invalid` 标记，由非有限 loss 置位，并在边界块入口短路丢弃整窗。
-3. 丢弃路径必须同时跳过 `optimizer.step` / `_step_lr_scheduler` / `global_step` 自增 / `maybe_save_step` / EMA。
-4. `batch_step.py:113-117`：`nan_to_num` 只处理 latent，不构成 loss 侧窗口判定，需与 `window_invalid` 接线。
-5. loss 账本：新增 `(total_loss, num_steps, last_loss)` 三元组，窗口起点快照、丢弃时逐位回滚。
-6. scaler 记账：丢弃窗口时复位该窗口的 scaler 记账（A 无 `reset_scaler_step_state` 等价物，全仓 0 处）。
+**语义（事务提交）**：
 
-容差口径：默认 **abs=0（逐位相等）**；只有未来实现选择「同一窗口内 loss 换序重新求和」才允许 abs=1e-12 级误差，本规格不授予该宽松度。
+1. 窗口 = `accelerator.gradient_state.num_steps` 个微批；
+2. 任一条即窗口作废：微批 loss 非有限（**无条件检查**，不再依赖 `--debug_finite_checks`），
+   或边界处 `state.update_skipped is True`（scaler 跳步 / D2 guard 丢弃）；
+3. 作废后**用同一窗口数据重放 1 次**（不拉新 batch）；重放走 `_forced_accumulate` 显式设定边界，
+   因为 `accelerator.accumulate` 在 `end_of_dataloader=True` 时会对每个重放微批强制 sync；
+4. 重放仍失败 → 丢弃该窗口：`window_discards += 1`、清梯度、**不推进任何计数/账本**、记 warning；
+5. 只有提交（真实权重更新）的窗口才执行 `_step_lr_scheduler` → `adaptive_notify("after_optimizer")`
+   → `precision_observe(after=True)` → `global_step += 1` → `maybe_save_step`/sample/log；
+6. 失败尝试即使 loss 非有限也不会动权重：`_run_microbatch(force_skip=...)` 让「窗口已坏」的
+   边界跳过 `optimizer.step`，微批 loss 非有限同样直接跳过更新。
+
+**两层语义共存**：
+
+| 层 | 作用 | 位置 |
+|---|---|---|
+| E3 事务 | 未完成真实更新的窗口绝不推进进度副作用；同窗重放 1 次 | `loop.py::_run_epoch_steps` + `window_accounting` |
+| D3 预算 | `--adaptive_max_nonfinite_skips`（默认 0）决定何时升级为 `NonfiniteSkip` 终止试验 | 窗口接缝：连续丢窗计数 > 预算即抛 `NonfiniteSkip` |
+
+D3 的 `adaptive_runtime` 预算代码**未改动**；丢窗不是一次「边界」（它不推进 `global_step`），
+adaptive 计数器只统计提交过的边界，因此同一预算口径在窗口接缝上执行
+（`window_accounting.discard_budget`），连续计数由提交窗口复位，语义与 D3 的「连续跳步」一致。
+
+**指标字段**（`LoopState`）：`window_attempts` / `window_replays` / `window_discards` /
+`window_consecutive_discards`（累计计数）、`window_total_loss` / `window_num_steps` /
+`window_last_loss`（最近一次**提交**窗口的账本）、`ema_observation`（EMA 占位槽，仅提交路径写）。
+
+**已知限制**：
+
+- 本仓**没有模型 EMA**：`ema_observation` 是显式占位槽（`{"step", "num_steps", "mean_loss", "ema": "absent-in-this-repo"}`），只用于证明丢窗时不触碰，不代表真实 EMA 更新。
+- 丢窗指标目前只落在 `LoopState` + warning，**未写进 `precision_report.json`**；`updates.skipped` 在 loop 路径上已恒为 0（未提交的边界不再计数），后续需要把 `window_discards` 发布进报告。
+- `precision_report.updates.attempted` 现在只统计提交过的边界；`optimizer.step` 中途抛错的边界不再计入 attempted（此前会计入）。这是度量口径变化，已在该文件用例注释中记录。
+- `auto_swap_controller`（`block_swap_auto`）自带严格契约：非有限 loss 会先抛 `RuntimeError("Dynamic AUTO requires finite, completed optimizer updates")`，跳步超其预算也会抛 `NonfiniteSkip`，该开关下窗口重放可能来不及生效；这是既有行为，本轮未改。
+- 持久溢出在有限 loader 上不会卡死：丢窗不推进 `global_step`，epoch 结束后由 `finish()` 以「有效步数不足」报 `nonfinite_skip`；默认预算 0 则第一次丢窗即升级终止。
+- 未验证：真实 trainer / 模型族 / 数据链路上的重放（本轮只有最小 loop 夹具）、分布式 reduce 分支下的重放、`window_discards` 的历史可视化。
+
+**测试**：`tests/test_window_replay.py`（9 例）覆盖 NaN 重放成功、连续失败丢窗、scaler 跳步重放、
+窗口中间步 NaN、干净路径负控制、`_forced_accumulate` 显式边界、账本策略单测、预算升级、
+连续丢窗计数复位；`tests/window_replay_harness.py` 是与
+`TestE3WindowAccountingGap::test_e3_spec_nonfinite_batch_discards_whole_accumulation_window`
+共用的最小 loop 夹具。变异验证（5 个：失败窗口照样提交 / 重放次数置 0 / 丢窗写账本 /
+预算判断改 `>=` / 跳步边界也提交）全部被用例抓住。
 
 ## CUDA 热测补记（2026-11-06）
 
@@ -330,7 +369,7 @@ A 侧仍无命名双语义：`optimizer_step_executed` / `optimizer_update_appli
 - **E1 子谓词 (d) 未完全断言**：只覆盖「不创建 scaler」与 loss 的对象/存储身份；`requires_grad`/`grad` 集合与 `stride`/`dtype`/`device` 不变**未断言**，不得计入已验证面。
 - **测试绑定 accelerate 1.13.0**：依赖三个内部面（`native_amp`、`AcceleratorState._mixed_precision`、`step_was_skipped`）；升级 accelerate 时 canary 会失败，必须重新核对内部面后再采信。
 - **夹具与生产的差异**：真实 `Accelerator` + 真实 `GradScaler("cpu")`，手工置 `native_amp=True`；模型不进 `prepare`；进程级单例保存-恢复。差异只有「设备是 CPU」与「标志位需手工置位」，但仍是差异。
-- **两个 strict xfail = 规格未实现**：E3 窗口记账、E5 所有权判定（含 D1 用例的期望）；不得写成「已支持」。
-- **D1/D2/D3 均未修复**：本轮只记录，不改生产代码，也没有提交。
-- **测试文件规模**：1086 行 / 24 用例，已接近 AGENTS.md 的 1200 行建议上限；后续新增 E3/E5 内容应按领域拆第二个测试文件。该文件当前是未跟踪状态（`git status` 显示 `??`），交付前需纳入版本控制。
+- **strict xfail 已清零（2026-11-06）**：E3 窗口记账与 E5 所有权判定的规格用例均已转正，该文件当前 0 xfailed；转正不等于「真实 trainer / CUDA 长程已验证」，不得外推。
+- **D1/D2/D3/E3 现状**：D1/D2/D3 已修复，E3 已实现（重放 1 次 + 退化丢弃）；遗留限制见「E3 窗口重放（2026-11-06 实现）」的「已知限制」。
+- **测试文件规模**：静态等效文件已接近 AGENTS.md 的 1200 行建议上限，因此 E3 的重放行为另立 `tests/test_window_replay.py`（共用夹具 `tests/window_replay_harness.py`），不再往大文件堆用例。
 - **未覆盖**：`process_batch_inner` 的 latent `nan_to_num`（需要完整 trainer 上下文）、真实累积窗口的 EMA/ckpt 记账、adaptive 路径的 skip 用例。

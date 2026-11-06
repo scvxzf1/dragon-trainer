@@ -196,11 +196,14 @@ def test_grad_finiteness_summary_reports_offenders():
     assert finiteness.must_skip_step is True
 
 
-def test_loop_skips_update_without_scaler_and_keeps_step_accounting(monkeypatch):
-    """loop 级集成：无 scaler 的 NaN 步既不更新权重，也不跳过 scheduler/计数。
+def test_loop_skips_update_without_scaler_and_commits_nothing(monkeypatch):
+    """loop 级集成：无 scaler 的 NaN 步**不提交**——权重、scheduler、账本全部不动。
 
-    复用 test_distributed_gradient_sync.py 的轻量 harness 风格，断言跳过路径与
-    Scalcer 跳步的账目一致（scheduler 推进、precision 记 skipped、loss 已 detach）。
+    语义变更（2026-11-06，用户 E3 裁定 + captain 补充裁定 #2「未完成真实权重更新的窗口
+    绝不推进进度副作用」）：本用例此前断言「跳步仍推进 scheduler / 记 precision skipped」，
+    那是 D3 的旧语义。现在 ``_run_step`` 只在边界真的应用了更新时才执行提交路径
+    （``_commit_step_boundary``），因此跳步既不推进 scheduler、也不产生
+    attempted/effective/skipped 计数；窗口层的重放与丢窗见 ``tests/test_window_replay.py``。
     """
     from library.training import loop as training_loop
 
@@ -303,11 +306,11 @@ def test_loop_skips_update_without_scaler_and_keeps_step_accounting(monkeypatch)
     returned = training_loop._run_step(trainer, state, batch=object())
 
     assert "optimizer" not in events, "无 scaler 且梯度非有限时不得执行 optimizer.step"
-    assert "scheduler" in events, "跳过语义必须与 scaler 跳步一致：scheduler 仍推进"
+    assert "scheduler" not in events, "未完成真实更新的边界不得推进 LR scheduler"
     assert "zero" in events, "跳过后必须清理梯度"
     assert state.nonfinite_grad_skips == 1
     assert state.update_skipped is True, "loop 必须发布统一的每步跳过标志"
-    assert ("optimizer", True, True) in observed, "跳步必须计入 precision 的 skipped"
+    assert observed == [], "未提交的边界不得产生 attempted/effective/skipped 计数"
     assert returned is not None and returned.requires_grad is False, "返回值必须已 detach"
 
 

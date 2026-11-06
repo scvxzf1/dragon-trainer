@@ -22,6 +22,7 @@ import os
 import sys
 import time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -29,6 +30,7 @@ import torch
 from accelerate import Accelerator
 from tqdm import tqdm
 
+from library.training import window_accounting
 from library.training.finite_checks import (
     check_loss_finite,
     debug_finite_enabled,
@@ -264,6 +266,22 @@ class LoopState:
     #: Known limitation: only warned and counted for now — it is not published into
     #: ``precision_report.json``, so it is not yet a first-class metric.
     nonfinite_grad_skips: int = 0
+    #: E3 accumulation-window accounting. ``window_attempts`` / ``window_replays``
+    #: / ``window_discards`` are cumulative; the three ledger fields describe the
+    #: last *committed* window and are left untouched by a replay/discard
+    #: (see ``library/training/window_accounting.py``).
+    window_attempts: int = 0
+    window_replays: int = 0
+    window_discards: int = 0
+    #: Consecutive discards, reset by a committed window — drives the
+    #: ``--adaptive_max_nonfinite_skips`` escalation (see window_accounting).
+    window_consecutive_discards: int = 0
+    window_total_loss: float = 0.0
+    window_num_steps: int = 0
+    window_last_loss: Optional[float] = None
+    #: This repo has no model EMA; the slot is written on the commit path only so
+    #: the E3 spec can prove a discarded window touches no ledger at all.
+    ema_observation: Optional[dict] = None
     recent_step_rate_last: Optional[tuple[float, int]] = None
     recent_step_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=9))
 
@@ -668,6 +686,58 @@ def _maybe_apply_stage_schedule(state: LoopState, *, force: bool = False) -> Non
     )
 
 
+@contextmanager
+def _forced_accumulate(accelerator, model, *, boundary: bool):
+    """Replay-path accumulate context with an explicit boundary.
+
+    ``accelerator.accumulate`` derives ``sync_gradients`` from its monotonic
+    counter *and* forces a sync whenever ``gradient_state.end_of_dataloader`` is
+    true. On the last window of an epoch that would sync on **every** replayed
+    micro-batch (one optimizer step per batch), so the replay sets the boundary
+    explicitly instead and only mirrors the ``no_sync`` half of ``accumulate``.
+    """
+    gradient_state = getattr(accelerator, "gradient_state", None)
+    set_sync = getattr(gradient_state, "_set_sync_gradients", None)
+    if set_sync is None:  # test doubles keep their own accumulate semantics
+        with accelerator.accumulate(model):
+            yield
+        return
+    previous = bool(gradient_state.sync_gradients)
+    set_sync(bool(boundary))
+    try:
+        if boundary or not bool(getattr(accelerator, "use_distributed", False)):
+            yield
+        elif hasattr(accelerator, "no_sync"):
+            with accelerator.no_sync(model):
+                yield
+        else:  # pragma: no cover - defensive: distributed without no_sync
+            yield
+    finally:
+        set_sync(previous)
+
+
+def _replay_window(trainer, state: LoopState, batches) -> tuple[list[float], torch.Tensor]:
+    """Re-run a whole window once with the same data (E3 retry #1)."""
+    accelerator = state.accelerator
+    # The failed attempt left (possibly non-finite) partial gradients behind.
+    state.optimizer.zero_grad(set_to_none=True)
+    losses: list[float] = []
+    last_loss: Optional[torch.Tensor] = None
+    total = len(batches)
+    for index, batch in enumerate(batches):
+        with _forced_accumulate(
+            accelerator, state.training_model, boundary=index == total - 1
+        ):
+            last_loss = _run_microbatch(
+                trainer,
+                state,
+                batch,
+                force_skip=not window_accounting.losses_are_finite(losses),
+            )
+        losses.append(window_accounting.loss_value(last_loss))
+    return losses, last_loss
+
+
 def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
     """Inner per-step loop: walk the dataloader, execute the accumulate
     scope, run sample / save / log / step-validation ticks.
@@ -694,6 +764,8 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         )
         state.initial_step = 1
 
+    window_accounting.ensure_counters(state)
+
     step = -1
     while state.global_step < args.max_train_steps and (
         epoch_end_step is None or state.global_step < epoch_end_step
@@ -703,6 +775,7 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         skipped_dataloader = None
         stage_at_start = state.stage_index
         pass_start_step = state.global_step
+        window = window_accounting.WindowBuffer()
         for batch in loader:
             step += 1
             state.current_step.value = state.global_step
@@ -711,23 +784,81 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                 continue
 
             _profiler_step_begin(state)
-            loss = _run_step(trainer, state, batch)
+            loss = _run_microbatch(
+                trainer,
+                state,
+                batch,
+                # An earlier micro-batch of this window already poisoned the
+                # accumulators: keep this attempt from touching the weights.
+                force_skip=not window_accounting.losses_are_finite(window.losses),
+            )
             _profiler_step_end(state)
+            window.add(batch, loss)
 
             keys_scaled, mean_norm, maximum_norm, max_mean_logs = _maybe_scale_norm(state)
 
             if accelerator.sync_gradients:
-                state.progress_bar.update(1)
-                state.global_step += 1
-                _record_recent_step_seconds(
-                    state,
-                    state.global_step,
-                    record=not bool(getattr(state, "update_skipped", False)),
+                # E3: the window boundary decides commit vs replay vs discard.
+                window.record_attempt()
+                reason = window.failure_reason(
+                    update_skipped=bool(getattr(state, "update_skipped", False))
                 )
-                _sample_at_step(trainer, state)
-                state.saver.maybe_save_step(state.network, state.global_step, epoch)
-                state.optimizer_train_fn()
-                adaptive_notify(trainer, "commit", state)
+                while (
+                    reason is not None
+                    and window.replays < window_accounting.WINDOW_MAX_REPLAYS
+                ):
+                    replay_losses, loss = _replay_window(trainer, state, window.batches)
+                    window.record_attempt(replay_losses)
+                    reason = window.failure_reason(
+                        update_skipped=bool(getattr(state, "update_skipped", False))
+                    )
+
+                if reason is None:
+                    # Ledger first, then the boundary side effects (E3 contract E).
+                    window_accounting.commit_window(state, window)
+                    _commit_step_boundary(trainer, state, loss)
+                    state.progress_bar.update(1)
+                    state.global_step += 1
+                    _record_recent_step_seconds(
+                        state,
+                        state.global_step,
+                        record=not bool(getattr(state, "update_skipped", False)),
+                    )
+                    _sample_at_step(trainer, state)
+                    state.saver.maybe_save_step(state.network, state.global_step, epoch)
+                    state.optimizer_train_fn()
+                    adaptive_notify(trainer, "commit", state)
+                else:
+                    dropped = window_accounting.discard_window(state, window, reason)
+                    state.optimizer.zero_grad(set_to_none=True)
+                    budget = window_accounting.discard_budget(args)
+                    logger.warning(
+                        "Discarding accumulation window after %d attempt(s): %s "
+                        "(window_discards=%d, consecutive=%d, budget=%d, steps %d/%d). "
+                        "No counter, ledger or checkpoint moved for this window.",
+                        dropped["attempts"],
+                        reason,
+                        dropped["discards"],
+                        dropped["consecutive_discards"],
+                        budget,
+                        state.global_step,
+                        int(args.max_train_steps),
+                    )
+                    if dropped["consecutive_discards"] > budget:
+                        # D3 budget layer, kept as the escalation seam: the trial is
+                        # stopped with its own ``nonfinite_skip`` classification
+                        # instead of silently discarding windows forever.
+                        from library.training.adaptive_runtime.training_runtime import (
+                            NonfiniteSkip,
+                        )
+
+                        raise NonfiniteSkip(
+                            "Adaptive worker stopped: accumulation window discarded "
+                            f"({dropped['consecutive_discards']} consecutive > budget "
+                            f"{budget}; reason={reason}, "
+                            f"effective_steps={state.global_step})"
+                        )
+                window.reset()
 
             _log_step(
                 trainer,
@@ -813,10 +944,53 @@ def _guard_nonfinite_grads(
     return finiteness
 
 
+def _commit_step_boundary(trainer, state: LoopState, loss: torch.Tensor) -> None:
+    """Boundary side effects that may only run once a window is **committed**.
+
+    E3: a window that fails (non-finite loss, scaler skip, or D2 guard drop) is
+    replayed before any of this runs, so a failed attempt can never advance the
+    LR scheduler, the adaptive runtime or the precision counters.
+    """
+    _step_lr_scheduler(state, loss)
+    adaptive_notify(trainer, "after_optimizer", state)
+    skipped = bool(getattr(state, "update_skipped", False))
+    precision_observe("optimizer", state)
+    precision_observe("optimizer", state, after=True, skipped=skipped)
+    state.optimizer.zero_grad(set_to_none=True)
+    _maybe_auto_block_swap(state)
+
+
 def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
+    """Run one micro-batch and, at an optimizer boundary, commit its side effects.
+
+    Kept as the single-batch entry for direct callers and tests; the epoch loop
+    drives :func:`_run_microbatch` itself so a failed window can be replayed.
+    """
+    loss = _run_microbatch(trainer, state, batch)
+    # Transaction semantics (E3): a boundary whose update was dropped (scaler skip
+    # or D2 guard drop) commits nothing — no scheduler, no adaptive event, no
+    # precision counter — exactly like the window loop's failed attempt.
+    if state.accelerator.sync_gradients and not bool(getattr(state, "update_skipped", False)):
+        _commit_step_boundary(trainer, state, loss)
+    return loss
+
+
+def _run_microbatch(
+    trainer, state: LoopState, batch, *, force_skip: bool = False
+) -> torch.Tensor:
     """The accumulate-scope body: on_step_start hooks, cudagraph mark, forward,
     backward gating, manual adapter sync, grad capture/clip, optimizer step +
-    zero_grad. Returns a detached loss for logging and sample scheduling."""
+    zero_grad. Returns a detached loss for logging and sample scheduling.
+
+    Deliberately free of boundary side effects (LR scheduler, adaptive runtime,
+    precision counters, block-swap promotion): those belong to
+    :func:`_commit_step_boundary` and only run for a committed window.
+
+    ``force_skip`` lets the window loop suppress the update of an attempt that is
+    already known bad (an earlier micro-batch of the same window had a non-finite
+    loss): a failed attempt must not move the weights even once. A non-finite
+    micro-batch loss does the same on its own (E3: the check is unconditional).
+    """
     from library.training.auto_block_swap.online import before_microstep, after_microstep
 
     adaptive_notify(trainer, "forward")
@@ -876,6 +1050,9 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
                 loss,
                 mixed_precision=getattr(accelerator, "mixed_precision", None),
             )
+        # E3: unconditional (not debug-gated) — a non-finite micro-batch loss makes
+        # the whole accumulation window invalid, so this attempt must not update.
+        loss_is_finite = math.isfinite(window_accounting.loss_value(loss))
         _probe_step(
             memory_probe,
             state,
@@ -938,7 +1115,7 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         # value, never an incorrect update). Fixing it needs the consumers to know
         # the metric is missing for this step.
 
-        if accelerator.sync_gradients and not skip_update:
+        if accelerator.sync_gradients and not skip_update and not force_skip and loss_is_finite:
             net_unwrapped = accelerator.unwrap_model(network)
             gradient_flow_probe = _gradient_flow_probe_for_step(trainer, state)
             if gradient_flow_probe is not None:
@@ -983,25 +1160,26 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
             # Cleared before the step so an exception cannot leave the previous
             # boundary's answer behind for a later reader.
             state.update_skipped = None
-            precision_observe("optimizer", state)
-            if skip_update:
+            drop_update = skip_update or force_skip or not loss_is_finite
+            if drop_update:
                 state.update_skipped = True
-                precision_observe("optimizer", state, after=True, skipped=True)
+                # Nothing applied: clear the (possibly poisoned) gradients here so a
+                # replay or the next window starts clean. Applied updates are zeroed
+                # by the commit path, which keeps ``optimizer → scheduler → zero``.
+                state.optimizer.zero_grad(set_to_none=True)
             else:
                 state.optimizer.step()
                 state.update_skipped = bool(
                     getattr(accelerator, "optimizer_step_was_skipped", False)
                 )
-                precision_observe("optimizer", state, after=True)
-            adaptive_notify(trainer, "after_optimizer", state)
+                if state.update_skipped:
+                    state.optimizer.zero_grad(set_to_none=True)
             if accelerator.sync_gradients and gradient_flow_probe is not None:
                 try:
                     gradient_flow_probe.capture_after_optimizer(state.global_step + 1)
                 except Exception as exc:  # telemetry must not fail training
                     logger.warning("gradient-flow probe update capture failed: %s", exc)
                     gradient_flow_probe.fail("after_optimizer", state.global_step + 1, exc)
-            _step_lr_scheduler(state, loss)
-            state.optimizer.zero_grad(set_to_none=True)
         except Exception as exc:
             if accelerator.sync_gradients and gradient_flow_probe is not None:
                 gradient_flow_probe.discard_pending()
@@ -1010,7 +1188,6 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         _probe_step(memory_probe, state, "after_optimizer")
         if state.profile_started:
             torch.cuda.nvtx.range_pop()
-        _maybe_auto_block_swap(state)
 
     if peak_probe is not None:
         peak_probe.end_step(device=accelerator.device)

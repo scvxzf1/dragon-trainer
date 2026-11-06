@@ -237,8 +237,12 @@ def test_real_loop_accumulation_skips_and_optimizer_exception(tmp_path, monkeypa
     else:
         report.reported_session(trainer, args_for(tmp_path), body)
     updates = read(tmp_path)["updates"]
+    # E3 语义（2026-11-06 用户裁定）：没有任何进度副作用的边界不提交，因此
+    # ``optimizer_step_was_skipped`` 的第三次调用不再记为 attempted/skipped；
+    # 只有真正应用了更新的边界进入账目（失败用例里 optimizer.step 抛错，同样不提交）。
+    # 丢窗/跳步的度量改由窗口账本（window_discards / window_replays）承载。
     assert (updates["attempted"], updates["effective"], updates["skipped"]) == (
-        (1, 0, 0) if failure else (2, 1, 1))
+        (0, 0, 0) if failure else (1, 1, 0))
     assert updates["total_global_step"] == (10 if failure else 12)
 
 

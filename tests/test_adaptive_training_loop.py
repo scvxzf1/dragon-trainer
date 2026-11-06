@@ -47,7 +47,13 @@ def setup_loop(tmp_path, monkeypatch, *, failure=None, skipped=False, budget=Non
         run_after_backward=lambda *a, **k: None,
     )
     state = SimpleNamespace(
-        args=SimpleNamespace(max_grad_norm=0, log_every_n_steps=1, max_train_steps=1),
+        args=SimpleNamespace(
+            max_grad_norm=0,
+            log_every_n_steps=1,
+            max_train_steps=1,
+            # 生产里 loop 与 runtime 共用同一份解析后的 args；丢窗预算由 loop 侧读取。
+            adaptive_max_nonfinite_skips=0 if budget is None else budget,
+        ),
         accelerator=SimpleNamespace(sync_gradients=True, optimizer_step_was_skipped=skipped,
                                     accumulate=lambda model: nullcontext(), unwrap_model=lambda model: model,
                                     backward=backward),
@@ -98,33 +104,46 @@ def test_real_loop_commits_after_increment_and_train_mode(tmp_path, monkeypatch)
     assert runtime.finished
 
 
-def test_real_loop_scaler_skip_stops_before_scheduler_progress_or_snapshot(tmp_path, monkeypatch):
+def test_real_loop_scaler_skip_is_replayed_then_discarded_without_progress(tmp_path, monkeypatch):
+    """E3 裁定后：scaler 跳步先整窗重放一次，仍失败则丢窗——进度一律不推进。
+
+    用户裁定（E3）把「跳步」从「计一步」改成「重放同一窗口，最多 1 次，仍失败则丢弃该窗口」，
+    因此 D3 的「跳步照常 commit」语义被取代。本用例保留原断言的核心不变量（跳步不得推进
+    scheduler、不得写快照、不得推进游标），并新增重放/丢窗计数断言。
+    """
+    from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
     trainer, state, runtime, events = setup_loop(tmp_path, monkeypatch, skipped=True)
     scheduler_step = state.lr_scheduler.last_epoch
-    with pytest.raises(RuntimeError, match="scaler skipped"):
+    # 默认预算 0 = 严格契约：重放 1 次仍失败 → 丢窗 → 立刻以 nonfinite_skip 升级终止。
+    with pytest.raises(NonfiniteSkip, match="consecutive > budget 0"):
         loop._run_epoch_steps(trainer, state, 0)
-    assert events == ["optimizer"]
+    assert events == ["optimizer", "optimizer"], "同一窗口必须重放一次（两次边界尝试）"
     assert state.global_step == runtime.completed_steps == 0
-    assert state.lr_scheduler.last_epoch == scheduler_step
-    assert not list(tmp_path.iterdir())
+    assert state.lr_scheduler.last_epoch == scheduler_step, "失败尝试不得推进 scheduler"
+    assert not list(tmp_path.iterdir()), "丢窗不得写快照"
+    assert state.window_discards == 1 and state.window_replays == 1
+    # 重放期间不得把中间失败喂给 adaptive 运行时（只在最终提交时通知）
+    assert (runtime.attempted_steps, runtime.effective_steps, runtime.skipped_steps) == (0, 0, 0)
 
 
-def test_real_loop_tolerates_skip_within_budget_then_requires_effective_steps(tmp_path, monkeypatch):
-    """预算 > 0 的端到端路径：跳步经真实 loop 被容忍、照常 commit，但不算有效步。
+def test_real_loop_budget_does_not_turn_replayed_skips_into_steps(tmp_path, monkeypatch):
+    """预算 > 0 也不再让跳步「计步」：重放 → 丢窗优先于预算容忍。
 
-    覆盖 t14 指出的 M4 后半段：跳步不调用 optimizer.step、scheduler 与游标照常推进、
-    commit 写完快照，最后由 finish() 因有效步数不足报 nonfinite_skip。
+    E3 裁定后，跳步窗口先重放、再退化丢弃，循环侧不推进任何计数；adaptive 预算代码没有改动，
+    但它已经看不到中间失败，因此容错不再表现为「跳步算一步」。试运行最终由 finish() 以
+    nonfinite_skip 收口（有效步数不足），不会被丢窗卡死。
     """
     from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
 
     trainer, state, runtime, events = setup_loop(tmp_path, monkeypatch, skipped=True, budget=2)
     loop._run_epoch_steps(trainer, state, 0)
 
-    # 跳步仍走完整边界：optimizer 边界 → 进度条 → 训练模式（scheduler/快照照常推进）
-    assert events == ["optimizer", "progress", "train_mode"]
-    assert (runtime.attempted_steps, runtime.effective_steps, runtime.skipped_steps) == (1, 0, 1)
-    assert runtime.completed_steps == state.global_step == 1, "游标照常推进"
-    assert runtime.saved_state, "被容忍的跳步照常提交 checkpoint"
+    assert events == ["optimizer", "optimizer"], "重放一次，仍失败后丢弃"
+    assert (runtime.attempted_steps, runtime.effective_steps, runtime.skipped_steps) == (0, 0, 0)
+    assert runtime.completed_steps == state.global_step == 0, "游标不得推进"
+    assert not runtime.saved_state, "丢窗不得写 checkpoint"
+    assert state.window_discards == 1
 
     with pytest.raises(NonfiniteSkip, match="effective steps"):
         runtime.finish(state)
