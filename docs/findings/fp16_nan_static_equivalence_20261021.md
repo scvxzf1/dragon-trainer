@@ -1,9 +1,9 @@
 # fp16 保护与 NaN 后处理：静态等效判定与待热测
 
-日期：2026-10-21。状态：静态实现与 CPU 回归完成；真实 GPU 热测待验收。
-范围：未运行 GPU。只覆盖 CPU 可判定面（真 `torch.amp.GradScaler("cpu")`）：接缝等效判据、静态用例、A 侧缺口与待热测清单；不含真实 CUDA autocast、unscale kernel 数值、跨 rank 归约与长程收敛。
-基线：`codex/fp16-nan-guards` @ 69fed4a0；`library/`、`networks/` 相对 11b7bef5 无 diff，本文所有 library 行号沿用 t1 在 11b7bef5 的冻结值。
-证据：`tests/test_fp16_nan_static_equivalence.py`（1086 行、24 用例、22 passed + 2 xfailed）；数字来源已落盘为 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；P1–P9 对照表见 `bench/fp16_precision/README.md`），P1–P9 编号对应其输出；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。
+日期：2026-10-21（CPU 静态面）；2026-11-06 补记 CUDA 热测（见「CUDA 热测补记」）。状态：CPU 静态回归完成，E2 与 E5/D1 已在真实 CUDA 复现；H3–H7 仍待热测。
+范围：CPU 可判定面（真 `torch.amp.GradScaler("cpu")`）加 2026-11-06 两张 V100 的合成张量热测；不含真实 trainer / 模型族 / 数据链路、跨 rank 归约与长程收敛。
+基线：`codex/fp16-nan-guards` @ 69fed4a0（CPU 静态面）、@ dfae1a4d（2026-11-06 CUDA 补记）；`library/`、`networks/` 相对 11b7bef5 无 diff，本文所有 library 行号沿用 t1 在 11b7bef5 的冻结值。
+证据：`tests/test_fp16_nan_static_equivalence.py`（1086 行、24 用例、22 passed + 2 xfailed）；数字来源已落盘为 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；P1–P9 对照表见 `bench/fp16_precision/README.md`），P1–P9 编号对应其输出；CUDA 合成探针为 `bench/fp16_precision/run_cuda_probe.py`（H1/H2/H8，需真 CUDA），E2 与 E5/D1 的生产接缝复现见「CUDA 热测补记」；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。
 相关代码：`library/training/loop.py`、`library/training/finite_checks.py`、`library/runtime/accelerator.py`、`library/training/precision_report.py`。
 
 ## 结论
@@ -175,6 +175,56 @@ CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
 
 容差口径：默认 **abs=0（逐位相等）**；只有未来实现选择「同一窗口内 loss 换序重新求和」才允许 abs=1e-12 级误差，本规格不授予该宽松度。
 
+## CUDA 热测补记（2026-11-06）
+
+本节只补事实，不改上文任何 CPU 判据的结论与强度分级。所有实验只用合成张量，未加载模型、未读训练数据、未启动项目训练，也未修改 `library/` 与 `networks/`。
+
+### 环境与设备
+
+- 硬件：2× Tesla V100-SXM2-16GB（sm_70，16144 MiB），UUID `GPU-b4b014b2-953b-28e8-b8c1-425c4a401165`（index 0）、`GPU-379b8c19-d965-f6fa-d70d-8a9b876ff061`（index 1）；两组实验分别固定 `CUDA_VISIBLE_DEVICES` 独占单卡。
+- 软件：torch **2.10.0+cu129**、CUDA runtime 12.9、accelerate 1.13.0、python 3.13.9、cudnn 91002；分支 `codex/fp16-nan-guards` @ `dfae1a4d`。
+- **版本偏差必须注明**：`pyproject` 要求 `torch>=2.12.0,<2.13`，上文 CPU 面记录的验收环境是 torch 2.12.0+cu130，本轮实测只有 **2.10.0+cu129** 可用（目标 worktree 内的 `.venv` 是指向已不存在路径的悬空软链，实际借用 `krea2-webui/.venv`）。接缝所依赖的 API（`Accelerator.native_amp`、`GradScaler`、`AcceleratedOptimizer.step_was_skipped`）在 2.10 上行为一致，但**如要求严格对齐，仍需在 2.12 环境复跑同一探针**。
+
+### E2：跳步语义分裂（已复现，结论不变）
+
+用真 CUDA fp16 autocast + 真 `torch.amp.GradScaler("cuda")` + `AcceleratedOptimizer`，按 `loop.py` 的 zero_grad → autocast → backward → clip → step 顺序跑小型合成 Linear：
+
+- 溢出步：调用点执行（`step` 正常返回、`scaler.step` 调用 1 次）→ executed；内层 `optimizer.step` 0 次 → **applied**；`step_was_skipped=True`；参数与 SGD momentum `view(torch.uint8)` 逐位不变；scale ×0.5（2048→1024，默认档 65536→32768）。
+- 干净步负控制：内层 step 1 次、权重与动量确实变化；`growth_interval=2` 时 scale 1024→2048，recovery 步恢复更新。
+- 边界：溢出步 `clip_grad_norm_` 返回 inf（干净步为有限正值），clip 后梯度被压成 0 —— **跳步由 `unscale_` 锁存的 `found_inf` 决定，不是 step 时刻的梯度值**。
+- fp16 参数档的必要条件被实测确认：不打 `patch_accelerator_for_fp16_training` 时，真 CUDA 直接 `ValueError: Attempting to unscale FP16 gradients.`。
+
+A 侧仍无命名双语义：`optimizer_step_executed` / `optimizer_update_applied` 在 `library/`、`networks/`、`web/`、`scripts/`、`train.py` 均 0 命中，运行时 `hasattr` 亦为 False；可观测载体只有 accelerate 的 `step_was_skipped` 与 `_accelerate_step_called`。因此本节只加强「executed ≠ applied 在 accelerate 原语层成立」，**不改变 E2「A 侧语义未命名」的部分成立判定**。
+
+### E5 / D1：生产接缝在 CUDA 上复现（缺陷成立）
+
+用真 `Accelerator(mixed_precision="fp16")` + 真 `GradScaler` + 生产 `patch_accelerator_for_fp16_training`，直接调用生产 `library.training.loop._run_step`（`trainer`/`state` 仅作为 `SimpleNamespace` 数据容器，被测接缝不 mock）：
+
+- `debug_finite_checks=True`：抛 `FloatingPointError: non-finite trainable gradients after backward: weight: dtype=torch.float16 shape=(1, 1)`，traceback 落点 `loop.py:861 _run_step` → `finite_checks.py:46`。
+- 同构造 `debug_finite_checks=False`：无异常、`step_was_skipped=True`、权重逐位不变、scale 65536→32768 —— 即真 scaler 会正常 skip，而 debug 检查把它判成训练失败。
+- 无溢出正例（证明该接缝不是恒真失败）：真梯度 0.5（×65536=32768 有限）时检查放行，权重 1.0→0.9501953125 确实更新。
+
+**归因（重要，避免把 D1 误判成纯排序问题）**：解析模型 `w=1, x=1, y=0`，loss 有限、真梯度 2.0、scale=65536 → `2.0×65536=131072 > 65504` 使 fp16 梯度溢出为 inf。只把 unscale 提前，梯度仍是 inf；把 clip+unscale 提前，`inf×0=NaN` 仍触发检查。**因此调整检查顺序修不好 D1，缺的正是 E5 的 scaler 所有权判定**：必须先知道「这一步的梯度非有限应由 scaler 拥有」，保护层才应当不动作。
+
+前置条件复核：`import library.training.finite_checks` + `library.training.loop` 后 `cuda_initialized=false`、显存分配 0 MiB、`AcceleratorState._shared_state` 为空，说明该复现没有隐式训练副作用。
+
+### H1 / H2 / H8 合成探针（`bench/fp16_precision/run_cuda_probe.py`）
+
+两张卡各自独占运行，`--gpu-label gpu0/gpu1` 输出除标签外**逐字段一致**，三项均 pass：
+
+| 探针 | 断言 | 结果 |
+|---|---|---|
+| H1 | accelerate `backward → unscale+clip → step` 与直接 `GradScaler` 接缝的 loss/scale/grads/params 逐字节相等，且参数确实相对初值移动（负控制） | pass（两卡一致） |
+| H2 | CUDA fp16 unscale 的表示窗口采样，并要求 `found_inf` 与「是否上溢」「是否被清零」语义一致 | pass；窗口 `[5.96e-08, 0.99951171875]`，1e-8 归零、1e-7 保留约 19% 相对误差、1.5 → inf 且 `found_inf=1` |
+| H8 | `GradScaler.state_dict()` 保存后用**不同** `init_scale`/`growth_interval` 构造的新对象恢复，再跑同一续跑序列 | pass；saved/restored scale 均为 16.0，续跑 scale 轨迹 `16→16, 16→8, 8→8` 完全一致 |
+
+边界：H1/H2/H8 只覆盖合成张量（`Linear(8,4)` 与 `(1,)` 参数），**不代表**真实 trainer / 模型族 / 数据链路；H8 只验证 scaler 轨迹，不含 checkpoint 文件往返与跨设备搬运。
+
+### 与既有文档的两处事实更正
+
+1. 跳步标志的硬错误消费者不是「两处」。`library/` 实际 5 处引用：`precision_report.py:206`（计数）、`auto_block_swap/probe.py:197`、`auto_block_swap/online.py:214`、`adaptive_runtime/training_runtime.py:72`、`adaptive_runtime/native_runtime.py:100`；其中把跳步当致命错误的路径需按 3 处核对。**主循环 `loop.py` 0 处消费的结论不变。**
+2. D1 的两处梯度检查（`loop.py:842` 门控 + `:861` 调用）位于 `accelerator.sync_gradients` 门控内，上文未提及该门控，但结论不变。
+
 ## 待热测清单
 
 | # | 要验什么（可判定断言） | CPU 给不出结论的原因 | 需要哪张卡 / 条件 |
@@ -188,9 +238,12 @@ CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
 | H7 | adaptive skip→`RuntimeError` 的可达性（D3） | 需要 CUDA + adaptive 契约（`accelerator.py:167-170` fail-closed） | 1× GPU + adaptive 配置 |
 | H8 | GPU scaler `state_dict` 设备往返 / 断点续训：保存-恢复-续跑 3 步对比 scale 轨迹 | CPU 只测得到 CPU state_dict | 1× GPU；保存/恢复后续跑 3 步 |
 
+2026-11-06 状态更新：H1（合成接缝位级对照）、H2（CUDA unscale 窗口采样）、H8（scaler 轨迹恢复）已由 `bench/fp16_precision/run_cuda_probe.py` 在两张 V100 上跑通，详见上文「CUDA 热测补记」；但都限于合成张量，**H3（跨 rank）、H4（循环级窗口记账）、H5（200+ 步长程漂移）、H6（退档重溢）、H7（D3 可达性）仍未执行**，且 H8 不含 checkpoint 文件往返与跨设备搬运。
+
 ## 已知边界
 
-- **未运行 GPU**：本文所有「通过」均为 CPU 可判定面上的结论；CUDA autocast、kernel 级 unscale 数值、跨 rank 归约、长程收敛均未验证，见 H1–H8。
+- **CPU 与 CUDA 两个面必须分开引用**：正文 P1–P9 与 24 用例均为 CPU 可判定面；2026-11-06 的 CUDA 结论（E2 复现、E5/D1 复现、H1/H2/H8 探针）只覆盖合成张量，**不含**真实 trainer / 模型族 / 数据链路、跨 rank 归约与长程收敛，见 H3–H7。
+- **实测 torch 版本为 2.10.0+cu129**：`pyproject` 要求 `torch>=2.12.0,<2.13`，CPU 面原记录 2.12.0+cu130。接缝依赖的 accelerate 内部面（1.13.0）一致，但严格对齐需在 2.12 环境复跑 `bench/fp16_precision/run_cuda_probe.py` 与静态套件。
 - **数字来源**：P1–P9 来自 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；对照表见 `bench/fp16_precision/README.md`），是 CPU 探针而非真机；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。P4 是依赖 `scale=65536` 的比值，P8 是权重增量，两者不混用。不要把 CPU 探针数字外推到其它卡或其它 scale。
 - **探针不参与测试套件**：`bench/fp16_precision/run_probe.py` 只再生 P1–P9 读数，不是门禁；契约回归仍在 `tests/test_fp16_nan_static_equivalence.py`（24 用例，22 passed + 2 xfailed）。
 - **E1 子谓词 (d) 未完全断言**：只覆盖「不创建 scaler」与 loss 的对象/存储身份；`requires_grad`/`grad` 集合与 `stride`/`dtype`/`device` 不变**未断言**，不得计入已验证面。
