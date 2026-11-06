@@ -632,15 +632,32 @@ class TestE5ScalerOwnershipGap:
     该缺陷用 test_e5_defect_d1_debug_grad_check_runs_before_unscale 钉住，本轮只记录不修复。
     """
 
-    def test_e5_no_scaler_ownership_judgment_exists(self):
-        """E5 缺口钉子：A 侧没有「scaler 所有」判定的实现。
+    def test_e5_scaler_ownership_judgment_exists(self, make_accelerator):
+        """E5 能力断言（2026-11-06 由缺口钉转正）：所有权判定已实现且成对成立。
 
-        这是**缺口证据**，不是能力断言：A 补上所有权判定后本用例应当失败，并提示把
-        test_e5_spec_scaler_owned_overflow_is_not_a_training_failure 从 xfail 转正。
+        有活 scaler + 溢出梯度 → True（归 scaler 所有，保护层放弃读数）；
+        无 scaler 同输入 → False（无人接管，保护层必须自己处置）。
         """
+        from library.training.scaler_ownership import (
+            scaled_gradient_overflow_is_scaler_owned,
+        )
+
         assert _symbol_occurrences(
             "scaled_gradient_overflow_is_scaler_owned", "is_scaler_owned", "scaler_owned"
-        ) == []
+        ), "所有权判定符号必须存在于 library/"
+
+        accelerator = make_accelerator(native_amp=True)
+        model = _seeded_model()
+        optimizer = accelerator.prepare(torch.optim.SGD(model.parameters(), lr=0.1))
+        _run_scaled_step(accelerator, model, optimizer, inject_inf=True)
+        overflow_grads = [parameter.grad for parameter in model.parameters()]
+        assert scaled_gradient_overflow_is_scaler_owned(accelerator, overflow_grads) is True
+
+        plain_accelerator = make_accelerator(native_amp=False, init_scale=None)
+        assert (
+            scaled_gradient_overflow_is_scaler_owned(plain_accelerator, overflow_grads)
+            is False
+        )
 
     def test_e5_overflow_ownership_pair_live_scaler_vs_no_scaler(self, make_accelerator):
         """E5 成对断言（正例 + 负控制，真 CPU scaler，无 mock）：同一组非有限梯度在两个世界里结局不同。
@@ -681,12 +698,8 @@ class TestE5ScalerOwnershipGap:
             torch.isfinite(parameter).all() for parameter in plain_model.parameters()
         ), "无 scaler 时非有限梯度会直接写进权重（负控制必须与正例结局不同）"
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="E5 规格未实现：A 侧无 scaler 所有权判定，非有限梯度会被 fail-fast 直接判失败",
-    )
     def test_e5_spec_scaler_owned_overflow_is_not_a_training_failure(self, make_accelerator):
-        """E5 规格（未实现）：有活 scaler 时非有限梯度不得被当作训练失败。
+        """E5 规格（2026-11-06 已实现，strict xfail 已转正）：有活 scaler 时非有限梯度不得被判失败。
 
         目标行为（B 报告 grad_scaler_runtime.py:97-143 的只读契约）：有 scaler 且该步溢出 →
         返回 True，保护层放弃读数、只记一条 scaler_overflow_ignored；无 scaler 同输入 →
@@ -710,15 +723,15 @@ class TestE5ScalerOwnershipGap:
             scaled_gradient_overflow_is_scaler_owned(plain_accelerator, overflow_grads) is False
         )
 
-    def test_e5_defect_d1_debug_grad_check_runs_before_unscale(self, make_accelerator):
-        """E5 负控制（缺陷 D1，实测）：当前实现违反 E5 —— debug 梯度检查早于 unscale / clip。
+    def test_e5_d1_scaler_owned_overflow_is_no_longer_fatal(self, make_accelerator):
+        """E5/D1（2026-11-06 已修复）：scaler 所有的溢出不得再被保护层判成训练失败。
 
-        顺序事实：library/training/loop.py:860-861 的 check_trainable_grads_finite 跑在
-        :898 的 accelerator.clip_grad_norm_ 之前，而 unscale 只发生在 clip 内部。
-        构造（t9 P3 同款）：有限 loss=1.0、真梯度=2.0、scale=65536 → fp16 梯度上溢成 inf →
-        检查抛 FloatingPointError，把例行溢出判成训练失败；而同一时刻真 scaler 的判定是
-        「跳步 + 权重不变 + scale 退档」。
-        负控制：同一个解析模型不挂 scaler 时梯度是有限的 2.0，检查必须放行。
+        构造（t9 P3 同款）：有限 loss=1.0、真梯度=2.0、scale=65536 → fp16 梯度上溢成 inf。
+        修复前 loop.py 的 debug 检查读到仍乘 scale 的梯度并抛 FloatingPointError；
+        修复后同一读数被判定为 scaler 所有：`check_trainable_grads_finite(model,
+        scaler_owned=True)` 只返回 offenders 不抛错，真 scaler 随后 skip 且权重逐位不变。
+        负控制 1：不挂 scaler 时同一组 inf 梯度仍必须 fail-closed（默认 `scaler_owned=False`）。
+        负控制 2：不挂 scaler 时梯度是有限的 2.0，检查必须放行。
         """
         plain_model = _unit_model().half()
         plain_loss = torch.nn.functional.mse_loss(
@@ -738,8 +751,23 @@ class TestE5ScalerOwnershipGap:
         assert float(loss.detach()) == 1.0 and torch.isfinite(loss).all()
         accelerator.backward(loss)
         assert all(torch.isinf(parameter.grad).all() for parameter in model.parameters())
+        # 负控制 1：无 scaler 语义（默认参数）仍 fail-closed
         with pytest.raises(FloatingPointError, match="non-finite trainable gradients"):
             check_trainable_grads_finite(model)
+
+        # 修复后行为：所有权判定为 scaler 所有 → 只报告 offenders，不抛错
+        from library.training.scaler_ownership import (
+            scaled_gradient_overflow_is_scaler_owned,
+        )
+
+        assert (
+            scaled_gradient_overflow_is_scaler_owned(
+                accelerator, [parameter.grad for parameter in model.parameters()]
+            )
+            is True
+        )
+        reported = check_trainable_grads_finite(model, scaler_owned=True)
+        assert reported, "scaler 所有的溢出必须回传 offenders 供记录"
 
         # 对照：真 scaler 对同一组梯度只会跳步（patch 复刻 full_fp16 生产路径 bootstrap.py:1094）
         patch_accelerator_for_fp16_training(accelerator)

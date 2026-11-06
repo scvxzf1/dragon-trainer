@@ -12,9 +12,28 @@
 - **E4（scaler 状态机）成立（L0 轨迹 + L2 顺序）**：真 scaler 轨迹 8→8→16→16→32、溢出 32→16，state_dict 往返用不同 init/growth_interval 复现同一序列（P1）。
 - **E2（跳步语义）部分成立**：executed ≠ applied 在 accelerate 层成立（P2：调用点执行、内层 `optimizer.step` 未被调用、权重逐位不变、scale 1024→512）；但 A 无 `optimizer_step_executed` / `optimizer_update_applied` 双字段，主循环 0 处消费 `optimizer_step_was_skipped`。子判据「grad_norm 账本不被 inf 污染」在 A **不适用**（`loop.py:1194` `mean_grad_norm — not tracked here`），不得记成通过。
 - **E3（窗口记账）未实现**：交付形态是可执行规格 + 缺口钉，`strict xfail`，**规格未实现**；不改生产代码无法给出真实的窗口记账断言。
-- **E5（所有权判定）未实现，且当前实现违反 E5（缺陷 D1）**：`--debug_finite_checks` 打开时 `loop.py:861` 的梯度有限性检查早于 `:898` 的 unscale/clip，读到仍乘 scale 的梯度；CPU 实测（P3）有限 loss + scale=65536 + 真梯度 2.0 → 梯度 inf → `check_trainable_grads_finite` 抛 `FloatingPointError`，同一时刻真 scaler 会 skip 且权重不变。**本分支未修复**（生产代码改动不在本轮范围）。
+- **E5（所有权判定）原为「未实现且违反（缺陷 D1）」；2026-11-06 已修复，见下方「修复状态」**：`--debug_finite_checks` 打开时 `loop.py:861` 的梯度有限性检查早于 `:898` 的 unscale/clip，读到仍乘 scale 的梯度；CPU 实测（P3）有限 loss + scale=65536 + 真梯度 2.0 → 梯度 inf → `check_trainable_grads_finite` 抛 `FloatingPointError`，同一时刻真 scaler 会 skip 且权重不变。（修复前状态；2026-11-06 已修复。）
 - 三条缺口必须分开写：**D1** 诊断工具误报（见下）、**D2** 默认路径根本没有有限性检查、**D3** adaptive 路径把跳步当致命错误。
 - 数字来源限定：本文所有 CPU 数字引自 P1–P9；P4 是依赖 `scale=65536` 的**比值**，P8 是**权重增量**，两者分开引，不混用。
+
+### 修复状态（2026-11-06）
+
+上文 E1–E5 的**判据定义与 CPU 证据不变**；以下只更新「A 侧是否已实现」的现状。生产改动集中在 `library/training/scaler_ownership.py`（新增）、`library/training/finite_checks.py`、`library/training/loop.py`、`library/training/batch_step.py`。
+
+| 项 | 修复前 | 现状 |
+|---|---|---|
+| **D1** debug 检查误报 | 读到仍乘 scale 的梯度 → 例行溢出抛 `FloatingPointError` | **已修复**：判定改为按所有权，`GradScaler` 存在时该读数归 scaler，只告警不中止；`check_trainable_grads_finite(..., scaler_owned=True)` 回传 offenders |
+| **D2** 默认路径无保护 | 非有限梯度直接进 `optimizer.step` | **已修复**：无 scaler 时在优化器边界丢弃该步更新（zero_grad + 不 step），`LoopState.nonfinite_grad_skips` 计数并告警；多进程时先 `reduce(max)` 对齐，避免分支发散挂死 |
+| **E5** 所有权判定 | 全仓 0 处实现 | **已实现**：`scaled_gradient_overflow_is_scaler_owned(accelerator, grads)` 真值表成立，规格用例已从 `strict xfail` 转正 |
+| **D3** adaptive 把跳步当致命 | `training_runtime.py:72` 抛 `RuntimeError` | **未改（待决策）**：该行为由 `tests/test_adaptive_training_loop.py::test_real_loop_scaler_skip_stops_before_scheduler_progress_or_snapshot` 显式锁定为契约，改成非致命会推翻「跳步即停止并在 scheduler/快照之前退出」的既有语义，需产品决策 |
+| **latent NaN 覆盖** | 只在 VAE 现场编码分支 | **已修复**：`_prepare_latents()` 对缓存与编码两个来源都做 NaN 处置，并区分日志来源 |
+| **E3** 窗口记账 | 只有可执行规格 | **仍未实现**：保持 `strict xfail`，本条未动 |
+
+修复后的验证（同一分支，2026-11-06）：
+
+- CPU：`tests/test_fp16_nan_static_equivalence.py` 33 passed + 1 xfailed（仅剩 E3 规格）、`tests/test_scaler_ownership_guard.py` 10 passed、`tests/test_latent_nan_guard.py` 4 passed，以及 `test_distributed_gradient_sync.py` / `test_completed_training_step_graph.py` / `test_adaptive_training_loop.py` / `test_training_loop_runtime.py` 全绿。
+- CUDA（Tesla V100-SXM2-16GB ×2，各自独占）：有 scaler 时溢出步 `guard_raised=null`、`scaler_owned=true`、`step_was_skipped=true`、权重逐位不变、scale 65536→32768；无 scaler 时 `must_skip=true`、`skip_counter=1`、权重保持有限且逐位不变；有限梯度负控制 `must_skip=false` 且权重确实移动。两卡结果一致。
+- 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 
 ## 判据 E1–E5 与等效强度分级
 

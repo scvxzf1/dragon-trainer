@@ -11,6 +11,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import library.training.bootstrap as bootstrap_mod
+from library.training.scaler_ownership import GradFiniteness
 import library.training.loop as training_loop
 from library.training.bootstrap import TrainingBootstrap
 from library.training.gradient_sync import (
@@ -418,8 +419,10 @@ def test_training_step_syncs_after_adapter_hook_and_before_stats_clip_step(
     )
     monkeypatch.setattr(
         training_loop,
-        "check_trainable_grads_finite",
-        lambda *_args, **_kwargs: events.append("grads_finite"),
+        "inspect_grad_ownership",
+        lambda *_args, **_kwargs: (
+            events.append("grads_finite") or GradFiniteness()
+        ),
     )
 
     training_loop._run_step(trainer, state, batch=object())

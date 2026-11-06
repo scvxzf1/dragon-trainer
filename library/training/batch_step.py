@@ -60,33 +60,21 @@ def _get_noise_pred_and_target(trainer, ctx, latents, batch, text_encoder_conds,
     )
 
 
-def process_batch_inner(
-    trainer,
-    ctx: TrainCtx,
-    batch,
-    *,
-    is_train=True,
-) -> torch.Tensor:
+def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch.FloatTensor:
+    """Load cached latents or encode images, then scrub non-finite values.
+
+    The NaN scrub used to sit inside the VAE-encode branch only, so a corrupt
+    cached sidecar went straight into the forward pass. It now applies to both
+    sources, which is also what makes the cached path testable on its own.
     """
-    Process a batch for the network (original NetworkTrainer.process_batch logic)
-    """
-    args = ctx.args
-    accelerator = ctx.accelerator
-    network = ctx.network
-    vae = ctx.vae
-    text_encoders = ctx.text_encoders
-    text_encoding_strategy = ctx.text_encoding_strategy
-    tokenize_strategy = ctx.tokenize_strategy
-    noise_scheduler = ctx.noise_scheduler
-    vae_dtype = ctx.vae_dtype
-    weight_dtype = ctx.weight_dtype
-    train_text_encoder = ctx.train_text_encoder
     with torch.no_grad():
         if "latents" in batch and batch["latents"] is not None:
             latents = typing.cast(
                 torch.FloatTensor, batch["latents"].to(accelerator.device)
             )
+            source = "cached latents"
         else:
+            source = "VAE latents"
             if (
                 args.vae_batch_size is None
                 or len(batch["images"]) <= args.vae_batch_size
@@ -110,13 +98,37 @@ def process_batch_inner(
                         list_latents.append(chunk)
                 latents = torch.cat(list_latents, dim=0)
 
-            if torch.any(torch.isnan(latents)):
-                accelerator.print("NaN found in latents, replacing with zeros")
-                latents = typing.cast(
-                    torch.FloatTensor, torch.nan_to_num(latents, 0, out=latents)
-                )
+        if torch.any(torch.isnan(latents)):
+            accelerator.print(f"NaN found in {source}, replacing with zeros")
+            latents = typing.cast(
+                torch.FloatTensor, torch.nan_to_num(latents, 0, out=latents)
+            )
 
-        latents = trainer.shift_scale_latents(args, latents)
+        return typing.cast(torch.FloatTensor, trainer.shift_scale_latents(args, latents))
+
+
+def process_batch_inner(
+    trainer,
+    ctx: TrainCtx,
+    batch,
+    *,
+    is_train=True,
+) -> torch.Tensor:
+    """
+    Process a batch for the network (original NetworkTrainer.process_batch logic)
+    """
+    args = ctx.args
+    accelerator = ctx.accelerator
+    network = ctx.network
+    vae = ctx.vae
+    text_encoders = ctx.text_encoders
+    text_encoding_strategy = ctx.text_encoding_strategy
+    tokenize_strategy = ctx.tokenize_strategy
+    noise_scheduler = ctx.noise_scheduler
+    vae_dtype = ctx.vae_dtype
+    weight_dtype = ctx.weight_dtype
+    train_text_encoder = ctx.train_text_encoder
+    latents = _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype)
 
     text_encoder_conds = []
     text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)

@@ -29,6 +29,10 @@
   found_inf 传播、长程数值漂移仍需 GPU 热测，见报告「待热测清单」H1–H8。
 - P4 的比值**依赖 scale**（默认 65536）；换 init_scale 必须重算，不能直接引用。
 - 本目录不参与测试套件；契约回归在 tests/test_fp16_nan_static_equivalence.py。
+- 2026-11-06 起 P3/P6 只描述**历史**生产形态：D1/D2 修复后 `loop.py` 不再调用
+  `check_trainable_grads_finite`，P6 的 `check_trainable_grads_finite_line` 为 -1、
+  `order_loss_grads_clip_step_sched` 为 false；P3 仍复现「函数默认参数下对 scaled 梯度
+  fail-closed」，但已不代表主循环路径。所有权语义见 findings「修复状态」。
 - 实测环境是 torch 2.10.0+cu129 / accelerate 1.13.0（`pyproject` 要求 torch>=2.12.0,<2.13），
   对接缝结论不影响，但严格对齐版本需重跑。
 

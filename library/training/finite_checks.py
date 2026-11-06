@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from library.training.scaler_ownership import inspect_trainable_grads
 from library.training.v100_flash import env_flag
 
 
@@ -32,17 +33,16 @@ def check_loss_finite(
     )
 
 
-def check_trainable_grads_finite(network) -> None:
-    bad: list[str] = []
-    for name, parameter in network.named_parameters():
-        grad = parameter.grad
-        if grad is None:
-            continue
-        if not torch.isfinite(grad.detach()).all():
-            bad.append(f"{name}: dtype={grad.dtype} shape={tuple(grad.shape)}")
-            if len(bad) >= 8:
-                break
-    if bad:
+def check_trainable_grads_finite(network, *, scaler_owned: bool = False) -> tuple[str, ...]:
+    """Scan trainable gradients and raise unless a GradScaler owns the overflow.
+
+    ``scaler_owned=True`` means a ``GradScaler`` is present, so a non-finite
+    gradient is an ordinary fp16 overflow that the scaler will skip; the caller
+    gets the offenders back for logging/counting instead of a fatal error (D1).
+    """
+    bad = list(inspect_trainable_grads(network))
+    if bad and not scaler_owned:
         raise FloatingPointError(
             "non-finite trainable gradients after backward: " + "; ".join(bad)
         )
+    return tuple(bad)

@@ -31,8 +31,13 @@ from tqdm import tqdm
 
 from library.training.finite_checks import (
     check_loss_finite,
-    check_trainable_grads_finite,
     debug_finite_enabled,
+)
+from library.training.scaler_ownership import (
+    GradFiniteness,
+    inspect_grad_ownership,
+    log_scaler_owned_overflow,
+    log_skipped_step,
 )
 from library.training.gradient_sync import synchronize_optimizer_gradients
 from library.training.method_adapter import MethodAdapter
@@ -249,6 +254,9 @@ class LoopState:
 
     global_step: int = 0
     profile_started: bool = False
+    #: Steps whose optimizer update was dropped because no GradScaler existed to
+    #: absorb a non-finite gradient (see ``library/training/grad_guard.py``).
+    nonfinite_grad_skips: int = 0
     recent_step_rate_last: Optional[tuple[float, int]] = None
     recent_step_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=9))
 
@@ -743,6 +751,42 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             return
 
 
+def _guard_nonfinite_grads(
+    accelerator, state: LoopState, network, args
+) -> Optional[GradFiniteness]:
+    """Decide what a non-finite gradient means for this step (findings D1/D2).
+
+    * a ``GradScaler`` owns fp16 overflow: never abort the run, only report it
+      when the debug checks are on (D1 — the old unconditional raise was a false
+      positive);
+    * without a scaler nothing else protects the step, so the update is skipped
+      instead of pushing NaN weights through ``optimizer.step`` (D2).
+
+    Scanning only happens at optimizer boundaries, or on every microstep when the
+    debug checks are enabled (their previous cadence).
+    """
+    debug = debug_finite_enabled(args)
+    # Only the optimizer boundary is judgeable: mid-window gradients are still
+    # accumulating and a transient overflow there must not abort or skip a step.
+    if not accelerator.sync_gradients and not debug:
+        return None
+    finiteness = inspect_grad_ownership(
+        accelerator, accelerator.unwrap_model(network)
+    )
+    if not finiteness.bad:
+        return finiteness
+    if finiteness.scaler_owned:
+        if debug:
+            log_scaler_owned_overflow(finiteness)
+        return finiteness
+    if not accelerator.sync_gradients:
+        return None
+    log_skipped_step(finiteness)
+    state.nonfinite_grad_skips += 1
+    state.optimizer.zero_grad(set_to_none=True)
+    return finiteness
+
+
 def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
     """The accumulate-scope body: on_step_start hooks, cudagraph mark, forward,
     backward gating, manual adapter sync, grad capture/clip, optimizer step +
@@ -857,8 +901,10 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
                 )
                 raise
 
-        if debug_finite_enabled(args):
-            check_trainable_grads_finite(accelerator.unwrap_model(network))
+        grad_finiteness = _guard_nonfinite_grads(accelerator, state, network, args)
+        if grad_finiteness is not None and grad_finiteness.must_skip_step:
+            _maybe_auto_block_swap(state)
+            return loss
 
         if accelerator.sync_gradients:
             net_unwrapped = accelerator.unwrap_model(network)
