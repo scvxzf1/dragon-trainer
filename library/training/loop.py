@@ -36,6 +36,7 @@ from library.training.finite_checks import (
 from library.training.scaler_ownership import (
     GradFiniteness,
     inspect_grad_ownership,
+    scaler_present,
     log_scaler_owned_overflow,
     log_skipped_step,
 )
@@ -255,7 +256,7 @@ class LoopState:
     global_step: int = 0
     profile_started: bool = False
     #: Steps whose optimizer update was dropped because no GradScaler existed to
-    #: absorb a non-finite gradient (see ``library/training/grad_guard.py``).
+    #: absorb a non-finite gradient (see ``library/training/scaler_ownership.py``).
     nonfinite_grad_skips: int = 0
     recent_step_rate_last: Optional[tuple[float, int]] = None
     recent_step_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=9))
@@ -770,6 +771,10 @@ def _guard_nonfinite_grads(
     # accumulating and a transient overflow there must not abort or skip a step.
     if not accelerator.sync_gradients and not debug:
         return None
+    # With a scaler the decision is always "let the scaler own it", so scanning
+    # would be pure overhead unless the debug checks asked for the detail.
+    if not debug and scaler_present(accelerator):
+        return None
     finiteness = inspect_grad_ownership(
         accelerator, accelerator.unwrap_model(network)
     )
@@ -783,7 +788,6 @@ def _guard_nonfinite_grads(
         return None
     log_skipped_step(finiteness)
     state.nonfinite_grad_skips += 1
-    state.optimizer.zero_grad(set_to_none=True)
     return finiteness
 
 
@@ -902,11 +906,13 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
                 raise
 
         grad_finiteness = _guard_nonfinite_grads(accelerator, state, network, args)
-        if grad_finiteness is not None and grad_finiteness.must_skip_step:
-            _maybe_auto_block_swap(state)
-            return loss
+        # No GradScaler means nothing else protects the update: drop it, but keep
+        # the rest of the step accounting identical to a scaler-skipped step
+        # (scheduler advances, counters increment, probes still run).
+        skip_update = grad_finiteness is not None and grad_finiteness.must_skip_step
+        gradient_flow_probe = None
 
-        if accelerator.sync_gradients:
+        if accelerator.sync_gradients and not skip_update:
             net_unwrapped = accelerator.unwrap_model(network)
             gradient_flow_probe = _gradient_flow_probe_for_step(trainer, state)
             if gradient_flow_probe is not None:
@@ -949,8 +955,11 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         adaptive_notify(trainer, "optimizer")
         try:
             precision_observe("optimizer", state)
-            state.optimizer.step()
-            precision_observe("optimizer", state, after=True)
+            if skip_update:
+                precision_observe("optimizer", state, after=True, skipped=True)
+            else:
+                state.optimizer.step()
+                precision_observe("optimizer", state, after=True)
             adaptive_notify(trainer, "after_optimizer", state)
             if accelerator.sync_gradients and gradient_flow_probe is not None:
                 try:

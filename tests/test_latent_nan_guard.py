@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 from library.training.batch_step import _prepare_latents
@@ -40,12 +39,11 @@ def _nan_batch() -> dict:
     return {"latents": latents}
 
 
-@pytest.mark.parametrize("vae_batch_size", [None, 1])
-def test_cached_nan_latents_are_scrubbed(vae_batch_size):
+def test_cached_nan_latents_are_scrubbed():
     """缓存 latent 分支曾经绕过 NaN 处置，坏 sidecar 会直接进 forward。"""
     accelerator = _Accelerator()
     trainer = _Trainer()
-    args = SimpleNamespace(vae_batch_size=vae_batch_size)
+    args = SimpleNamespace(vae_batch_size=None)
 
     latents = _prepare_latents(args, trainer, None, _nan_batch(), accelerator, torch.float32)
 

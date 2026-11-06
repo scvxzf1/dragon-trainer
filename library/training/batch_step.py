@@ -100,9 +100,9 @@ def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch
 
         if torch.any(torch.isnan(latents)):
             accelerator.print(f"NaN found in {source}, replacing with zeros")
-            latents = typing.cast(
-                torch.FloatTensor, torch.nan_to_num(latents, 0, out=latents)
-            )
+            # Out of place: a cached ``batch["latents"]`` tensor already on device
+            # would otherwise be rewritten through the dataloader's own storage.
+            latents = typing.cast(torch.FloatTensor, torch.nan_to_num(latents, 0))
 
         return typing.cast(torch.FloatTensor, trainer.shift_scale_latents(args, latents))
 

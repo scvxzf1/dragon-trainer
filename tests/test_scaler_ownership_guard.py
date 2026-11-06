@@ -16,6 +16,7 @@ from library.training.loop import _guard_nonfinite_grads
 from library.training.scaler_ownership import (
     GradFiniteness,
     inspect_grad_ownership,
+    inspect_trainable_grads,
     scaled_gradient_overflow_is_scaler_owned,
 )
 
@@ -73,8 +74,10 @@ def test_no_scaler_nonfinite_grads_skip_the_update():
     )
 
     assert guard is not None and guard.must_skip_step is True
-    assert state.optimizer.zero_grad_calls == 1
     assert state.nonfinite_grad_skips == 1
+    # zero_grad 由 _run_step 在账目块里统一执行（与 scaler 跳步同位置），
+    # guard 只做判定，避免两处都清梯度。
+    assert state.optimizer.zero_grad_calls == 0
 
 
 def test_scaler_owned_overflow_is_not_fatal_even_with_debug_checks():
@@ -88,6 +91,30 @@ def test_scaler_owned_overflow_is_not_fatal_even_with_debug_checks():
     assert guard.must_skip_step is False
     assert state.optimizer.zero_grad_calls == 0
     assert state.nonfinite_grad_skips == 0
+
+
+def test_scaler_without_debug_cheap_short_circuit():
+    """有 scaler 且未开 debug 时不做扫描：结论恒为「归 scaler」，扫描是纯开销。"""
+    state = _state()
+    guard = _guard_nonfinite_grads(
+        _accelerator(scaler=object()), state, _network(nonfinite=True), _args()
+    )
+
+    assert guard is None
+    assert state.nonfinite_grad_skips == 0
+
+
+def test_bulk_scan_reports_only_non_finite_grads():
+    """批量 isfinite 路径必须既找到坏梯度，也不把有限梯度误判。"""
+    network = torch.nn.Sequential(torch.nn.Linear(3, 2), torch.nn.Linear(2, 1))
+    for index, parameter in enumerate(network.parameters()):
+        parameter.grad = torch.zeros_like(parameter)
+        if index == 2:
+            parameter.grad[0, 0] = float("nan")
+    offenders = inspect_trainable_grads(network)
+
+    assert len(offenders) == 1
+    assert offenders[0].startswith("1.weight:")
 
 
 def test_finite_grads_are_left_alone():
@@ -167,3 +194,117 @@ def test_grad_finiteness_summary_reports_offenders():
     finiteness = GradFiniteness(offenders=("w: dtype=torch.float16 shape=(1, 1)",))
     assert "non-finite" not in finiteness.summary()
     assert finiteness.must_skip_step is True
+
+
+def test_loop_skips_update_without_scaler_and_keeps_step_accounting(monkeypatch):
+    """loop 级集成：无 scaler 的 NaN 步既不更新权重，也不跳过 scheduler/计数。
+
+    复用 test_distributed_gradient_sync.py 的轻量 harness 风格，断言跳过路径与
+    Scalcer 跳步的账目一致（scheduler 推进、precision 记 skipped、loss 已 detach）。
+    """
+    from library.training import loop as training_loop
+
+    events: list[str] = []
+
+    class Network(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1, 1))
+            self.weight.grad = torch.full_like(self.weight, float("inf"))
+
+        def get_trainable_params(self):
+            return [self.weight]
+
+    parameter = Network().weight
+
+    class Accelerator:
+        sync_gradients = True
+        mixed_precision = "no"
+        scaler = None
+        num_processes = 1
+        device = torch.device("cpu")
+
+        @staticmethod
+        def accumulate(model):
+            del model
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        @staticmethod
+        def unwrap_model(model):
+            return model
+
+        @staticmethod
+        def backward(loss):
+            del loss
+            events.append("backward")
+
+        @staticmethod
+        def clip_grad_norm_(params, max_norm):
+            events.append("clip")
+
+    class Optimizer:
+        param_groups = [{"params": [parameter]}]
+
+        @staticmethod
+        def step():
+            events.append("optimizer")
+
+        @staticmethod
+        def zero_grad(set_to_none):
+            events.append("zero")
+
+    class Scheduler:
+        @staticmethod
+        def step():
+            events.append("scheduler")
+
+    trainer = SimpleNamespace(
+        memory_probe=None,
+        peak_probe=None,
+        _cudagraph_mark_step=False,
+        _state=SimpleNamespace(personalization_observer={}),
+        on_step_start=lambda *_args, **_kwargs: events.append("step_start"),
+        process_batch=lambda *_args, **_kwargs: (
+            events.append("forward") or torch.tensor(1.0, requires_grad=True)
+        ),
+        run_after_backward=lambda *_args, **_kwargs: events.append("after_hook"),
+    )
+    network = Network()
+    state = SimpleNamespace(
+        args=SimpleNamespace(max_grad_norm=1.0, log_every_n_steps=1, max_train_steps=1),
+        accelerator=Accelerator(),
+        network=network,
+        training_model=network,
+        optimizer=Optimizer(),
+        lr_scheduler=Scheduler(),
+        text_encoder=None,
+        unet=None,
+        train_ctx=object(),
+        on_step_start_for_network=lambda *_args: None,
+        profile_started=False,
+        global_step=0,
+        is_tracking=True,
+        nonfinite_grad_skips=0,
+    )
+
+    observed: list[tuple] = []
+    monkeypatch.setattr(
+        training_loop,
+        "precision_observe",
+        lambda method, _state, **kwargs: observed.append((method, kwargs.get("after"), kwargs.get("skipped"))),
+    )
+    monkeypatch.setattr(training_loop, "debug_finite_enabled", lambda _args: False)
+    monkeypatch.setattr(
+        training_loop, "synchronize_optimizer_gradients", lambda *_args: events.append("sync")
+    )
+
+    returned = training_loop._run_step(trainer, state, batch=object())
+
+    assert "optimizer" not in events, "无 scaler 且梯度非有限时不得执行 optimizer.step"
+    assert "scheduler" in events, "跳过语义必须与 scaler 跳步一致：scheduler 仍推进"
+    assert "zero" in events, "跳过后必须清理梯度"
+    assert state.nonfinite_grad_skips == 1
+    assert ("optimizer", True, True) in observed, "跳步必须计入 precision 的 skipped"
+    assert returned is not None and returned.requires_grad is False, "返回值必须已 detach"

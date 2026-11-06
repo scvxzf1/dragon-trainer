@@ -197,14 +197,17 @@ class PrecisionReport:
         if event in {"model_load", "models_prepared", "resume_ready", "loop_ready", "final_save", "finish", "accelerator_ready"}:
             self.write()
 
-    def optimizer(self, state, *, after=False):
+    def optimizer(self, state, *, after=False, skipped=None):
         self.state = state
         if not state.accelerator.sync_gradients:
             return
         updates = self.data["updates"]
         if after:
-            key = "skipped" if state.accelerator.optimizer_step_was_skipped else "effective"
-            updates[key] += 1
+            # ``skipped`` lets the no-scaler gradient guard report a dropped update
+            # the same way a GradScaler skip is reported.
+            if skipped is None:
+                skipped = bool(state.accelerator.optimizer_step_was_skipped)
+            updates["skipped" if skipped else "effective"] += 1
         else:
             updates["attempted"] += 1
 

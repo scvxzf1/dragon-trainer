@@ -622,6 +622,10 @@ class TestE2SkipSemanticSplit:
 class TestE5ScalerOwnershipGap:
     """E5（语义）：有活 scaler 时「梯度非有限」归 scaler 所有，保护层必须放弃该读数。
 
+    2026-11-06：所有权判定已实现（library/training/scaler_ownership.py），本类中原「缺口钉」
+    与 strict xfail 规格均已转正；缺陷 D1 的用例改名为
+    test_e5_d1_scaler_owned_overflow_is_no_longer_fatal。
+
     A 侧当前**没有**任何所有权判定：全仓搜不到 scaled_gradient_overflow_is_scaler_owned 或等价
     命名（B 报告 §2.2 的 grad_scaler_runtime.py:97-143）。A 的 NaN 侧只有 fail-fast
     （library/training/finite_checks.py:16-33 与 :35-49），且唯一调用点被 debug 开关门控

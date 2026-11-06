@@ -33,6 +33,20 @@
 
 - CPU：`tests/test_fp16_nan_static_equivalence.py` 33 passed + 1 xfailed（仅剩 E3 规格）、`tests/test_scaler_ownership_guard.py` 10 passed、`tests/test_latent_nan_guard.py` 4 passed，以及 `test_distributed_gradient_sync.py` / `test_completed_training_step_graph.py` / `test_adaptive_training_loop.py` / `test_training_loop_runtime.py` 全绿。
 - CUDA（Tesla V100-SXM2-16GB ×2，各自独占）：有 scaler 时溢出步 `guard_raised=null`、`scaler_owned=true`、`step_was_skipped=true`、权重逐位不变、scale 65536→32768；无 scaler 时 `must_skip=true`、`skip_counter=1`、权重保持有限且逐位不变；有限梯度负控制 `must_skip=false` 且权重确实移动。两卡结果一致。
+
+审查修订（2026-11-06，独立验收提出）：
+
+- **扫描成本**：逐参数 `isfinite().all()` 在每个张量上一次 device sync，400 张量实测 43.4 ms/step、
+  1200 张量 131.1 ms/step。改为 `torch._foreach_norm` 批量归约（整组两次 sync）后，同一台 V100 上
+  400 张量降到 2.34 ms（18.5×）、1200 张量降到 6.39 ms（20.5×）。另外，**有 scaler 且 debug 关闭时
+  直接短路不扫描**（该结果不影响控制流），常见 fp16 路径成本归零。
+- **跳过路径账目对齐**：不再用 early return，跳过时仍推进 scheduler、清理梯度、跑探针与 block-swap，
+  与 scaler 跳步一致；`precision_report` 新增显式 `skipped` 标记，跳步会计入 `updates.skipped`。
+- **返回契约**：跳过路径返回 `loss.detach()`，与本函数既有不变量一致。
+- **缓存 latent 处置**改为 out-of-place，避免 `.to(device)` 命中同一存储时就地改写 dataloader 张量。
+- **新增 loop 级集成用例**（无 scaler 的 NaN 步：不 step、scheduler 仍推进、precision 记 skipped、返回值已
+  detach），补上此前只有 fake 单测的空白。
+- 仍未处理：D3（待决策）、E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 
 ## 判据 E1–E5 与等效强度分级
