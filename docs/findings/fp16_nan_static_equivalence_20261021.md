@@ -94,7 +94,6 @@
 - **已知残留（low，未改）**：`training_state.save_training_state` 保存失败后残留
   `.state-XXXXXXXX.partial`，同一步重试会抛 `FileExistsError` 掩盖真实原因（先于本批
   变更存在，落盘失败本就终止 trial）。
-- 仍未处理：E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 
 ## 判据 E1–E5 与等效强度分级
@@ -386,3 +385,14 @@ A 侧仍无命名双语义：`optimizer_step_executed` / `optimizer_update_appli
 - **D1/D2/D3/E3 现状**：D1/D2/D3 已修复，E3 已实现（重放 1 次 + 退化丢弃）；遗留限制见「E3 窗口重放（2026-11-06 实现）」的「已知限制」。
 - **测试文件规模**：静态等效文件已接近 AGENTS.md 的 1200 行建议上限，因此 E3 的重放行为另立 `tests/test_window_replay.py`（共用夹具 `tests/window_replay_harness.py`），不再往大文件堆用例。
 - **未覆盖**：`process_batch_inner` 的 latent `nan_to_num`（需要完整 trainer 上下文）、真实累积窗口的 EMA/ckpt 记账、adaptive 路径的 skip 用例。
+
+### E3 窗口记账：已实现（2026-11-06）
+
+非有限（微批 loss NaN/inf，或梯度非有限导致 scaler 跳步 / D2 guard 丢弃）→ **整个累积窗口作废**，用同一窗口数据重放 1 次；仍失败则丢弃该窗口并计入 `window_discards`，训练继续。
+
+- 语义原则（用户裁定）：**未完成真实权重更新的窗口绝不推进任何进度副作用**——scheduler、adaptive `after_optimizer`、precision 计数、`global_step`、ckpt、账本一律不动。
+- 两层预算：普通训练 `--max_nonfinite_window_discards` 默认 **3**（连续丢窗容忍，第 4 次熔断）；adaptive 试验仍用 `--adaptive_max_nonfinite_skips` 默认 **0**（严格，trial 失败交 supervisor 重试）。
+- 账本：`window_total_loss` / `window_num_steps` / `window_last_loss` 为窗口级，只描述**最后一个已提交窗口**；`ema_observation` 是本仓无 EMA 的占位槽。
+- 计数器：`window_attempts` / `window_replays` / `window_discards` / `window_consecutive_discards` 只在 `LoopState` 与丢窗 warning 中可见，**尚未发布进 `precision_report.json`**；`updates.skipped` 在循环路径不再产生（跳步永不提交），`attempted` 只统计已提交边界。`window_discards` 与 runtime 的 `skipped_steps` 是两层口径（丢窗不经过优化器边界，永不计入 `skipped_steps`）。
+- 阻塞修复记录：重放起初被 `accelerate.accumulate` 的 `_do_sync()` 覆盖（`sync_with_dataloader and end_of_dataloader` 时每个微批强制同步），导致 epoch 末窗口重放会更新 2 次、失败重放也会改权重。现由 `_run_microbatch(manage_accumulate=False)` + `_forced_accumulate` 独占边界解决，并保存/恢复 `accelerator.step`；回退分支（缺 `_set_sync_gradients` 的测试替身）会显式 warning。
+- 已知边界：`adaptive_trial` 用 supervisor 的 `adaptive_oom_retry` / `_adaptive_training_worker` 标记判定；直接 `train.py --adaptive_precision`（无 supervisor）会被当作普通训练，使用预算 3。`block_swap_auto` 自带严格契约（非有限 loss 先抛），该开关下重放可能来不及生效。真机 trainer / 数据链路与分布式 reduce 时序的重放验证另表记录。

@@ -716,7 +716,18 @@ def _forced_accumulate(accelerator, model, *, boundary: bool):
     """
     gradient_state = getattr(accelerator, "gradient_state", None)
     set_sync = getattr(gradient_state, "_set_sync_gradients", None)
-    if set_sync is None:  # test doubles keep their own accumulate semantics
+    if set_sync is None:
+        # Only test doubles get here. This fallback hands the boundary back to
+        # accelerate, which is exactly blocker B1: on ``end_of_dataloader``
+        # micro-batches ``_do_sync`` forces a sync each time and a replayed window
+        # becomes one optimizer step per micro-batch. Warn loudly so a real
+        # accelerator that lost the internal API is never silently mis-replayed.
+        logger.warning(
+            "Replay boundary delegated to accelerator.accumulate(): "
+            "accelerator.gradient_state._set_sync_gradients is unavailable. "
+            "On epoch-end windows this can apply one update per replayed "
+            "micro-batch (see findings E3 / blocker B1)."
+        )
         with accelerator.accumulate(model):
             yield
         return
@@ -735,6 +746,11 @@ def _forced_accumulate(accelerator, model, *, boundary: bool):
         set_sync(previous_sync)
         if previous_step is not None:
             accelerator.step = previous_step
+            # The replay must not consume accumulation slots: if this drifts, the
+            # next window syncs one micro-batch early or late.
+            assert accelerator.step == previous_step, (
+                "replay altered accelerate's accumulation counter"
+            )
 
 
 def _replay_window(trainer, state: LoopState, batches) -> tuple[list[float], torch.Tensor]:
@@ -876,8 +892,13 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                             NonfiniteSkip,
                         )
 
+                        who = (
+                            "Adaptive worker stopped"
+                            if window_accounting.adaptive_trial(args)
+                            else "Training stopped"
+                        )
                         raise NonfiniteSkip(
-                            "Adaptive worker stopped: accumulation window discarded "
+                            f"{who}: accumulation window discarded "
                             f"({dropped['consecutive_discards']} consecutive > budget "
                             f"{budget}; reason={reason}, "
                             f"effective_steps={state.global_step})"
