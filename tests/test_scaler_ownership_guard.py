@@ -308,3 +308,24 @@ def test_loop_skips_update_without_scaler_and_keeps_step_accounting(monkeypatch)
     assert state.nonfinite_grad_skips == 1
     assert ("optimizer", True, True) in observed, "跳步必须计入 precision 的 skipped"
     assert returned is not None and returned.requires_grad is False, "返回值必须已 detach"
+
+
+def test_large_finite_fp16_grads_are_not_reported():
+    """R1 负控制：大量但有限的 fp16 梯度不得被误判非有限。
+
+    范数若在 fp16 内累加，4×40000 个 1.0 会得到 inf，把健康运行判成需要跳步。
+    """
+    network = torch.nn.Linear(40000, 4, bias=False).half()
+    # 160k 个 200.0 的 L2 范数是 80000，超过 fp16 上限 65504：范数若以 fp16 结果返回
+    # 就会变成 inf，而梯度本身全是有限值。
+    network.weight.grad = torch.full_like(network.weight, 200.0)
+    assert torch.isfinite(network.weight.grad).all(), "构造前提：元素全部有限"
+
+    assert inspect_trainable_grads(network) == ()
+    finiteness = inspect_grad_ownership(_accelerator(scaler=None), network)
+    assert finiteness.bad is False and finiteness.must_skip_step is False
+    assert check_trainable_grads_finite(network) == ()
+
+    # 同一构造函数里注入真正的溢出仍需被抓到
+    network.weight.grad[0, 0] = float("inf")
+    assert inspect_trainable_grads(network)

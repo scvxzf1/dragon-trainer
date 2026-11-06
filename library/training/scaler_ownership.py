@@ -91,13 +91,21 @@ def _scan_norms_bulk(named_grads, limit: int) -> tuple[str, ...] | None:
     dominated the step for LoRA-sized parameter counts (measured 42 ms/step at
     400 tensors). ``_foreach_norm`` reduces the set to one small tensor, so the
     scan costs two syncs regardless of how many parameters exist. Overflow (inf)
-    and NaN both survive into the norm, so a finite stack proves every gradient is
-    finite.
+    and NaN both survive into a norm accumulated in fp32, so a finite stack proves
+    every gradient is finite — accumulating in the gradient dtype would not, since
+    large finite fp16 sets overflow the norm itself.
     """
     if not named_grads or not hasattr(torch, "_foreach_norm"):
         return None
     try:
-        norms = torch.stack(torch._foreach_norm([grad.detach() for _, grad in named_grads], 2.0))
+        # Accumulate in fp32: the norm of a large-but-finite fp16 gradient set
+        # overflows fp16 (4x40000 finite elements sum to inf), which would report
+        # a healthy run as non-finite.
+        norms = torch.stack(
+            torch._foreach_norm(
+                [grad.detach() for _, grad in named_grads], 2.0, torch.float32
+            )
+        )
     except Exception:  # sparse/odd dtypes, older torch: fall back to the exact loop
         return None
     finite = torch.isfinite(norms)

@@ -46,6 +46,14 @@
 - **缓存 latent 处置**改为 out-of-place，避免 `.to(device)` 命中同一存储时就地改写 dataloader 张量。
 - **新增 loop 级集成用例**（无 scaler 的 NaN 步：不 step、scheduler 仍推进、precision 记 skipped、返回值已
   detach），补上此前只有 fake 单测的空白。
+- **R1 回归已修**：`_foreach_norm` 未指定对象 dtype 时，返回的范数会被写回梯度 dtype；
+  160k 个 200.0 的 fp16 梯度范数是 80000 > 65504，结果变 inf，**有限梯度被误报非有限**
+  （无 scaler 时会错误跳步）。现显式传 `torch.float32`，并补负控制用例
+  `test_large_finite_fp16_grads_are_not_reported`（去掉该参数即失败，已验证非假绿）。
+- **已知残留（low，未改）**：① 跳步时 `capture_up_grad_stats` 被跳过，`hydra_up_grad`
+  会读到上一步的 stale stash（数值不错误，但可能过期）；② `updates.skipped` 同时统计
+  scaler 跳步与 guard 跳步两种成因，未拆分；③ `LoopState.nonfinite_grad_skips` 目前只有
+  warning 与计数，尚未对外发布为正式指标。
 - 仍未处理：D3（待决策）、E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 

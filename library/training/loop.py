@@ -911,6 +911,10 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         # (scheduler advances, counters increment, probes still run).
         skip_update = grad_finiteness is not None and grad_finiteness.must_skip_step
         gradient_flow_probe = None
+        # Known gap when skip_update is True: capture_up_grad_stats below is skipped,
+        # so the ``hydra_up_grad`` metric reports the previous step's stash (a stale
+        # value, never an incorrect update). Fixing it needs the consumers to know
+        # the metric is missing for this step.
 
         if accelerator.sync_gradients and not skip_update:
             net_unwrapped = accelerator.unwrap_model(network)
