@@ -213,7 +213,9 @@ class OnlineSwapController:
         if not state.accelerator.sync_gradients:
             return
         started = time.perf_counter()
-        if state.accelerator.optimizer_step_was_skipped:
+        from library.training.scaler_ownership import update_skipped as _update_skipped
+
+        if _update_skipped(state):
             # A skipped update moved no weights, so its wall time is not a sample of
             # the workload the policy is trying to measure. Drop it and keep the
             # microstep/shape accumulators clean for the next effective step.

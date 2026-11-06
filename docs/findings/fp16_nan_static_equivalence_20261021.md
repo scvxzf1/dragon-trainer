@@ -60,6 +60,18 @@
   AUTO probe 同样跳过采样并在超预算时抛 `NonfiniteSkip`。跳步分支在创建计时事件与 `policy.observe` 之前
   return，因此不污染步时统计；顺带修掉 probe 里 `budget` 变量遮蔽 CUDA 显存预算的缺陷。
   默认值 0 下第一次跳步即终止，既有契约用例（`test_real_loop_scaler_skip_stops_before_scheduler_progress_or_snapshot`）保持原断言。
+- **D3 复审补正（2026-11-06）**：实现后自审发现三处口径问题，已修——
+  ① **D2 跳步对测量层不可见**：guard 丢弃更新时 `optimizer_step_was_skipped` 仍为 False，
+  自适应运行时会把它记成 effective、online/AUTO probe 会把它当有效步时样本。现由主循环发布
+  统一标志 `state.update_skipped`（scaler 跳步与 guard 跳步都置位），测量层统一读
+  `scaler_ownership.update_skipped(state)`，保留 accelerate 属性作为回退。
+  ② **`completed_steps` 是游标身份不是测量口径**：`resume_checkpoint` 要求
+  `global_step == completed_steps == step`，故 `completed_steps` 恢复为跟随 `global_step`，
+  有效步数改由 `effective_steps` / `skipped_steps` 承载。
+  ③ **预算语义统一为「连续」**：AUTO probe 原先按累计跳步对比预算，与 runtime/online 的
+  连续语义不一致；现三处统一为连续，真实更新即归零。
+  口径确认：有效步数不足时按严格做法终止（不延长 `max_train_steps`）；被跳过的步仍照常
+  提交 checkpoint（游标前进、权重未变），以保持 resume 数据游标一致。
 - 仍未处理：E3 窗口记账。
 - 探针读数随之变化（不是回归）：`bench/fp16_precision/run_probe.py` 的 P6 现在给出 `check_trainable_grads_finite_line=-1`、`order_loss_grads_clip_step_sched=false`（该函数已不在 `loop.py` 中调用）；P3 仍复现「函数默认参数下对 scaled 梯度 fail-closed」，但已不代表生产路径。
 

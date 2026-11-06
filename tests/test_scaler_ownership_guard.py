@@ -306,6 +306,7 @@ def test_loop_skips_update_without_scaler_and_keeps_step_accounting(monkeypatch)
     assert "scheduler" in events, "跳过语义必须与 scaler 跳步一致：scheduler 仍推进"
     assert "zero" in events, "跳过后必须清理梯度"
     assert state.nonfinite_grad_skips == 1
+    assert state.update_skipped is True, "loop 必须发布统一的每步跳过标志"
     assert ("optimizer", True, True) in observed, "跳步必须计入 precision 的 skipped"
     assert returned is not None and returned.requires_grad is False, "返回值必须已 detach"
 

@@ -63,6 +63,24 @@ def scaler_present(accelerator) -> bool:
     return getattr(accelerator, "scaler", None) is not None
 
 
+def update_skipped(state) -> bool:
+    """Whether the current optimizer boundary actually moved the weights.
+
+    Two independent sources can skip an update: a ``GradScaler`` overflow (read
+    through accelerate) and this module's guard when no scaler exists — the latter
+    is invisible to ``optimizer_step_was_skipped``. The training loop publishes the
+    unified answer as ``state.update_skipped``; measurement layers (adaptive
+    runtime, AUTO probe, online swap controller) must read it instead of the
+    accelerate property, otherwise a guard skip is counted as an effective step and
+    pollutes step-time samples.
+    """
+    explicit = getattr(state, "update_skipped", None)
+    if explicit is not None:
+        return bool(explicit)
+    accelerator = getattr(state, "accelerator", None)
+    return bool(getattr(accelerator, "optimizer_step_was_skipped", False))
+
+
 def scaled_gradient_overflow_is_scaler_owned(accelerator, gradients) -> bool:
     """Whether an overflowing gradient set belongs to a live ``GradScaler``.
 

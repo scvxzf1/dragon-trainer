@@ -255,6 +255,10 @@ class LoopState:
 
     global_step: int = 0
     profile_started: bool = False
+    #: Unified per-step answer to "did the weights move?" — set every optimizer
+    #: boundary for both a GradScaler skip and a guard skip, and read by the
+    #: adaptive runtime / AUTO probe / online swap controller.
+    update_skipped: Optional[bool] = None
     #: Steps whose optimizer update was dropped because no GradScaler existed to
     #: absorb a non-finite gradient (see ``library/training/scaler_ownership.py``).
     #: Known limitation: only warned and counted for now — it is not published into
@@ -962,9 +966,13 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         try:
             precision_observe("optimizer", state)
             if skip_update:
+                state.update_skipped = True
                 precision_observe("optimizer", state, after=True, skipped=True)
             else:
                 state.optimizer.step()
+                state.update_skipped = bool(
+                    getattr(accelerator, "optimizer_step_was_skipped", False)
+                )
                 precision_observe("optimizer", state, after=True)
             adaptive_notify(trainer, "after_optimizer", state)
             if accelerator.sync_gradients and gradient_flow_probe is not None:

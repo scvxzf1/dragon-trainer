@@ -181,6 +181,7 @@ def _probe_updates(trainer, state, cases: list[dict], group) -> list[dict]:
     microsteps = 0
     loss_sum = 0.0
     skipped = 0
+    consecutive_skips = 0
     for batch in loader:
         if started is None:
             torch.cuda.synchronize(device)
@@ -197,26 +198,33 @@ def _probe_updates(trainer, state, cases: list[dict], group) -> list[dict]:
         torch.cuda.synchronize(device)
         if microsteps != accumulation:
             raise RuntimeError("AUTO probe did not complete a full optimizer update")
-        if state.accelerator.optimizer_step_was_skipped:
+        from library.training.scaler_ownership import update_skipped as _update_skipped
+
+        if _update_skipped(state):
             # No weights moved, so this step is not a valid timing/memory sample.
             from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
 
             skipped += 1
+            consecutive_skips += 1
             # ``skip_budget`` is deliberately a separate name: reusing ``budget``
             # here overwrote the CUDA memory budget used for ``headroom`` below.
             skip_budget = max(
                 0, int(getattr(state.args, "adaptive_max_nonfinite_skips", 0) or 0)
             )
-            if skipped > skip_budget:
+            # Same semantics as TrainingRuntime/online: the budget bounds
+            # *consecutive* skips so scaler warm-up is tolerated, while a config
+            # that overflows every N steps still trips it.
+            if consecutive_skips > skip_budget:
                 raise NonfiniteSkip(
                     "AUTO probe stopped: loss scaler skipped optimizer update "
-                    f"({skipped} skips > budget {skip_budget})"
+                    f"({consecutive_skips} consecutive skips > budget {skip_budget})"
                 )
             microsteps = 0
             loss_sum = 0.0
             state.global_step += 1
             started = None
             continue
+        consecutive_skips = 0
         budget = min(budget, _cuda_budget(device))
         samples.append(
             {

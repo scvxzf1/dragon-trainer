@@ -139,3 +139,58 @@ def test_unknown_status_still_rejected(tmp_path):
     (tmp_path / "result.json").write_text(json.dumps({"status": "definitely_not_a_status"}))
     result = IsolatedRunner._result(tmp_path, 0, None)
     assert result["status"] == "error" and "invalid structured worker result" in result["error"]
+
+
+def test_guard_skip_is_visible_to_adaptive_accounting(tmp_path):
+    """D2 的 guard 跳步不体现在 accelerator.optimizer_step_was_skipped 上。
+
+    测量层必须读统一的 state.update_skipped，否则无 scaler 的试验会把丢弃的更新
+    当成有效步，污染 completed/effective 计数与步时口径。
+    """
+    runtime = _runtime(tmp_path, budget=5)
+    state = SimpleNamespace(
+        accelerator=SimpleNamespace(optimizer_step_was_skipped=False),  # 无 scaler
+        update_skipped=True,  # guard 丢弃了这一拍
+        global_step=1,
+        args=SimpleNamespace(max_train_steps=4),
+    )
+
+    runtime.phase("optimizer")
+    runtime.after_optimizer(state)
+
+    assert runtime.skipped_steps == 1
+    assert runtime.effective_steps == 0
+
+
+def test_unified_skip_flag_prefers_published_value():
+    """统一标志优先于 accelerate 属性，并在缺失时回退。"""
+    from library.training.scaler_ownership import update_skipped
+
+    published = SimpleNamespace(
+        update_skipped=True,
+        accelerator=SimpleNamespace(optimizer_step_was_skipped=False),
+    )
+    assert update_skipped(published) is True
+
+    fallback = SimpleNamespace(accelerator=SimpleNamespace(optimizer_step_was_skipped=True))
+    assert update_skipped(fallback) is True
+
+    clean = SimpleNamespace(
+        update_skipped=None,
+        accelerator=SimpleNamespace(optimizer_step_was_skipped=False),
+    )
+    assert update_skipped(clean) is False
+
+
+def test_completed_steps_tracks_cursor_not_effective_steps(tmp_path):
+    """completed_steps 是 resume 游标身份，必须跟随 global_step 而不是有效步数。"""
+    runtime = _runtime(tmp_path, budget=5, max_steps=4)
+    runtime.optimizer_started = True
+    runtime.effective_steps = 2
+    runtime.skipped_steps = 2
+    state = _state(skipped=False, global_step=4, max_steps=4)
+
+    # resume_checkpoint 要求 global_step == completed_steps == step
+    runtime.completed_steps = state.global_step
+    assert runtime.completed_steps == 4
+    assert runtime.effective_steps == 2, "有效步数是测量口径，不被游标覆盖"

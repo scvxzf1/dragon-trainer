@@ -90,7 +90,11 @@ class TrainingRuntime:
     def after_optimizer(self, state):
         if not self.optimizer_started or self._pending_skipped is not None:
             raise RuntimeError("Adaptive worker observed an invalid optimizer event")
-        skipped = bool(state.accelerator.optimizer_step_was_skipped)
+        # Unified flag: a guard skip (no scaler) never shows up in
+        # ``optimizer_step_was_skipped`` and must not be counted as effective.
+        from library.training.scaler_ownership import update_skipped as _update_skipped
+
+        skipped = _update_skipped(state)
         self._pending_skipped = skipped
         self.attempted_steps += 1
         if not skipped:
@@ -128,8 +132,10 @@ class TrainingRuntime:
         saved = commit(self, state) if enabled(self.args) else save_training_state(state, self.directory)
         previous = self.saved_state
         self.saved_state = str(saved)
-        # Effective steps only; the skipped counters keep the global_step identity.
-        self.completed_steps = self.effective_steps
+        # ``completed_steps`` is the resume cursor identity (resume_checkpoint
+        # requires global_step == completed_steps == step), so it keeps tracking
+        # global_step; effective/skipped stay as the measurement counters.
+        self.completed_steps = state.global_step
         self._pending_skipped = None
         write_result(self.directory / "latest-state.json", self.result("running"))
         if previous is not None and not enabled(self.args):
