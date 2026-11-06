@@ -687,14 +687,32 @@ def _maybe_apply_stage_schedule(state: LoopState, *, force: bool = False) -> Non
 
 
 @contextmanager
+def _accumulate_scope(accelerator, state: LoopState, *, manage: bool):
+    """Enter ``accelerator.accumulate`` only when the caller lets accelerate manage sync.
+
+    The replay path passes ``manage=False``: accelerate's ``_do_sync`` (1.13.0
+    ``accelerator.py:1228-1235``) resets ``step``/forces ``sync_gradients`` whenever
+    ``sync_with_dataloader and end_of_dataloader`` is true, which would override the
+    boundary :func:`_forced_accumulate` just set and turn every replayed micro-batch
+    into its own optimizer update.
+    """
+    if not manage:
+        yield
+        return
+    with accelerator.accumulate(state.training_model):
+        yield
+
+
+@contextmanager
 def _forced_accumulate(accelerator, model, *, boundary: bool):
     """Replay-path accumulate context with an explicit boundary.
 
-    ``accelerator.accumulate`` derives ``sync_gradients`` from its monotonic
-    counter *and* forces a sync whenever ``gradient_state.end_of_dataloader`` is
-    true. On the last window of an epoch that would sync on **every** replayed
-    micro-batch (one optimizer step per batch), so the replay sets the boundary
-    explicitly instead and only mirrors the ``no_sync`` half of ``accumulate``.
+    Used together with ``_run_microbatch(manage_accumulate=False)`` so accelerate
+    never re-derives the boundary. ``accelerator.step`` (accelerate's monotonic
+    ``_do_sync`` counter) is saved and restored around the replay: the replay does
+    not consume accumulation slots, so the counter must keep pointing where the
+    failed attempt left it or the *next* window would sync one micro-batch early
+    or late.
     """
     gradient_state = getattr(accelerator, "gradient_state", None)
     set_sync = getattr(gradient_state, "_set_sync_gradients", None)
@@ -702,7 +720,8 @@ def _forced_accumulate(accelerator, model, *, boundary: bool):
         with accelerator.accumulate(model):
             yield
         return
-    previous = bool(gradient_state.sync_gradients)
+    previous_sync = bool(gradient_state.sync_gradients)
+    previous_step = getattr(accelerator, "step", None)
     set_sync(bool(boundary))
     try:
         if boundary or not bool(getattr(accelerator, "use_distributed", False)):
@@ -713,7 +732,9 @@ def _forced_accumulate(accelerator, model, *, boundary: bool):
         else:  # pragma: no cover - defensive: distributed without no_sync
             yield
     finally:
-        set_sync(previous)
+        set_sync(previous_sync)
+        if previous_step is not None:
+            accelerator.step = previous_step
 
 
 def _replay_window(trainer, state: LoopState, batches) -> tuple[list[float], torch.Tensor]:
@@ -733,6 +754,9 @@ def _replay_window(trainer, state: LoopState, batches) -> tuple[list[float], tor
                 state,
                 batch,
                 force_skip=not window_accounting.losses_are_finite(losses),
+                # The boundary is set by _forced_accumulate above; letting
+                # accelerate re-derive it would override it (blocker B1).
+                manage_accumulate=False,
             )
         losses.append(window_accounting.loss_value(last_loss))
     return losses, last_loss
@@ -976,7 +1000,12 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
 
 
 def _run_microbatch(
-    trainer, state: LoopState, batch, *, force_skip: bool = False
+    trainer,
+    state: LoopState,
+    batch,
+    *,
+    force_skip: bool = False,
+    manage_accumulate: bool = True,
 ) -> torch.Tensor:
     """The accumulate-scope body: on_step_start hooks, cudagraph mark, forward,
     backward gating, manual adapter sync, grad capture/clip, optimizer step +
@@ -990,6 +1019,10 @@ def _run_microbatch(
     already known bad (an earlier micro-batch of the same window had a non-finite
     loss): a failed attempt must not move the weights even once. A non-finite
     micro-batch loss does the same on its own (E3: the check is unconditional).
+
+    ``manage_accumulate=False`` makes the caller own the accumulation boundary
+    (replay path): accelerate's ``accumulate()`` is not entered, so its ``_do_sync``
+    cannot overwrite the boundary that :func:`_forced_accumulate` set.
     """
     from library.training.auto_block_swap.online import before_microstep, after_microstep
 
@@ -1008,7 +1041,7 @@ def _run_microbatch(
     if peak_probe is not None:
         peak_probe.begin_step(state.global_step, device=accelerator.device)
 
-    with accelerator.accumulate(state.training_model):
+    with _accumulate_scope(accelerator, state, manage=manage_accumulate):
         state.on_step_start_for_network(state.text_encoder, state.unet)
 
         # preprocess batch for each model
@@ -1166,6 +1199,9 @@ def _run_microbatch(
                 # Nothing applied: clear the (possibly poisoned) gradients here so a
                 # replay or the next window starts clean. Applied updates are zeroed
                 # by the commit path, which keeps ``optimizer → scheduler → zero``.
+                # Mid-window (sync_gradients False) the inner step is already a no-op
+                # through AcceleratedOptimizer; this call is the backstop for the
+                # boundary case and keeps the grad buffers finite either way.
                 state.optimizer.zero_grad(set_to_none=True)
             else:
                 state.optimizer.step()

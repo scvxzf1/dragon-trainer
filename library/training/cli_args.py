@@ -137,6 +137,16 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         type=float,
         help="Max gradient norm, 0 for no clipping",
     )
+    parser.add_argument(
+        "--max_nonfinite_window_discards",
+        type=int,
+        default=3,
+        help=(
+            "Consecutive accumulation windows a non-adaptive run may discard after one "
+            "replay each (E3) before the run fails with nonfinite_skip. Adaptive trials "
+            "use --adaptive_max_nonfinite_skips instead (default 0)."
+        ),
+    )
 
     parser.add_argument(
         "--optimizer_args",

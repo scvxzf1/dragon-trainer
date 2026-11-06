@@ -116,7 +116,9 @@ class Harness:
         loss_plan: list[float] | None = None,
         skip_plan: list[bool] | None = None,
         batches: int = 2,
-        nonfinite_skip_budget: int = 5,
+        window_discard_budget: int | None = None,
+        adaptive_skip_budget: int | None = None,
+        adaptive_trial: bool = False,
         on_before_replay=None,
         on_after_commit=None,
         on_before_forward=None,
@@ -164,7 +166,23 @@ class Harness:
                 stage_schedule=None,
                 stage_schedule_enabled=False,
                 _stage_num_update_steps_per_epoch=0,
-                adaptive_max_nonfinite_skips=nonfinite_skip_budget,
+                # 裁定 B：普通训练读 --max_nonfinite_window_discards（默认 3），
+                # adaptive 试验读 --adaptive_max_nonfinite_skips（默认 0）。
+                **(
+                    {"max_nonfinite_window_discards": window_discard_budget}
+                    if window_discard_budget is not None
+                    else {}
+                ),
+                **(
+                    {"adaptive_max_nonfinite_skips": adaptive_skip_budget}
+                    if adaptive_skip_budget is not None
+                    else {}
+                ),
+                **(
+                    {"_adaptive_training_worker": {"directory": "fixture"}}
+                    if adaptive_trial
+                    else {}
+                ),
             ),
             accelerator=self.accelerator,
             network=self.model,
@@ -258,3 +276,137 @@ class Harness:
             "num_steps": int(getattr(state, "window_num_steps", 0) or 0),
             "last_loss": getattr(state, "window_last_loss", None),
         }
+
+
+# ---------------------------------------------------------------------------
+# 真机级夹具（真实 accelerate Accelerator + 真 DataLoaderShard，CPU 即可）
+# ---------------------------------------------------------------------------
+class RealAcceleratorHarness:
+    """真实 ``Accelerator`` 的最小 loop 夹具（blocker B1 回归用）。
+
+    ``sync_landing`` 记录每次 ``optimizer.step`` 调用时的 (是否 sync, 权重是否变化,
+    迄今 ``process_batch`` 调用次数)，用来验证重放后边界落点没有错位。
+    """
+
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        num_steps: int = 2,
+        total_batches: int = 2,
+        nan_calls: set[int] | None = None,
+    ) -> None:
+        from accelerate import Accelerator
+        from accelerate.state import AcceleratorState, GradientState
+
+        self._state_snapshot = (
+            dict(AcceleratorState._shared_state),
+            dict(GradientState._shared_state),
+        )
+        AcceleratorState._reset_state(reset_partial_state=True)
+        GradientState._shared_state.clear()
+
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=num_steps, cpu=True, mixed_precision="no"
+        )
+        self.model = torch.nn.Linear(2, 2)
+        self.raw_optimizer = torch.optim.SGD(self.model.parameters(), lr=0.1)
+        self.model, self.optimizer = self.accelerator.prepare(self.model, self.raw_optimizer)
+        self.nan_calls = set(nan_calls or ())
+        self.forward_calls = 0
+        self.sync_landing: list[tuple[bool, bool, int]] = []
+        self.applied = 0
+
+        real_step = self.optimizer.step
+
+        def counting_step(*args, **kwargs):
+            before = [p.detach().clone() for p in self.model.parameters()]
+            in_sync = bool(self.accelerator.sync_gradients)
+            result = real_step(*args, **kwargs)
+            moved = any(
+                not torch.equal(b, p.detach()) for b, p in zip(before, self.model.parameters())
+            )
+            if in_sync and moved:
+                self.applied += 1
+            self.sync_landing.append((in_sync, moved, self.forward_calls))
+            return result
+
+        monkeypatch.setattr(self.optimizer, "step", counting_step)
+
+        def process_batch(_ctx, batch, is_train=True):  # noqa: ARG001
+            self.forward_calls += 1
+            loss = self.model(batch).square().mean()
+            if self.forward_calls in self.nan_calls:
+                return loss * float("nan")
+            return loss
+
+        self.trainer = SimpleNamespace(
+            memory_probe=None,
+            peak_probe=None,
+            _cudagraph_mark_step=False,
+            _state=SimpleNamespace(personalization_observer={}),
+            on_step_start=lambda *_a, **_k: None,
+            process_batch=process_batch,
+            run_after_backward=lambda *_a, **_k: None,
+        )
+        self.data = [torch.ones(1, 2) + index for index in range(total_batches)]
+        self.loader = self.accelerator.prepare(
+            torch.utils.data.DataLoader(self.data, batch_size=1)
+        )
+        self.state = SimpleNamespace(
+            args=SimpleNamespace(
+                max_grad_norm=0.0,
+                log_every_n_steps=1,
+                max_train_steps=total_batches,
+                stage_schedule=None,
+                stage_schedule_enabled=False,
+                _stage_num_update_steps_per_epoch=0,
+                max_nonfinite_window_discards=3,
+            ),
+            accelerator=self.accelerator,
+            network=self.model,
+            training_model=self.model,
+            optimizer=self.optimizer,
+            lr_scheduler=SimpleNamespace(step=lambda: None),
+            text_encoder=None,
+            unet=None,
+            train_ctx=object(),
+            on_step_start_for_network=lambda *_a: None,
+            profile_started=False,
+            profile_range=None,
+            global_step=0,
+            initial_step=0,
+            is_tracking=False,
+            stage_index=-1,
+            current_step=SimpleNamespace(value=0),
+            train_dataloader=self.loader,
+            progress_bar=SimpleNamespace(update=lambda _n: None),
+            saver=SimpleNamespace(maybe_save_step=lambda *_a, **_k: None),
+            optimizer_train_fn=lambda: None,
+            nonfinite_grad_skips=0,
+        )
+
+        for name in (
+            "_maybe_apply_stage_schedule",
+            "_record_recent_step_seconds",
+            "_sample_at_step",
+            "_log_step",
+            "_maybe_run_step_validation",
+            "_maybe_auto_block_swap",
+        ):
+            monkeypatch.setattr(loop, name, lambda *_a, **_k: None)
+        monkeypatch.setattr(loop, "_maybe_scale_norm", lambda _state: (None, None, None, {}))
+        monkeypatch.setattr(loop, "precision_observe", lambda *_a, **_k: None)
+        monkeypatch.setattr(loop, "adaptive_notify", lambda *_a, **_k: None)
+        monkeypatch.setattr(loop, "synchronize_optimizer_gradients", lambda *_a: None)
+
+    def weights(self) -> list[torch.Tensor]:
+        return [p.detach().clone() for p in self.model.parameters()]
+
+    def close(self) -> None:
+        from accelerate.state import AcceleratorState, GradientState
+
+        AcceleratorState._shared_state.clear()
+        AcceleratorState._shared_state.update(self._state_snapshot[0])
+        GradientState._shared_state.clear()
+        GradientState._shared_state.update(self._state_snapshot[1])

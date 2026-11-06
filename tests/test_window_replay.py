@@ -16,9 +16,9 @@ import torch
 from library.training import loop, window_accounting
 
 try:  # pytest 把 tests/ 放进 sys.path；显式回退便于直接导入
-    from window_replay_harness import FakeAccelerator, Harness
+    from window_replay_harness import FakeAccelerator, Harness, RealAcceleratorHarness
 except ImportError:  # pragma: no cover
-    from tests.window_replay_harness import FakeAccelerator, Harness
+    from tests.window_replay_harness import FakeAccelerator, Harness, RealAcceleratorHarness
 
 
 def test_nonfinite_microbatch_is_replayed_then_committed_once(tmp_path, monkeypatch):
@@ -89,21 +89,42 @@ def test_two_failures_discard_window_and_training_continues(tmp_path, monkeypatc
     assert state.window_total_loss == pytest.approx(3.0, abs=1e-12)
 
 
-def test_mid_window_nonfinite_loss_invalidates_whole_window(tmp_path, monkeypatch):
-    """累积窗口中间步 NaN（sync_gradients=False）也要整窗作废。"""
+def test_mid_window_nonfinite_loss_invalidates_whole_window(monkeypatch):
+    """窗口**中间**步 NaN（sync_gradients=False）也必须让整窗作废，且失败尝试不动权重。
+
+    这条专门覆盖 ``force_skip``：NaN 不在边界上，边界微批自己的 loss 是有限的，
+    若没有 ``force_skip`` 就会正常 ``optimizer.step()``，failed attempt 便已改权重。
+    窗口 3 个微批、NaN 落在第 1 个；重放 3 个有限微批后提交一次。
+    """
+    seen: dict[str, list[torch.Tensor]] = {}
+
+    def snapshot_at_window_start(item):
+        if item.forward_calls == 0:
+            seen["start"] = [p.detach().clone() for p in item.model.parameters()]
+
+    def snapshot_before_replay(item):
+        seen["before_replay"] = [p.detach().clone() for p in item.model.parameters()]
+
     harness = Harness(
         monkeypatch,
-        num_steps=2,
-        loss_plan=[1.0, float("nan"), 1.0, 1.0],
-        batches=2,
+        num_steps=3,
+        loss_plan=[float("nan"), 1.0, 1.0] + [1.0, 1.0, 1.0],
+        batches=3,
+        on_before_forward=snapshot_at_window_start,
+        on_before_replay=snapshot_before_replay,
     )
     harness.run()
     state = harness.state
 
     assert state.window_replays == 1, "窗口中间步 NaN 必须触发重放"
-    assert harness.optimizer.steps == 1, "整个窗口只提交一次更新"
-    assert state.window_num_steps == 2, "账本记满窗口的 2 个微批"
-    assert state.window_total_loss == pytest.approx(2.0, abs=1e-12)
+    assert "before_replay" in seen, "重放钩子未触发"
+    for before, after in zip(seen["start"], seen["before_replay"]):
+        assert torch.equal(before, after), (
+            "窗口中间步 NaN 之后，边界微批不得推动权重（force_skip 必须生效）"
+        )
+    assert harness.optimizer.steps == 1, "整个窗口只提交一次更新（重放那次）"
+    assert state.window_num_steps == 3, "账本记满窗口的 3 个微批"
+    assert state.window_total_loss == pytest.approx(3.0, abs=1e-12)
     assert state.global_step == 1
 
 
@@ -123,8 +144,12 @@ def test_clean_windows_are_bitwise_unchanged_by_replay_machinery(tmp_path, monke
     assert state.update_skipped is False
 
 
-def test_replay_sets_boundary_explicitly_when_dataloader_is_exhausted():
-    """重放必须显式设边界：end_of_dataloader 下再走 accumulate 会每个微批都 sync。"""
+def test_forced_accumulate_context_manager_sets_boundary_only():
+    """只覆盖 ``_forced_accumulate`` 上下文管理器本身（显式边界 + 退出后恢复）。
+
+    真实 accelerate 下的端到端行为（``manage_accumulate=False`` 才真正生效）由本文件
+    末尾的 ``test_real_accelerator_*`` 三条真机级用例覆盖；本条不能替代它们。
+    """
     accelerator = FakeAccelerator(num_steps=4)
     accelerator.gradient_state.end_of_dataloader = True
     seen: list[bool] = []
@@ -166,12 +191,32 @@ def test_window_buffer_failure_reasons():
         assert after[field] == before[field], f"丢窗不得改动 {field}"
 
 
-def test_discard_escalates_to_nonfinite_skip_when_budget_is_zero(monkeypatch):
-    """预算层（D3 的 --adaptive_max_nonfinite_skips）保留：连续丢窗超预算即 nonfinite_skip。
+def test_plain_training_default_budget_tolerates_three_discards_then_escalates(monkeypatch):
+    """裁定 B：普通训练默认 --max_nonfinite_window_discards=3。
 
-    丢窗不动 adaptive 计数器（它看到的边界只有提交过的窗口），因此预算在窗口接缝上执行，
-    默认 0 立刻升级——分类仍是 ``NonfiniteSkip``，供 supervisor 识别为可重试的 fp16 溢出。
+    连续 3 个窗口重放后仍失败 → 都被容忍（丢窗计数、继续训练），第 4 个才 NonfiniteSkip。
+    这让「重放 → 丢窗 → 下一窗恢复」在默认配置下真的可达，同时快速熔断真发散。
     """
+    from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
+    harness = Harness(
+        monkeypatch,
+        num_steps=1,
+        loss_plan=[float("nan")] * 8,  # 4 个窗口 × (原 + 重放)
+        batches=4,
+    )
+    with pytest.raises(NonfiniteSkip, match="consecutive > budget 3"):
+        harness.run()
+
+    state = harness.state
+    assert state.window_discards == 4, "前 3 次被容忍，第 4 次升级"
+    assert state.window_replays == 4
+    assert state.global_step == 0
+    assert harness.optimizer.steps == 0 and harness.scheduler.steps == 0
+
+
+def test_adaptive_trial_default_budget_escalates_on_first_discard(monkeypatch):
+    """裁定 B：adaptive 试验仍用 --adaptive_max_nonfinite_skips，默认 0 = 第一次丢窗即终止。"""
     from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
 
     harness = Harness(
@@ -179,34 +224,101 @@ def test_discard_escalates_to_nonfinite_skip_when_budget_is_zero(monkeypatch):
         num_steps=1,
         loss_plan=[float("nan"), float("nan")],
         batches=1,
-        nonfinite_skip_budget=0,
+        adaptive_trial=True,
+        # 普通训练预算即使放宽到 9 也不影响 adaptive 判定
+        window_discard_budget=9,
     )
     with pytest.raises(NonfiniteSkip, match="consecutive > budget 0"):
         harness.run()
-
     assert harness.state.window_discards == 1
-    assert harness.state.window_replays == 1
-    assert harness.state.global_step == 0
-    assert harness.optimizer.steps == 0 and harness.scheduler.steps == 0
 
 
-def test_discard_budget_is_consecutive_and_resets_on_effective_window(monkeypatch):
-    """预算按「连续」计：一次丢窗被容忍 → 真实更新复位 → 再丢一次仍被容忍。"""
+def test_adaptive_budget_is_independent_from_plain_training_budget(monkeypatch):
+    """两套预算互不影响：adaptive 用 2 可容忍 2 次丢窗，普通训练读自己的键。"""
     harness = Harness(
         monkeypatch,
         num_steps=1,
-        loss_plan=[float("nan"), float("nan"), 1.0, float("nan"), float("nan")],
-        batches=4,
-        nonfinite_skip_budget=1,
+        loss_plan=[float("nan"), float("nan"), float("nan"), float("nan"), 1.0],
+        batches=3,
+        adaptive_trial=True,
+        adaptive_skip_budget=2,
+        window_discard_budget=0,  # 若误读普通预算，第 1 次丢窗就会抛
     )
     harness.run()
     state = harness.state
 
-    assert state.window_discards == 2, "两个窗口被丢弃"
-    assert state.window_replays == 2
-    assert state.global_step == 2, "两个干净窗口各提交 1 次（第 4 个 batch 走默认 loss）"
-    # 末尾窗口提交后连续计数归零；它能归零本身就是「中间那次提交复位过」的证据——
-    # 否则第二次丢窗会是 consecutive=2 > budget=1，早已抛 NonfiniteSkip。
-    assert state.window_consecutive_discards == 0, "提交路径必须复位连续丢窗计数"
-    assert harness.optimizer.steps == 2
-    assert state.window_total_loss == pytest.approx(1.0, abs=1e-12)
+    assert state.window_discards == 2, "adaptive 预算 2 → 两次丢窗仍被容忍"
+    assert state.global_step == 1, "第 3 个窗口提交"
+    assert state.window_consecutive_discards == 0
+
+
+# ---------------------------------------------------------------------------
+# 真机级回归（真实 accelerate Accelerator + 真 DataLoaderShard，CPU 即可）：
+# blocker B1 —— `_forced_accumulate` 的边界必须真的生效。
+# ---------------------------------------------------------------------------
+def test_real_accelerator_replay_at_end_of_dataloader_applies_one_update(monkeypatch):
+    """eod=True 下重放整窗恰好 1 次优化器应用，权重只更新一次（B1 回归）。"""
+    real = RealAcceleratorHarness(monkeypatch, num_steps=2, total_batches=2)
+    try:
+        before = real.weights()
+        for index, _batch in enumerate(real.loader):
+            if index != len(real.loader) - 1:
+                continue
+            assert real.accelerator.gradient_state.end_of_dataloader is True
+            step_counter_before = real.accelerator.step
+            losses, _last = loop._replay_window(real.trainer, real.state, list(real.data))
+            assert real.accelerator.step == step_counter_before, "重放不得挪动 acc.step"
+        assert all(torch.isfinite(torch.tensor(value)) for value in losses)
+        assert real.applied == 1, "整窗只允许一次真实更新"
+        assert sum(0 if torch.equal(b, p.detach()) else 1 for b, p in zip(before, real.weights())) == 2
+        assert real.state.update_skipped is False
+    finally:
+        real.close()
+
+
+def test_real_accelerator_replay_with_nan_leaves_weights_bitwise_unchanged(monkeypatch):
+    """重放仍含 NaN → 该窗口必然被丢弃，权重必须逐位不变（B1 回归，最严的一条）。"""
+    from library.training.adaptive_runtime.training_runtime import NonfiniteSkip
+
+    real = RealAcceleratorHarness(
+        monkeypatch, num_steps=2, total_batches=2, nan_calls={2}
+    )
+    try:
+        before = real.weights()
+        for index, _batch in enumerate(real.loader):
+            if index != len(real.loader) - 1:
+                continue
+            assert real.accelerator.gradient_state.end_of_dataloader is True
+            losses, _last = loop._replay_window(real.trainer, real.state, list(real.data))
+        assert not all(torch.isfinite(torch.tensor(value)) for value in losses), "构造前提：重放含 NaN"
+        assert real.applied == 0, "含 NaN 的窗口不得有任何一次真实更新"
+        for left, right in zip(before, real.weights()):
+            assert torch.equal(left, right), "丢弃窗口必须权重逐位不变"
+        assert real.state.update_skipped is True
+        assert isinstance(NonfiniteSkip("x"), RuntimeError)  # 升级类型未被改动
+    finally:
+        real.close()
+
+
+def test_real_accelerator_window_sequence_keeps_sync_landing(monkeypatch):
+    """重放之后，下一个窗口的 sync 落点不得提前/延后（num_steps=2、三个窗口）。"""
+    real = RealAcceleratorHarness(
+        monkeypatch, num_steps=2, total_batches=6, nan_calls={3}
+    )
+    try:
+        real.state.args.max_train_steps = 3
+        loop._run_epoch_steps(real.trainer, real.state, 0)
+        state = real.state
+
+        assert state.window_replays == 1, "第 2 个窗口的首个微批 NaN → 重放一次"
+        assert state.window_discards == 0
+        assert state.global_step == 3, "三个窗口各提交一次"
+        assert real.applied == 3, "每个窗口恰好一次真实更新"
+
+        landings = [forward_calls for in_sync, moved, forward_calls in real.sync_landing if moved]
+        assert landings == [2, 6, 8], (
+            f"边界落点必须是每个窗口的最后一个微批；实际 {landings}"
+        )
+        assert landings[2] - landings[1] == 2, "重放后下一个窗口仍是满 2 个微批才 sync"
+    finally:
+        real.close()

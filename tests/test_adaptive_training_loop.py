@@ -52,7 +52,11 @@ def setup_loop(tmp_path, monkeypatch, *, failure=None, skipped=False, budget=Non
             log_every_n_steps=1,
             max_train_steps=1,
             # 生产里 loop 与 runtime 共用同一份解析后的 args；丢窗预算由 loop 侧读取。
+            # 本夹具是 adaptive 试验（TrainingRuntime），按裁定 B 走
+            # --adaptive_max_nonfinite_skips（默认 0 严格），因此要带 adaptive 试验标记；
+            # 普通训练则走 --max_nonfinite_window_discards（默认 3）。
             adaptive_max_nonfinite_skips=0 if budget is None else budget,
+            _adaptive_training_worker={"directory": str(tmp_path)},
         ),
         accelerator=SimpleNamespace(sync_gradients=True, optimizer_step_was_skipped=skipped,
                                     accumulate=lambda model: nullcontext(), unwrap_model=lambda model: model,

@@ -8,6 +8,16 @@ data at most :data:`WINDOW_MAX_REPLAYS` time; when the replay fails too, the
 window is discarded (counted in ``window_discards``) and training continues with
 the next window instead of aborting.
 
+Two budgets, deliberately decoupled (user ruling B, 2026-11-06):
+
+* plain training uses ``--max_nonfinite_window_discards`` (**default 3**): the
+  "replay once → count the discard → recover on the next window" fallback is
+  reachable by default, while three consecutive dead windows still trip a fast
+  fuse instead of hiding a real divergence;
+* an adaptive/supervised trial uses ``--adaptive_max_nonfinite_skips``
+  (**default 0**, strict): a dead window fails the trial with its own
+  ``nonfinite_skip`` classification and the supervisor retries it.
+
 Why this lives in its own module: ``library/training/loop.py`` is a hot file
 (see ``AGENTS.md`` "反上帝代码守则"), so the ledger / failure predicate / policy
 live here and ``loop.py`` only wires them into the epoch loop.
@@ -35,6 +45,9 @@ from typing import Any, Iterable, Optional
 
 #: User ruling: one replay per window, then degrade to "discard and continue".
 WINDOW_MAX_REPLAYS = 1
+
+#: Consecutive discarded windows plain training tolerates by default (ruling B).
+DEFAULT_WINDOW_DISCARD_BUDGET = 3
 
 #: Failure reasons surfaced in warnings / telemetry.
 REASON_NONFINITE_LOSS = "nonfinite_loss"
@@ -167,15 +180,41 @@ def discard_window(state: Any, buffer: WindowBuffer, reason: str) -> dict[str, A
     }
 
 
-def discard_budget(args: Any) -> int:
-    """`--adaptive_max_nonfinite_skips`: how many *consecutive* discards are tolerated.
+def adaptive_trial(args: Any) -> bool:
+    """Whether this process is an adaptive/supervised trial.
 
-    The D3 budget layer is kept, but it is enforced at the window seam: a discarded
-    window deliberately does not advance the adaptive runtime counters (it is not a
-    boundary), so the runtime's own consecutive-skip counter cannot see it. Same
-    knob, same "consecutive" semantics, same ``NonfiniteSkip`` escalation.
+    Reuses the repository's existing marker pair (see
+    ``adaptive_runtime/resume_runtime.py`` ``configuration_errors`` and
+    ``adaptive_runtime/training_runtime.py`` ``validate_entry``): the supervisor
+    sets ``--adaptive_oom_retry`` and/or the private ``_adaptive_training_worker``
+    dict. No new flag is introduced here.
     """
-    return max(0, int(getattr(args, "adaptive_max_nonfinite_skips", 0) or 0))
+    return bool(
+        getattr(args, "adaptive_oom_retry", False)
+        or getattr(args, "_adaptive_training_worker", None)
+    )
+
+
+def discard_budget(args: Any) -> int:
+    """How many *consecutive* window discards are tolerated (user ruling B).
+
+    * adaptive trial → ``--adaptive_max_nonfinite_skips`` (default 0, strict);
+    * plain training → ``--max_nonfinite_window_discards`` (default 3).
+
+    Either way the budget is enforced at the window seam: a discarded window does
+    not advance the adaptive runtime counters (it is not a boundary), so the
+    runtime's own consecutive-skip counter cannot see it. "Consecutive" resets on
+    a committed (effective) window.
+    """
+    if adaptive_trial(args):
+        return max(0, int(getattr(args, "adaptive_max_nonfinite_skips", 0) or 0))
+    return max(
+        0,
+        int(
+            getattr(args, "max_nonfinite_window_discards", DEFAULT_WINDOW_DISCARD_BUDGET)
+            or 0
+        ),
+    )
 
 
 def ema_observation(state: Any, losses: Iterable[float]) -> dict[str, Any]:

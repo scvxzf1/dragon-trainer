@@ -11,7 +11,7 @@
 - **E1（无 scaler 位级不变）成立（L0）**：与不缩放参照路径对照时 loss 对象身份保持、grads/params 逐位相等（P5），4 条用例通过。
 - **E4（scaler 状态机）成立（L0 轨迹 + L2 顺序）**：真 scaler 轨迹 8→8→16→16→32、溢出 32→16，state_dict 往返用不同 init/growth_interval 复现同一序列（P1）。
 - **E2（跳步语义）部分成立**：executed ≠ applied 在 accelerate 层成立（P2：调用点执行、内层 `optimizer.step` 未被调用、权重逐位不变、scale 1024→512）；但 A 无 `optimizer_step_executed` / `optimizer_update_applied` 双字段，主循环 0 处消费 `optimizer_step_was_skipped`。子判据「grad_norm 账本不被 inf 污染」在 A **不适用**（`loop.py:1194` `mean_grad_norm — not tracked here`），不得记成通过。
-- **E3（窗口记账）已实现（2026-11-06，重放 1 次 + 退化丢弃）**：`library/training/window_accounting.py` 持有窗口账本与重放策略，`loop.py` 只做接线；失败尝试零进度副作用（事务语义），重放仍失败则丢窗并计入 `window_discards`，`--adaptive_max_nonfinite_skips` 预算保留为终止升级层。原 `strict xfail` 规格已转正，详见「E3 窗口重放（2026-11-06 实现）」。
+- **E3（窗口记账）已实现（2026-11-06，重放 1 次 + 退化丢弃）**：`library/training/window_accounting.py` 持有窗口账本与重放策略，`loop.py` 只做接线；失败尝试零进度副作用（事务语义），重放仍失败则丢窗并计入 `window_discards`；丢窗预算按裁定 B 解耦（普通训练 `--max_nonfinite_window_discards` 默认 3、adaptive 试验 `--adaptive_max_nonfinite_skips` 默认 0），超预算抛 `NonfiniteSkip`。原 `strict xfail` 规格已转正，详见「E3 窗口重放（2026-11-06 实现）」。
 - **E5（所有权判定）原为「未实现且违反（缺陷 D1）」；2026-11-06 已修复，见下方「修复状态」**：`--debug_finite_checks` 打开时 `loop.py:861` 的梯度有限性检查早于 `:898` 的 unscale/clip，读到仍乘 scale 的梯度；CPU 实测（P3）有限 loss + scale=65536 + 真梯度 2.0 → 梯度 inf → `check_trainable_grads_finite` 抛 `FloatingPointError`，同一时刻真 scaler 会 skip 且权重不变。（修复前状态；2026-11-06 已修复。）
 - 三条缺口必须分开写：**D1** 诊断工具误报（见下）、**D2** 默认路径根本没有有限性检查、**D3** adaptive 路径把跳步当致命错误。
 - 数字来源限定：本文所有 CPU 数字引自 P1–P9；P4 是依赖 `scale=65536` 的**比值**，P8 是**权重增量**，两者分开引，不混用。
@@ -269,11 +269,21 @@ CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
 | 层 | 作用 | 位置 |
 |---|---|---|
 | E3 事务 | 未完成真实更新的窗口绝不推进进度副作用；同窗重放 1 次 | `loop.py::_run_epoch_steps` + `window_accounting` |
-| D3 预算 | `--adaptive_max_nonfinite_skips`（默认 0）决定何时升级为 `NonfiniteSkip` 终止试验 | 窗口接缝：连续丢窗计数 > 预算即抛 `NonfiniteSkip` |
+| 丢窗预算（裁定 B） | 普通训练 `--max_nonfinite_window_discards` **默认 3**；adaptive 试验仍用 `--adaptive_max_nonfinite_skips` **默认 0** | 窗口接缝：连续丢窗计数 > 预算即抛 `NonfiniteSkip` |
 
-D3 的 `adaptive_runtime` 预算代码**未改动**；丢窗不是一次「边界」（它不推进 `global_step`），
-adaptive 计数器只统计提交过的边界，因此同一预算口径在窗口接缝上执行
-（`window_accounting.discard_budget`），连续计数由提交窗口复位，语义与 D3 的「连续跳步」一致。
+裁定 B（2026-11-06，用户）：预算与 adaptive 解耦。普通训练默认容忍 3 次连续丢窗，让
+「重放 1 次 → 丢窗记指标 → 下一窗恢复」在默认配置下真的可达，同时连续 3 窗全挂就快速熔断；
+adaptive 试验保持严格（默认 0），trial 失败交 supervisor 重试。分流判定复用仓库既有标记
+（`adaptive_oom_retry` / `_adaptive_training_worker`，见
+`adaptive_runtime/resume_runtime.py` 的 `configuration_errors` 与 `training_runtime.validate_entry`），
+没有新造标志；连续计数由提交窗口复位。
+
+**重放边界（blocker B1 修复）**：重放路径必须 `_run_microbatch(manage_accumulate=False)` ——
+否则 `accelerator.accumulate()` 的 `_do_sync` 会覆盖 `_forced_accumulate` 设定的边界。修复前实测
+（真实 `Accelerator` + `DataLoaderShard`，`end_of_dataloader=True`）：干净重放会更新 **2** 次权重，
+重放含 NaN 时窗口本该丢弃但权重已动过 1 次。修复后同一探针：干净重放恰好 1 次、含 NaN 重放 0 次且
+权重逐位不变；`accelerator.step` 在重放前后保存/恢复，下一个窗口的 sync 落点不提前也不延后
+（三窗口序列实测落点 `[2, 6, 8]`，每窗最后一个微批）。
 
 **指标字段**（`LoopState`）：`window_attempts` / `window_replays` / `window_discards` /
 `window_consecutive_discards`（累计计数）、`window_total_loss` / `window_num_steps` /
@@ -282,15 +292,18 @@ adaptive 计数器只统计提交过的边界，因此同一预算口径在窗�
 **已知限制**：
 
 - 本仓**没有模型 EMA**：`ema_observation` 是显式占位槽（`{"step", "num_steps", "mean_loss", "ema": "absent-in-this-repo"}`），只用于证明丢窗时不触碰，不代表真实 EMA 更新。
-- 丢窗指标目前只落在 `LoopState` + warning，**未写进 `precision_report.json`**；`updates.skipped` 在 loop 路径上已恒为 0（未提交的边界不再计数），后续需要把 `window_discards` 发布进报告。
+- **丢窗/重放指标的可见位置（按实记录，本轮不实现发布通道）**：`window_discards` / `window_replays` / `window_attempts` / `window_consecutive_discards` 只写在 `LoopState` 上，并出现在丢窗 warning 文本里（`window_discards=…, consecutive=…, budget=…`）；**没有**写进 `precision_report.json`。
+- **`updates.skipped` 在循环路径上已恒为 0**：E3 之后只有「真正应用了更新」的边界才提交，未提交的边界不再产生 attempted/effective/skipped 计数；`precision_observe(..., skipped=True)` 目前只剩非循环路径可能触发。`updates.attempted` 也只统计提交过的边界（`optimizer.step` 中途抛错的边界不再计入）。
 - `precision_report.updates.attempted` 现在只统计提交过的边界；`optimizer.step` 中途抛错的边界不再计入 attempted（此前会计入）。这是度量口径变化，已在该文件用例注释中记录。
 - `auto_swap_controller`（`block_swap_auto`）自带严格契约：非有限 loss 会先抛 `RuntimeError("Dynamic AUTO requires finite, completed optimizer updates")`，跳步超其预算也会抛 `NonfiniteSkip`，该开关下窗口重放可能来不及生效；这是既有行为，本轮未改。
 - 持久溢出在有限 loader 上不会卡死：丢窗不推进 `global_step`，epoch 结束后由 `finish()` 以「有效步数不足」报 `nonfinite_skip`；默认预算 0 则第一次丢窗即升级终止。
 - 未验证：真实 trainer / 模型族 / 数据链路上的重放（本轮只有最小 loop 夹具）、分布式 reduce 分支下的重放、`window_discards` 的历史可视化。
 
-**测试**：`tests/test_window_replay.py`（9 例）覆盖 NaN 重放成功、连续失败丢窗、scaler 跳步重放、
-窗口中间步 NaN、干净路径负控制、`_forced_accumulate` 显式边界、账本策略单测、预算升级、
-连续丢窗计数复位；`tests/window_replay_harness.py` 是与
+**测试**：`tests/test_window_replay.py`（13 例）覆盖 NaN 重放成功、连续失败丢窗、scaler 跳步重放、
+窗口中间步 NaN（`force_skip` → 失败尝试零权重变化）、干净路径负控制、`_forced_accumulate` 上下文管理器、
+账本策略单测、普通训练默认预算 3 / adaptive 默认 0 / 两套预算互不影响，以及三条**真机级**
+（真实 `Accelerator` + `DataLoaderShard`，eod=True）回归：重放恰好一次更新、含 NaN 重放权重逐位不变、
+三窗口序列 sync 落点 `[2, 6, 8]`；`tests/window_replay_harness.py` 是与
 `TestE3WindowAccountingGap::test_e3_spec_nonfinite_batch_discards_whole_accumulation_window`
 共用的最小 loop 夹具。变异验证（5 个：失败窗口照样提交 / 重放次数置 0 / 丢窗写账本 /
 预算判断改 `>=` / 跳步边界也提交）全部被用例抓住。
