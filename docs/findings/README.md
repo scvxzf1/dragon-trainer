@@ -14,6 +14,14 @@
 | [画风完整报告](anima_weight_analysis_20261001/style/report.md) | 10 文件的有效 ΔW、模块分布与层热点 |
 | [人物完整报告](anima_weight_analysis_20261001/character/report.md) | 5 文件的逐模型差异、集中度及人物与画风对照 |
 
+## 数据集、存储与传输
+
+| 文档 | 说明 |
+| --- | --- |
+| [image_compression_bandwidth_audit_20261102.md](image_compression_bandwidth_audit_20261102.md) | 2026-11-02：Lepton / LatentStore / JXL-Chrome155 / GACT / INSTANT / dreaMLearning 6 篇材料核验（2 个 arXiv 编号指错论文、1 篇查无此文、2 篇指标转述失真）+ 本机实测压缩率到有效带宽换算（传统 JPEG q95/q92 重压缩 2.2~2.9×、JXL 有损 5.0×、降分辨率 13~20×），含等画质交叉、4:2:0 隐性降质、1-5/5-10/10-15MB 分档的 SSIM+PSNR+ΔE76 与编解码 CPU/内存占用+ JXL 钩子在当前代码中失效的证据 |
+| [image_compression_bench_data_20261102.md](image_compression_bench_data_20261102.md) | 2026-11-02：上述基准的纯数据记录（分档汇总、逐图像素指标与编解码耗时、CPU%/峰值 RSS），原始 JSONL 与采集脚本归档在 `image_compression_bench_data_20261102/raw/` |
+| [image_storage_pipeline_recommendation_20261102.md](image_storage_pipeline_recommendation_20261102.md) | 2026-11-02：在 128 核 / 6 GB/s 盘 / 500 GB/s 内存假设下的容量模型与决策建议（单图 CPU 秒成本、转码 vs 传输总时间矩阵、latent 缓存后的磁盘占用、内存带宽核算、盈亏平衡链路速度） |
+
 ## 维护和整理
 
 | 文档 | 说明 |
@@ -152,6 +160,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [anima_1mp_speed_50hx_20261022.md](anima_1mp_speed_50hx_20261022.md) | Anima 1MP（1024×1024）/ bs1 / 完整检查点在 CMP 50HX 的速度基线：swap=0 两轮复测 **2.363 / 2.400 s/步**（差 1.6%，SM 1850~1905 MHz、显存峰值 6074 MiB、49% 利用率、≈56 W），swap=4 观测 21.07 s/步但夹着外部算力解锁动作，不算干净 A/B；附 fp16 tensor 85 TFLOPS（理论 99.38）的算力锁判定、gen1×8 链路与 120 W 功耗墙 |
 | [anima_dual_gpu_parallel_probe_20260904.md](anima_dual_gpu_parallel_probe_20260904.md) | Anima 异构双卡 PP2、TP2、TP2 INT8 通信的 BS=1 性能、显存、数值与同参数图片对比 |
 | [z_image_170hx_100step_20260905.md](z_image_170hx_100step_20260905.md) | Z-Image 在 CMP 170HX 上的 100-step BF16 Flash varlen + full checkpoint + swap8 + fused AdamW 真机测试：运行时 PASS，单图过拟合在 step 100 出现明显曝光和细节退化 |
 | [lycoris_4_fused_kernel_audit_20260902.md](lycoris_4_fused_kernel_audit_20260902.md) | LyCORIS 4.0.0 Triton/TileLang fused kernel 发布、性能、精度与 release 宣传审计，以及对本项目 LoKr/LoHa 的借鉴优先级 |
@@ -208,6 +217,7 @@
 | [krea2_raw_migration_stage4_findings.md](krea2_raw_migration_stage4_findings.md) | Krea-2-Raw 迁移阶段 4：训练串通 + forward_for_loss 承重接口 + 单 prompt 过拟合 loss 下降 |
 | [krea2_raw_migration_stage5_findings.md](krea2_raw_migration_stage5_findings.md) | Krea-2-Raw 迁移阶段 5：推理串通 + flow-matching Euler ODE + mu shift + CFG 采样 + VAE decode 出图 |
 | [krea2_raw_migration_stage6_findings.md](krea2_raw_migration_stage6_findings.md) | Krea-2-Raw 迁移阶段 6：块交换 (ModelOffloader 复用) + 检查点 save/load round-trip + 256×256 净负发现 |
+| [gsq_rco_quant_research_20261026.md](gsq_rco_quant_research_20261026.md) | 静态研究记录：arXiv 2411.17525 实为 Linearity Theorem/HIGGS 而非 "GSQ-RCO"（GSQ=2604.18556、RCO=2605.00649 另属两篇，本仓零实现）、可迁移组件拆解、量化×CNS×交互项 2×2 归因框架与 CNS 归因矩阵、Q0–Q5 判定（Q0/Q3/Q5 后半不成立，Q1/Q2 部分成立，Q4/Q5 前半无实测路径）、引用禁用口径清单与最小实测计划（未执行） |
 
 ## Agent Audit 2026-06-22
 
