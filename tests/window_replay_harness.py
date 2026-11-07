@@ -7,12 +7,14 @@
 文件名不带 ``test_`` 前缀，pytest 不会把它当用例收集。
 """
 
+from collections import deque
 from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 import torch
 
 from library.training import loop
+from library.datasets import LossRecorder
 
 
 class FakeGradientState:
@@ -102,6 +104,11 @@ class FakeScheduler:
 class Harness:
     """最小 loop 夹具。
 
+    ``stub_step_ticks``（默认 True）决定是否把 ``_log_step`` / ``_maybe_run_step_validation``
+    stub 成 no-op。验收 R1/R2 涉及“进度/验证是否真的触发”，**断言那两条就必须传
+    ``stub_step_ticks=False``**（届时 ``progress_bar.update`` / ``progress_sink.log`` /
+    ``run_validation`` 都是真实调用，调用计数由本夹具记录）；默认值保持既有 3 个消费者的行为不变。
+
     ``loss_plan`` 逐次给出 ``process_batch`` 返回的 loss 数值（精确值，同时保留计算图）；
     ``skip_plan`` 逐次给出边界处 scaler 是否跳步（模拟 ``optimizer_step_was_skipped``）。
     ``on_before_replay`` 在窗口重放开始前被调用，用于抓「失败尝试之后、重放之前」的快照。
@@ -122,6 +129,7 @@ class Harness:
         on_before_replay=None,
         on_after_commit=None,
         on_before_forward=None,
+        stub_step_ticks: bool = True,
     ) -> None:
         self.model = torch.nn.Linear(2, 2)
         self.accelerator = FakeAccelerator(num_steps=num_steps)
@@ -135,6 +143,8 @@ class Harness:
         self.replay_calls = 0
         self.commits = 0
         self.on_before_replay = on_before_replay
+        self.progress_updates = 0
+        self.progress_events: list[int] = []
         self.on_after_commit = on_after_commit
         self.on_before_forward = on_before_forward
 
@@ -149,8 +159,24 @@ class Harness:
             self.last_loss_values.append(float(loss.detach()))
             return loss
 
+        class _Sink:
+            """Records ``progress_sink.log`` calls (untracked branch of ``_log_step``)."""
+
+            def __init__(self) -> None:
+                self.events: list[int] = []
+
+            def log(self, _logs, *, global_step, epoch):  # noqa: ARG002
+                self.events.append(int(global_step))
+
+        self.sink = _Sink()
         trainer = SimpleNamespace(
             memory_probe=None,
+            progress_sink=self.sink,
+            _last_router_H_postfix=None,
+            _adapters=(),
+            generate_step_logs=lambda *a, **k: {},
+            step_logging=lambda *a, **k: None,
+            epoch_logging=lambda *a, **k: None,
             peak_probe=None,
             _cudagraph_mark_step=False,
             _state=SimpleNamespace(personalization_observer={}),
@@ -166,6 +192,8 @@ class Harness:
                 stage_schedule=None,
                 stage_schedule_enabled=False,
                 _stage_num_update_steps_per_epoch=0,
+                validate_every_n_steps=None,
+                validate_every_n_epochs=None,
                 # 裁定 B：普通训练读 --max_nonfinite_window_discards（默认 3），
                 # adaptive 试验读 --adaptive_max_nonfinite_skips（默认 0）。
                 **(
@@ -201,12 +229,30 @@ class Harness:
             stage_index=-1,
             current_step=SimpleNamespace(value=0),
             train_dataloader=[object() for _ in range(batches)],
-            progress_bar=SimpleNamespace(update=lambda n: None),
+            progress_bar=(
+                SimpleNamespace(update=lambda n: None, set_postfix=lambda **_k: None)
+                if stub_step_ticks
+                else self._recording_progress_bar()
+            ),
             saver=SimpleNamespace(
                 maybe_save_step=lambda *_a, **_k: self.saves.append(self.state.global_step)
             ),
             optimizer_train_fn=lambda: None,
             nonfinite_grad_skips=0,
+            **(
+                {}
+                if stub_step_ticks
+                else {
+                    "loss_recorder": LossRecorder(),
+                    "recent_step_seconds": deque(maxlen=9),
+                    "recent_step_rate_last": None,
+                    "auto_swap_controller": None,
+                    "lr_descriptions": None,
+                    "validation_steps": 0,
+                    "val_ctx": SimpleNamespace(dataloader=[]),
+                    "val_step_loss_recorder": None,
+                }
+            ),
         )
         self.trainer = trainer
 
@@ -225,14 +271,15 @@ class Harness:
 
         monkeypatch.setattr(self.optimizer, "step", step_with_skip_plan)
 
-        for name in (
+        stubbed = [
             "_maybe_apply_stage_schedule",
             "_record_recent_step_seconds",
             "_sample_at_step",
-            "_log_step",
-            "_maybe_run_step_validation",
             "_maybe_auto_block_swap",
-        ):
+        ]
+        if stub_step_ticks:
+            stubbed += ["_log_step", "_maybe_run_step_validation"]
+        for name in stubbed:
             monkeypatch.setattr(loop, name, lambda *_a, **_k: None)
         monkeypatch.setattr(loop, "_maybe_scale_norm", lambda _state: (None, None, None, {}))
         monkeypatch.setattr(loop, "precision_observe", lambda *_a, **_k: None)
@@ -258,6 +305,20 @@ class Harness:
             return real_replay(*args, **kwargs)
 
         monkeypatch.setattr(loop, "_replay_window", replay_with_hook)
+
+    def _recording_progress_bar(self):
+        harness = self
+
+        class _Bar:
+            @staticmethod
+            def update(count=1):
+                harness.progress_updates += int(count)
+
+            @staticmethod
+            def set_postfix(**_kwargs):
+                pass
+
+        return _Bar()
 
     # ------------------------------------------------------------------ helpers
     def run(self) -> None:
@@ -295,6 +356,7 @@ class RealAcceleratorHarness:
         num_steps: int = 2,
         total_batches: int = 2,
         nan_calls: set[int] | None = None,
+        stub_step_ticks: bool = True,
     ) -> None:
         from accelerate import Accelerator
         from accelerate.state import AcceleratorState, GradientState
@@ -316,6 +378,7 @@ class RealAcceleratorHarness:
         self.forward_calls = 0
         self.sync_landing: list[tuple[bool, bool, int]] = []
         self.applied = 0
+        self.progress_updates = 0
 
         real_step = self.optimizer.step
 
@@ -340,6 +403,7 @@ class RealAcceleratorHarness:
                 return loss * float("nan")
             return loss
 
+        self.tracked_steps: list[int] = []
         self.trainer = SimpleNamespace(
             memory_probe=None,
             peak_probe=None,
@@ -348,6 +412,12 @@ class RealAcceleratorHarness:
             on_step_start=lambda *_a, **_k: None,
             process_batch=process_batch,
             run_after_backward=lambda *_a, **_k: None,
+            progress_sink=None,
+            _last_router_H_postfix=None,
+            _adapters=(),
+            generate_step_logs=lambda *a, **k: {},
+            step_logging=lambda _acc, _logs, step, _epoch: self.tracked_steps.append(int(step)),
+            epoch_logging=lambda *a, **k: None,
         )
         self.data = [torch.ones(1, 2) + index for index in range(total_batches)]
         self.loader = self.accelerator.prepare(
@@ -361,6 +431,8 @@ class RealAcceleratorHarness:
                 stage_schedule=None,
                 stage_schedule_enabled=False,
                 _stage_num_update_steps_per_epoch=0,
+                validate_every_n_steps=None,
+                validate_every_n_epochs=None,
                 max_nonfinite_window_discards=3,
             ),
             accelerator=self.accelerator,
@@ -380,25 +452,58 @@ class RealAcceleratorHarness:
             stage_index=-1,
             current_step=SimpleNamespace(value=0),
             train_dataloader=self.loader,
-            progress_bar=SimpleNamespace(update=lambda _n: None),
+            progress_bar=(
+                SimpleNamespace(update=lambda _n: None, set_postfix=lambda **_k: None)
+                if stub_step_ticks
+                else self._recording_progress_bar()
+            ),
             saver=SimpleNamespace(maybe_save_step=lambda *_a, **_k: None),
             optimizer_train_fn=lambda: None,
             nonfinite_grad_skips=0,
+            **(
+                {}
+                if stub_step_ticks
+                else {
+                    "loss_recorder": LossRecorder(),
+                    "recent_step_seconds": deque(maxlen=9),
+                    "recent_step_rate_last": None,
+                    "auto_swap_controller": None,
+                    "lr_descriptions": None,
+                    "validation_steps": 0,
+                    "val_ctx": SimpleNamespace(dataloader=[]),
+                    "val_step_loss_recorder": None,
+                }
+            ),
         )
 
-        for name in (
+        stubbed = [
             "_maybe_apply_stage_schedule",
             "_record_recent_step_seconds",
             "_sample_at_step",
-            "_log_step",
-            "_maybe_run_step_validation",
             "_maybe_auto_block_swap",
-        ):
+        ]
+        if stub_step_ticks:
+            stubbed += ["_log_step", "_maybe_run_step_validation"]
+        for name in stubbed:
             monkeypatch.setattr(loop, name, lambda *_a, **_k: None)
         monkeypatch.setattr(loop, "_maybe_scale_norm", lambda _state: (None, None, None, {}))
         monkeypatch.setattr(loop, "precision_observe", lambda *_a, **_k: None)
         monkeypatch.setattr(loop, "adaptive_notify", lambda *_a, **_k: None)
         monkeypatch.setattr(loop, "synchronize_optimizer_gradients", lambda *_a: None)
+
+    def _recording_progress_bar(self):
+        harness = self
+
+        class _Bar:
+            @staticmethod
+            def update(count=1):
+                harness.progress_updates += int(count)
+
+            @staticmethod
+            def set_postfix(**_kwargs):
+                pass
+
+        return _Bar()
 
     def weights(self) -> list[torch.Tensor]:
         return [p.detach().clone() for p in self.model.parameters()]

@@ -11,10 +11,26 @@ from library.training.losses import (
     build_loss_composer,
     get_huber_threshold_if_needed,
 )
+from library.training import numerical_observation
 from library.training.method_adapter import ComputeLossCtx
 from library.training.noise_target import compute_noise_pred_and_target
 from library.training.contexts import TrainCtx
 from library.models.family_registry import dispatch_model_family
+
+
+def _nonfinite_counts(tensor: torch.Tensor) -> dict[str, int]:
+    """``{nan, inf, nonfinite, elements}`` in a single device→host sync."""
+    nan_mask = torch.isnan(tensor)
+    inf_mask = torch.isinf(tensor)
+    nan, inf = torch.stack(
+        [torch.count_nonzero(nan_mask), torch.count_nonzero(inf_mask)]
+    ).tolist()
+    return {
+        "nan": int(nan),
+        "inf": int(inf),
+        "nonfinite": int(nan) + int(inf),
+        "elements": int(tensor.numel()),
+    }
 
 
 def _krea2_noise_pred_and_target(*args, **kwargs):
@@ -98,11 +114,53 @@ def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch
                         list_latents.append(chunk)
                 latents = torch.cat(list_latents, dim=0)
 
-        if torch.any(torch.isnan(latents)):
+        # The cleaning policy itself is unchanged (user ruling: keep
+        # ``nan_to_num``/the NaN-gated scrub). What was missing is identity, a
+        # kind split and counters: with only "NaN found in <source>" a corrupt cache
+        # sidecar cannot be told apart from a cast overflow, and a ±Inf-only tensor
+        # produced no message at all. The user-visible line below stays identical;
+        # the structured counts go to ``nonfinite_observation`` (once per kind).
+        counts = _nonfinite_counts(latents)
+        if counts["nan"]:
             accelerator.print(f"NaN found in {source}, replacing with zeros")
+            numerical_observation.record(
+                numerical_observation.SITE_LATENTS,
+                numerical_observation.KIND_SOURCE_NAN,
+                nonfinite=counts["nan"],
+                elements=counts["elements"],
+                before_dtype=latents.dtype,
+                after_dtype=latents.dtype,
+                shape=tuple(latents.shape),
+                detail=f"source={source}",
+            )
+            if counts["inf"]:
+                numerical_observation.record(
+                    numerical_observation.SITE_LATENTS,
+                    numerical_observation.KIND_SOURCE_INF,
+                    nonfinite=counts["inf"],
+                    elements=counts["elements"],
+                    before_dtype=latents.dtype,
+                    after_dtype=latents.dtype,
+                    shape=tuple(latents.shape),
+                    detail=f"source={source}",
+                )
             # Out of place: a cached ``batch["latents"]`` tensor already on device
             # would otherwise be rewritten through the dataloader's own storage.
             latents = typing.cast(torch.FloatTensor, torch.nan_to_num(latents, 0))
+        elif counts["inf"]:
+            # Observation only: the established scrub triggers on NaN, so ±Inf is
+            # counted and left in the tensor exactly as before (changing that
+            # predicate is a separate user policy decision).
+            numerical_observation.record(
+                numerical_observation.SITE_LATENTS,
+                numerical_observation.KIND_SOURCE_INF,
+                nonfinite=counts["inf"],
+                elements=counts["elements"],
+                before_dtype=latents.dtype,
+                after_dtype=latents.dtype,
+                shape=tuple(latents.shape),
+                detail=f"source={source} (Inf-only: NaN-gated scrub does not touch it)",
+            )
 
         return typing.cast(torch.FloatTensor, trainer.shift_scale_latents(args, latents))
 

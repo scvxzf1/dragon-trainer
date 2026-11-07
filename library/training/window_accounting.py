@@ -24,13 +24,22 @@ live here and ``loop.py`` only wires them into the epoch loop.
 
 Ledger semantics
 ----------------
-``window_attempts`` / ``window_replays`` / ``window_discards`` are cumulative run
-counters. ``window_total_loss`` / ``window_num_steps`` / ``window_last_loss`` are
+``window_attempts`` / ``window_replays`` / ``window_discards`` / ``window_commits``
+are cumulative run counters; ``window_discard_causes`` is the per-reason
+breakdown of ``window_discards`` (observability only — the fuse still uses the
+single *consecutive* budget, never a per-cause one).
+``window_total_loss`` / ``window_num_steps`` / ``window_last_loss`` are
 **window-level**: they describe the last *committed* window only (sum of its
 micro-batch losses, how many micro-batches contributed, and the last one). A
 discarded window leaves them untouched, which is exactly what the E3 spec in
 ``tests/test_fp16_nan_static_equivalence.py`` asserts ("丢弃整窗后账本原样等于窗口
 起点快照").
+
+The training ``LossRecorder`` is part of the same transaction: a committed window
+publishes **all** of its micro-batch losses (:func:`publish_window_losses`), a
+replayed window publishes the replay's values, and a discarded window publishes
+nothing. Nothing is recorded per micro-batch, so a finite prefix of a failed
+attempt can no longer leak into the epoch average.
 
 Known limitation (documented, not fixed here): this repo has no model EMA, so
 ``state.ema_observation`` is an explicit placeholder slot written on the commit
@@ -81,13 +90,19 @@ class WindowBuffer:
 
     batches: list[Any] = field(default_factory=list)
     losses: list[float] = field(default_factory=list)
+    #: ``(epoch, step)`` slot of every micro-batch in :attr:`losses` — the position
+    #: the micro-batch occupies in the window. A successful replay keeps the slots
+    #: and replaces only the values, so the commit publishes the replayed losses
+    #: into the same ``LossRecorder`` slots the micro-batches were logged with.
+    slots: list[tuple[int, int]] = field(default_factory=list)
     attempts: int = 0
     replays: int = 0
 
-    def add(self, batch: Any, loss: Any) -> float:
+    def add(self, batch: Any, loss: Any, *, epoch: int = 0, step: int = 0) -> float:
         value = loss_value(loss)
         self.batches.append(batch)
         self.losses.append(value)
+        self.slots.append((int(epoch), int(step)))
         return value
 
     def record_attempt(self, losses: Optional[list[float]] = None) -> None:
@@ -109,6 +124,7 @@ class WindowBuffer:
     def reset(self) -> None:
         self.batches = []
         self.losses = []
+        self.slots = []
         self.attempts = 0
         self.replays = 0
 
@@ -117,6 +133,7 @@ _COUNTER_FIELDS = (
     "window_attempts",
     "window_replays",
     "window_discards",
+    "window_commits",
     "window_consecutive_discards",
     "window_total_loss",
     "window_num_steps",
@@ -126,17 +143,46 @@ _COUNTER_FIELDS = (
 def ensure_counters(state: Any) -> None:
     """Give lightweight / hand-built states the E3 fields ``LoopState`` declares."""
     defaults = {"window_total_loss": 0.0, "window_num_steps": 0, "window_last_loss": None,
-                "ema_observation": None}
+                "ema_observation": None, "window_boundary_committed": True,
+                "window_discard_causes": None, "window_discard_propagated": 0}
     for name in _COUNTER_FIELDS:
         if not hasattr(state, name):
             setattr(state, name, defaults.get(name, 0))
     for name, value in defaults.items():
         if not hasattr(state, name):
-            setattr(state, name, value)
+            # Only the cause histogram is a container; the float/None fields keep their
+            # declared default (a ``{}`` here would make ``window_last_loss`` unreadable).
+            setattr(state, name, {} if name == "window_discard_causes" else value)
+    if getattr(state, "window_discard_causes", None) is None:
+        setattr(state, "window_discard_causes", {})
 
 
 def _counter(state: Any, name: str) -> int:
     return int(getattr(state, name, 0) or 0)
+
+
+def publish_window_losses(state: Any, buffer: WindowBuffer) -> int:
+    """Publish the *committed* window's micro-batch losses into ``LossRecorder``.
+
+    Publication is deferred until the window is known to be committed (E3 window
+    transaction): a failed attempt never enters the training-loss statistics, so a
+    finite prefix of a replayed or discarded window cannot leak into the epoch
+    average. ``buffer.losses`` after a successful replay holds the replayed values
+    only, which is what a commit publishes; ``buffer.slots`` keeps the
+    ``(epoch, step)`` position each micro-batch was logged with, so ``epoch > 0``
+    (``LossRecorder`` indexes by step) still lands in the right slot.
+
+    Returns how many samples were recorded (non-finite values are still rejected by
+    :func:`record_loss`).
+    """
+    recorder = getattr(state, "loss_recorder", None)
+    if recorder is None:
+        return 0
+    published = 0
+    for (epoch, step), loss in zip(buffer.slots, buffer.losses):
+        if record_loss(recorder, epoch=epoch, step=step, loss=loss):
+            published += 1
+    return published
 
 
 def commit_window(state: Any, buffer: WindowBuffer) -> dict[str, Any]:
@@ -150,6 +196,7 @@ def commit_window(state: Any, buffer: WindowBuffer) -> dict[str, Any]:
     }
     setattr(state, "window_attempts", _counter(state, "window_attempts") + snapshot["attempts"])
     setattr(state, "window_replays", _counter(state, "window_replays") + snapshot["replays"])
+    setattr(state, "window_commits", _counter(state, "window_commits") + 1)
     setattr(state, "window_total_loss", snapshot["total_loss"])
     setattr(state, "window_num_steps", snapshot["num_steps"])
     setattr(state, "window_last_loss", snapshot["last_loss"])
@@ -157,14 +204,42 @@ def commit_window(state: Any, buffer: WindowBuffer) -> dict[str, Any]:
     # A committed (effective) window resets the discard run, mirroring the D3
     # "consecutive" budget semantics.
     setattr(state, "window_consecutive_discards", 0)
+    # Loss publication is part of the transaction: it happens here, and only here.
+    snapshot["published_losses"] = publish_window_losses(state, buffer)
     return snapshot
 
 
-def discard_window(state: Any, buffer: WindowBuffer, reason: str) -> dict[str, Any]:
-    """Drop the whole window: no counter, no ledger, no global_step moves."""
+def discard_window(
+    state: Any,
+    buffer: WindowBuffer,
+    reason: str,
+    *,
+    local_reason: Optional[str] = None,
+    propagated: bool = False,
+) -> dict[str, Any]:
+    """Drop the whole window: no counter, no ledger, no global_step moves.
+
+    ``discard_causes`` is a histogram of **originating** causes only (contract C4.3-2):
+    ``local_reason`` is what *this* rank proved on its own, and a rank whose local verdict
+    was clean still follows a world discard — that follow is counted separately in
+    ``window_discard_propagated`` and never enters the cause histogram. A propagated
+    discard must not be reported as this rank's ``nonfinite_loss``/``update_skipped``.
+    """
     setattr(state, "window_attempts", _counter(state, "window_attempts") + max(1, buffer.attempts))
     setattr(state, "window_replays", _counter(state, "window_replays") + buffer.replays)
     setattr(state, "window_discards", _counter(state, "window_discards") + 1)
+    # Cause breakdown (observability only): the budget stays a single consecutive
+    # counter on purpose (user ruling: no per-cause budget).
+    # ``local_reason is None`` means this rank's own verdict was clean; it can only
+    # discard because another rank's verdict won the world agreement.
+    followed_world = bool(propagated or local_reason is None)
+    if not followed_world:
+        causes = dict(getattr(state, "window_discard_causes", None) or {})
+        key = local_reason if local_reason is not None else reason
+        causes[key] = int(causes.get(key, 0) or 0) + 1
+        setattr(state, "window_discard_causes", causes)
+    else:
+        setattr(state, "window_discard_propagated", _counter(state, "window_discard_propagated") + 1)
     consecutive = _counter(state, "window_consecutive_discards") + 1
     setattr(state, "window_consecutive_discards", consecutive)
     return {
@@ -248,7 +323,10 @@ def ledger_snapshot(state: Any) -> dict[str, Any]:
         "window_attempts": _counter(state, "window_attempts"),
         "window_replays": _counter(state, "window_replays"),
         "window_discards": _counter(state, "window_discards"),
+        "window_commits": _counter(state, "window_commits"),
         "window_consecutive_discards": _counter(state, "window_consecutive_discards"),
+        "window_discard_causes": dict(getattr(state, "window_discard_causes", None) or {}),
+        "window_discard_propagated": _counter(state, "window_discard_propagated"),
         "window_total_loss": float(getattr(state, "window_total_loss", 0.0) or 0.0),
         "window_num_steps": _counter(state, "window_num_steps"),
         "window_last_loss": getattr(state, "window_last_loss", None),
