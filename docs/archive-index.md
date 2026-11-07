@@ -42,6 +42,10 @@
 | [smc-cfg-analysis-and-proposal-202605.md](../_archive/docs/findings/smc-cfg-analysis-and-proposal-202605.md) | SMC-CFG α-adaptive 控制器的历史分析 |
 | [vr-loss-headroom/README.md](../_archive/docs/findings/vr-loss-headroom/README.md) | Variance-reduction loss headroom 历史实验结论 |
 | [vr-loss-headroom/proposal.md](../_archive/docs/findings/vr-loss-headroom/proposal.md) | Variance-reduction loss 历史接入提案 |
+| [anima_balanced_16g_blockswap_ablation_plan.md](../_archive/docs/findings/anima_balanced_16g_blockswap_ablation_plan.md) | 2026-06-03 阶段快照；Balanced 16G 预测式块交换消融的完成态记录 |
+| [anima_fp8_blockswap_transfer_ablation_plan.md](../_archive/docs/findings/anima_fp8_blockswap_transfer_ablation_plan.md) | 消融目标与验收口径已并入 transfer 报告，旧计划转历史记录 |
+| [anima_lokr_16g_next_goal.md](../_archive/docs/findings/anima_lokr_16g_next_goal.md) | 目标已由 allocator/blocks/FP8 追加消融收口 |
+| [fasterdit_signal_densification_plan.md](../_archive/docs/findings/fasterdit_signal_densification_plan.md) | 2026-06-05 阶段快照；信号加密方案与验证记录 |
 
 ## Configuration 归档
 
