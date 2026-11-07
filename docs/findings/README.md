@@ -181,18 +181,7 @@
 | [krea2_nf4_downstream_correction_90hx.md](krea2_nf4_downstream_correction_90hx.md) | Krea-2 NF4 下游 velocity 目标低秩回补的 90HX 校准与 held-out 验证 |
 | [krea2_nf4_correction_rollout_3080.md](krea2_nf4_correction_rollout_3080.md) | Krea-2 NF4 rank-16 回补的 RTX 3080 完整 rollout 否定结果 |
 | [krea2_nf4_h2d_bottleneck_findings.md](krea2_nf4_h2d_bottleneck_findings.md) | Krea-2 方向 B 前置诊断：NF4+swap H2D 搬运占比双口径实测 0% + 理论上界 2% → NOT_WORTH 归档（含口径缺陷诚实记录 + 与消融矩阵矛盾核验） |
-| [krea2_3080_speed_stage1.md](krea2_3080_speed_stage1.md) | Krea-2 RTX 3080 12s/it 阶段 1：同机双卡 Linear/attention 消融、满功耗核验、prepare 口径修正、padding 尾裁剪 NOT_WORTH |
-| [krea2_3080_speed_stage2.md](krea2_3080_speed_stage2.md) | Krea-2 速度阶段 2：PG199 every-other checkpoint 快 13.9%；RTX 3080 放开单 block 仍 OOM，NOT_FEASIBLE |
-| [krea2_3080_speed_stage3.md](krea2_3080_speed_stage3.md) | Krea-2 速度阶段 3：per-block compile 在 PG199 快 19.1%；RTX 3080 的 3.3% 仅为冷态短窗口，后由阶段 5 修正 |
-| [krea2_3080_speed_stage4.md](krea2_3080_speed_stage4.md) | Krea-2 速度阶段 4：PG199 compile+16/28 checkpoint 20 步稳态 2.408s/it（-28.5%），但 31.55GB 仅实验用 |
-| [krea2_3080_speed_stage5.md](krea2_3080_speed_stage5.md) | Krea-2 速度阶段 5：RTX 3080 compile 20 步 12.06→12.65s 热漂移；纯 GEMM 84°C 复现，compile 主价值修正为显存余量 |
-| [krea2_3080_speed_stage6.md](krea2_3080_speed_stage6.md) | Krea-2 速度阶段 6：FP16 NF4 backward 虽快，但输入梯度 rel-L2 35.6%，REJECT，保留 BF16 强制契约 |
-| [krea2_3080_speed_stage7.md](krea2_3080_speed_stage7.md) | Krea-2 速度阶段 7：reduce-overhead CUDA Graph 与 checkpoint recompute 冲突，限制为 default Inductor mode |
-| [krea2_3080_speed_stage8.md](krea2_3080_speed_stage8.md) | Krea-2 速度阶段 8：rank16→8 可训参数减半但步时持平、仅省 145MB，不作为速度建议 |
-| [krea2_3080_speed_stage9.md](krea2_3080_speed_stage9.md) | Krea-2 速度阶段 9：24 buckets 折叠为 4608/4864 两张可复用 compile 图，默认开启 fixed resident compile |
-| [krea2_3080_speed_stage10.md](krea2_3080_speed_stage10.md) | Krea-2 速度阶段 10：compile 与 LoRA+optimizer checkpoint round-trip delta=0，reload 后 2.73s 无重编译续训 |
-| [krea2_3080_speed_stage11.md](krea2_3080_speed_stage11.md) | Krea-2 速度阶段 11：compile 融合 mul/copy/add 并减少 dequant；GEMM+attention 不变且占 compiled 约 89% |
-| [krea2_3080_speed_stage12.md](krea2_3080_speed_stage12.md) | Krea-2 速度阶段 12：packed varlen FlashAttention 在 PG199 快 11-13%，3080 长稳态快 4%；现为显式 opt-in 生产后端 |
+| [krea2_3080_speed_stage_summary.md](krea2_3080_speed_stage_summary.md) | Krea-2 3080/PG199 速度优化 12 阶段汇总：瓶颈定位（硬件大矩阵 3.6x）、compile `-19.1%`、选择性 checkpoint 仅 PG199 可行、FP16/Inductor mode/降 rank 三项否决、mm+attention 占墙钟 89% 的天花板、Flash varlen 显式 opt-in；逐阶段原文已归档 |
 | [krea2_3080_speed_final.md](krea2_3080_speed_final.md) | Krea-2 RTX 3080 速度研究最终审计：根因、生产建议、可选后端、否决路径与证据边界总表 |
 | [krea2_3080_speed_comparison_extended.md](krea2_3080_speed_comparison_extended.md) | Krea-2 PG199/RTX 3080 扩展速度矩阵：step、it/min、显存、冷/热稳态、swap、checkpoint、compile 与 Flash 对比 |
 | [anima_perband_dynamic_seq_20260830.md](anima_perband_dynamic_seq_20260830.md) | Anima per-band dynamic-seq 移植、64GB CMP 170HX 60-step union/per-band A/B 与默认关闭结论 |

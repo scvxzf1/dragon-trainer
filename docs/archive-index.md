@@ -53,6 +53,7 @@
 | [anima_fp8_blockswap_transfer_ablation_plan.md](../_archive/docs/findings/anima_fp8_blockswap_transfer_ablation_plan.md) | 消融目标与验收口径已并入 transfer 报告，旧计划转历史记录 |
 | [anima_lokr_16g_next_goal.md](../_archive/docs/findings/anima_lokr_16g_next_goal.md) | 目标已由 allocator/blocks/FP8 追加消融收口 |
 | [fasterdit_signal_densification_plan.md](../_archive/docs/findings/fasterdit_signal_densification_plan.md) | 2026-06-05 阶段快照；信号加密方案与验证记录 |
+| [krea2_3080_speed_stage1..12.md](../_archive/docs/findings/) | Krea-2 速度优化 12 阶阶段原文；判定与数字汇总见 [stage_summary](findings/krea2_3080_speed_stage_summary.md) |
 
 ## Superpowers 归档
 
