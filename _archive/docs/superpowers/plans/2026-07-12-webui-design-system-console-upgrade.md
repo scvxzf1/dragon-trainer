@@ -9,7 +9,7 @@
 **Tech Stack:** 现有静态 WebUI（`web/static` CSS + 最小 HTML class）、pytest 前端契约测试、人工 16:9 浅/深走查。
 
 **Spec:** `docs/superpowers/specs/2026-07-12-webui-design-system-console-upgrade-design.md`  
-**Baseline:** [仪表面板换皮设计](../../../_archive/docs/proposal/webui-instrument-panel-reskin/specs/2026-07-12-webui-instrument-panel-reskin-design.md)（已完成并归档）\
+**Baseline:** [仪表面板换皮设计](../../proposal/webui-instrument-panel-reskin/specs/2026-07-12-webui-instrument-panel-reskin-design.md)（已完成并归档）\
 **Iteration log:** `docs/superpowers/plans/2026-07-12-webui-design-system-console-upgrade-iteration-log.md`
 
 ## Global Constraints

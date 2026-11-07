@@ -54,6 +54,17 @@
 | [anima_lokr_16g_next_goal.md](../_archive/docs/findings/anima_lokr_16g_next_goal.md) | 目标已由 allocator/blocks/FP8 追加消融收口 |
 | [fasterdit_signal_densification_plan.md](../_archive/docs/findings/fasterdit_signal_densification_plan.md) | 2026-06-05 阶段快照；信号加密方案与验证记录 |
 
+## Superpowers 归档
+
+2026-07 至 2026-09 维护期的设计规格（specs）、执行计划（plans）和五轮自动迭代协议整体归档；
+不是当前操作说明，当前事实以 `docs/methods/`、`docs/features/`、`docs/findings/` 和实时源码为准。
+
+| 文档 | 说明 |
+| --- | --- |
+| [superpowers/README.md](../_archive/docs/superpowers/README.md) | 归档分区索引（含 specs / plans 生命周期说明） |
+| [superpowers/plans/](../_archive/docs/superpowers/plans/) | 16 篇 2026-07~09 一次性执行计划与迭代日志 |
+| [superpowers/specs/](../_archive/docs/superpowers/specs/) | 16 篇配套设计规格与架构决策记录 |
+
 ## Configuration 归档
 
 | 文档 | 说明 |

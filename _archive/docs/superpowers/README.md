@@ -2,8 +2,8 @@
 
 一句话：这里放维护用设计规格、执行计划和自动迭代协议；冻结的迁移快照单独列出，不是用户主路径。
 
-状态：维护用施工区
-适用版本：当前 main
+状态：已归档
+适用版本：2026-07 至 2026-09 维护期（不再对应当前 main）
 相关入口：`docs/README.md`
 
 ## 生命周期
@@ -56,7 +56,7 @@
 
 ## 单前端迁移历史快照
 
-当前运行与维护入口见 [Next README](../../web/frontend-next/README.md)。这些材料保留各自阶段的设计、
+当前运行与维护入口见 [Next README](../../../web/frontend-next/README.md)。这些材料保留各自阶段的设计、
 勾选状态和验收证据；冻结快照不等于宣告全部迁移项已验证。
 
 | 文档 | 说明 |
@@ -69,11 +69,11 @@
 
 | 入口 | 说明 |
 | --- | --- |
-| [2026-07-12 仪表面板换皮记录](../../_archive/docs/proposal/webui-instrument-panel-reskin/README.md) | 已完成的旧静态 UI 设计、计划、迭代日志和最终评审；当前前端以 Next README 为准 |
+| [2026-07-12 仪表面板换皮记录](../proposal/webui-instrument-panel-reskin/README.md) | 已完成的旧静态 UI 设计、计划、迭代日志和最终评审；当前前端以 Next README 为准 |
 
 ## 维护规则
 
-- 新增 plan / spec 后，同步更新本索引和 [../README.md](../README.md)。
+- 新增 plan / spec 后，同步更新本索引和 [../../../docs/README.md](../../../docs/README.md)。
 - 用户功能说明不要放这里，放到 `docs/features/`。
 - 算法方法说明不要放这里，放到 `docs/methods/` 或 `docs/experimental/`。
 - 完成后及时迁出，避免施工区长期堆积。

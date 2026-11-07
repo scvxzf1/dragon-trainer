@@ -5,8 +5,8 @@
 说明：`已有` 只表示当前 Dragon 存在入口或实现，不等于新技术栈已经完成。
 
 > 2026-10-04 整理：下文状态和证据保留 2026-08-15 至 2026-08-19 的迁移阶段记录，
-> 不是当前功能目录或待办清单。现行入口见 [Next README](../../../web/frontend-next/README.md)，
-> 后续工程记录见 [Next 实施记录](../../features/dragon-next-implementation.md)。
+> 不是当前功能目录或待办清单。现行入口见 [Next README](../../../../web/frontend-next/README.md)，
+> 后续工程记录见 [Next 实施记录](../../../../docs/features/dragon-next-implementation.md)。
 > 未核验项不因 Next 成为唯一入口而自动转为已验证；新增验收应单独记录日期和证据。
 
 ## 状态定义
@@ -42,10 +42,10 @@
 数据集详细规格见
 [`2026-08-15-dragon-dataset-editor-rebuild-spec.md`](2026-08-15-dragon-dataset-editor-rebuild-spec.md)。
 字段级对照见
-[`../../findings/dragon_dataset_subset_field_audit_20260815.md`](../../findings/dragon_dataset_subset_field_audit_20260815.md)。
+[`../../findings/dragon_dataset_subset_field_audit_20260815.md`](../../../../docs/findings/dragon_dataset_subset_field_audit_20260815.md)。
 
 截图范围的逐项证据见
-[`../../findings/dragon_classic_feature_parity_audit_20260815.md`](../../findings/dragon_classic_feature_parity_audit_20260815.md)。
+[`../../findings/dragon_classic_feature_parity_audit_20260815.md`](../../../../docs/findings/dragon_classic_feature_parity_audit_20260815.md)。
 
 ## P1：核心训练工作流
 
@@ -95,6 +95,6 @@
 - 队列、实时训练、历史三块已在 `/next` 新前端落地首版，共用后端契约，无 Classic/anima-app/bridge import。
 - 新增共享 `Topbar` 与 `useWebSocket`，`DatasetWorkspace`/`TrainingWorkspace` 已改为复用。
 - 前端门禁升至 68 个测试，`typecheck` 与 production build 通过；详情见
-  [`../../findings/dragon_next_stage1_queue_monitor_history_20260819.md`](../../findings/dragon_next_stage1_queue_monitor_history_20260819.md)。
+  [`../../findings/dragon_next_stage1_queue_monitor_history_20260819.md`](../../../../docs/findings/dragon_next_stage1_queue_monitor_history_20260819.md)。
 - 2026-08-19 完成一轮全功能审计与修复（真实后端契约 + Playwright 隔离环境浏览器验收），详见
-  [`../../findings/dragon_next_audit_20260819.md`](../../findings/dragon_next_audit_20260819.md)。
+  [`../../findings/dragon_next_audit_20260819.md`](../../../../docs/findings/dragon_next_audit_20260819.md)。

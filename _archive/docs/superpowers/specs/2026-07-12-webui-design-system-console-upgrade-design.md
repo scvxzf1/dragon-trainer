@@ -4,7 +4,7 @@
 实施进度注记：P0 设计系统底座 + P1 训练监控/队列 + P2 历史 board/面板降噪已合入本分支；P3 配置/数据集/工具四页回灌已完成；cache token 为 frontend-chain-20260712-ds-final。  
 日期：2026-07-12  
 范围：Web 前端视觉再升级（设计系统优先，信息架构基本不动）  
-前置：[仪表面板换皮设计](../../../_archive/docs/proposal/webui-instrument-panel-reskin/specs/2026-07-12-webui-instrument-panel-reskin-design.md) 已完成并归档\
+前置：[仪表面板换皮设计](../../proposal/webui-instrument-panel-reskin/specs/2026-07-12-webui-instrument-panel-reskin-design.md) 已完成并归档\
 相关代码：
 
 - `web/static/css/00-tokens.css`
