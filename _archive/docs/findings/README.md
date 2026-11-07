@@ -15,3 +15,6 @@
 | [anima_fp8_blockswap_transfer_ablation_plan.md](anima_fp8_blockswap_transfer_ablation_plan.md) | FP8 block swap transfer 消融计划；实验目标与验收口径已合并进 findings 的 transfer 报告 |
 | [anima_lokr_16g_next_goal.md](anima_lokr_16g_next_goal.md) | LoKr 16G 下一步目标；活跃目标已由 allocator / blocks / FP8 追加消融收口 |
 | [fasterdit_signal_densification_plan.md](fasterdit_signal_densification_plan.md) | FasterDiT-style 收敛信号加密方案与验证记录（2026-06-05）阶段快照 |
+| [project_cleanup_long_running_goal_20260705.md](project_cleanup_long_running_goal_20260705.md) | 长程清理目标（2026-07-05）；状态块自述已完成归档 |
+| [project_cleanup_next_stage_goal_20260705.md](project_cleanup_next_stage_goal_20260705.md) | 下一阶段清理目标（2026-07-05）；状态块自述已完成归档 |
+| [project_cleanup_sustained_goal_20260705.md](project_cleanup_sustained_goal_20260705.md) | 持续清理目标（2026-07-05）；状态块自述已完成归档 |

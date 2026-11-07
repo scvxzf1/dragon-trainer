@@ -7,7 +7,7 @@
 - `bash scripts/krea2/run_nf4_ablation.sh`（NF4 × {完整检查点, 块交换} 5 格消融矩阵，已过；`SMOKE=1` 冒烟）
 - `.venv/bin/python scripts/krea2/probe_nf4_ablation_1024.py`（3080 1024 swap 维度步进曲线测绘，已过；OOM 自动 +4 逼近临界、过点 +2 细扫）
 相关代码：`library/runtime/offloading.py`、`library/runtime/block_swap_masters.py`、`library/models/krea2_raw/quantize.py`、`library/models/krea2_raw/weights.py`、`library/training/compat_matrix.py`、`library/training/model_loading.py`、`library/training/cli_args.py`、`scripts/krea2/probe_nf4_ablation.py`、`scripts/krea2/probe_nf4_ablation_1024.py`、`scripts/krea2/run_nf4_ablation.sh`
-相关 findings：[krea2_nf4_ablation_findings.md](../findings/krea2_nf4_ablation_findings.md)（5 格六维消融矩阵：显存/内存/速度/loss/数学实现/数学偏移）
+相关 findings：[krea2_nf4_ablation_findings.md](../../../docs/findings/krea2_nf4_ablation_findings.md)（5 格六维消融矩阵：显存/内存/速度/loss/数学实现/数学偏移）
 
 # NF4 × block swap 落地方案
 
@@ -200,7 +200,7 @@ swap=24 兼顾安全余量与速度。
 > 噪声级），H2D 完全藏在 NF4 反量化窗口；理论上界 4 块 ~1.4GB ÷ 20GB/s ≈ 70ms =
 > 整步 2%。方向 B 重叠收益上界 2%，不值得其实现风险。落地前提 2「H2D 串行占
 > 显著比例」**不成立**。详见
-> [krea2_nf4_h2d_bottleneck_findings.md](../findings/krea2_nf4_h2d_bottleneck_findings.md)。
+> [krea2_nf4_h2d_bottleneck_findings.md](../../../docs/findings/krea2_nf4_h2d_bottleneck_findings.md)。
 > 8 字段清单 + bnb 契约保留在此段，供未来大分辨率（>1024）或带宽受限场景复用。
 
 ### 数学模型
@@ -267,7 +267,7 @@ B 的 per-slot stream 能把 H2D（0.96GB/步 ÷ 20GB/s ≈ 48ms）藏在反量�
 `scripts/krea2/probe_nf4_ablation.py` + `run_nf4_ablation.sh` 跑 5 格消融矩阵
 （PG199 32GB, 1024×1024, 30 步, LoRA dim=16），六维指标全记录到
 `docs/findings/krea2_nf4_ablation.jsonl`。完整矩阵表 + 判断见
-[krea2_nf4_ablation_findings.md](../findings/krea2_nf4_ablation_findings.md)。
+[krea2_nf4_ablation_findings.md](../../../docs/findings/krea2_nf4_ablation_findings.md)。
 
 核心结论：
 
@@ -319,62 +319,62 @@ BF16 大矩阵比 PG199 慢 4.4-5.2×，NF4 大矩阵慢 4.1-4.6×，attention �
 调用会多计约 196ms，但生产训练只在 accelerator prepare/验证恢复时调用，
 所以这不是可变现的生产加速。文本 padding 尾裁剪将序列 4608→4107，但
 PG199/3080 都无可测收益，行为改动已回退。完整数据与下阶段见
-[krea2_3080_speed_stage1.md](../findings/krea2_3080_speed_stage1.md)。
+[krea2_3080_speed_stage1.md](../../../docs/findings/krea2_3080_speed_stage1.md)。
 
 阶段 2 选择性 checkpoint 结果：PG199 `every_other` 将稳态步时
 3.370→2.901s（-13.9%），峰值 10.49→28.46GB，适合 32GB opt-in。RTX 3080
 swap20 即使只放开 1 个 block 也 OOM，故该路径无法优化 10GB 工作点。见
-[krea2_3080_speed_stage2.md](../findings/krea2_3080_speed_stage2.md)。
+[krea2_3080_speed_stage2.md](../../../docs/findings/krea2_3080_speed_stage2.md)。
 
 阶段 3 per-block compile 实现编译 block `_forward`，block swap 默认只编译 resident
 块。PG199 NF4 full-ckpt 3.370→2.726s（-19.1%）。RTX 3080 swap20 的
 12.140→11.744s 只是冷态短窗口，阶段 5 长窗口已修正为 12.06→12.65s，不再宣称
 持续 3.3% 或“约 60 步回本”；其可靠价值是显存余量和避免 eager backward OOM。
 multi-bucket 与默认 fixed compile 的最终状态见阶段 9。见
-[krea2_3080_speed_stage3.md](../findings/krea2_3080_speed_stage3.md) 和
-[krea2_3080_speed_stage5.md](../findings/krea2_3080_speed_stage5.md)。
+[krea2_3080_speed_stage3.md](../../../docs/findings/krea2_3080_speed_stage3.md) 和
+[krea2_3080_speed_stage5.md](../../../docs/findings/krea2_3080_speed_stage5.md)。
 
 阶段 4 叠加结果：compile + every-other（14/28 checkpoint）在 PG199 首步 OOM。
 改为 16/28 checkpoint 后 20 步稳态 `2.408s/it`，比 3.370s 快 28.5%，loss
 正常下降；但报告峰值 31.55GB 无安全余量，仅作 PG199 实验点。安全档仍是
 full checkpoint + compile（2.726s/it / 11.06GB）。见
-[krea2_3080_speed_stage4.md](../findings/krea2_3080_speed_stage4.md)。
+[krea2_3080_speed_stage4.md](../../../docs/findings/krea2_3080_speed_stage4.md)。
 
 阶段 5 修正 3080 compile 结论：20 步从 12.06s 漂到 12.65s，120 秒纯 BF16
 GEMM 在 84°C/约 1800MHz 也退化 7-9%，因此 3.3% 只是冷态短窗口，不是
 持续加速。当前 eager swap20 在首个 backward OOM，compiled 则完成 20 步，其可靠
 价值是显存余量。长训速度的下一主因是 3080 散热/频率曲线。见
-[krea2_3080_speed_stage5.md](../findings/krea2_3080_speed_stage5.md)。
+[krea2_3080_speed_stage5.md](../../../docs/findings/krea2_3080_speed_stage5.md)。
 
 阶段 6 FP16 compute 候选已拒绝：3080 代表性 FP16 Linear 比 BF16 快 13.7%，
 NF4 层 backward 27.07→10.02ms，但同权重/同输入的输入梯度 rel-L2 达 35.6%、
 cos=0.943。不值得以训练轨迹换速度，保留 `weights.py` 强制 BF16 契约。见
-[krea2_3080_speed_stage6.md](../findings/krea2_3080_speed_stage6.md)。
+[krea2_3080_speed_stage6.md](../../../docs/findings/krea2_3080_speed_stage6.md)。
 
 阶段 7 拒绝 `compile_inductor_mode="reduce-overhead"`：CUDA Graph 输出在 non-reentrant
 checkpoint backward recompute 的第二次调用中被覆盖，直接 RuntimeError。Krea-2
 `compile_blocks` 现仅接受 None/default mode，其他未验证 preset 同样显式拒绝。见
-[krea2_3080_speed_stage7.md](../findings/krea2_3080_speed_stage7.md)。
+[krea2_3080_speed_stage7.md](../../../docs/findings/krea2_3080_speed_stage7.md)。
 
 阶段 8 rank 消融：PG199 compile 安全档中 rank16→8 将可训参数 48.17M→
 24.08M，但步时 2.726s→2.73s 持平，峰值仅省 145MB。rank 不是速度旋钮，
 不应以 adapter 容量换不存在的加速。见
-[krea2_3080_speed_stage8.md](../findings/krea2_3080_speed_stage8.md)。
+[krea2_3080_speed_stage8.md](../../../docs/findings/krea2_3080_speed_stage8.md)。
 
 阶段 9 补齐 multi-bucket：24 个 constant-token buckets 在固定 512 文本后只产生
 4608/4864 两张 block 图；同 family 不同宽高比首次即稳态 2.731/2.956s，
 回访无重编译，峰值 <=11.35GB。Krea 方法默认开 fixed/default/resident compile，
-dynamic_seq 仍关闭。见 [krea2_3080_speed_stage9.md](../findings/krea2_3080_speed_stage9.md)。
+dynamic_seq 仍关闭。见 [krea2_3080_speed_stage9.md](../../../docs/findings/krea2_3080_speed_stage9.md)。
 
 阶段 10 验证 compile × 完整 checkpoint：LoRA/forward round-trip max delta 均为 0，
 optimizer reload 后 loss jump 0.000214，续训仍 2.728-2.730s，无重编译或峰值退化。
 默认 compile 可用于正常保存/续训。见
-[krea2_3080_speed_stage10.md](../findings/krea2_3080_speed_stage10.md)。
+[krea2_3080_speed_stage10.md](../../../docs/findings/krea2_3080_speed_stage10.md)。
 
 阶段 11 CUDA profile 定位 compile 收益：GEMM 1593ms 与 attention 847ms 前后不变；
 eager 的 mul/copy/add 约 601ms 被 Triton 融合，可见 dequant 706→486 次、
 102→68ms。compiled 后 GEMM+attention 约占 89%，是后续软件优化天花板。见
-[krea2_3080_speed_stage11.md](../findings/krea2_3080_speed_stage11.md)。
+[krea2_3080_speed_stage11.md](../../../docs/findings/krea2_3080_speed_stage11.md)。
 
 阶段 12 packed varlen FlashAttention 候选：只打包有效 token 并使用 native GQA，
 attention micro 在 PG199/3080 分别快 47%/34%。PG199 全模型与两类 token family
@@ -382,4 +382,4 @@ attention micro 在 PG199/3080 分别快 47%/34%。PG199 全模型与两类 toke
 （约 4%），GPU peak 6.09GB。checkpoint reload 的 LoRA/forward delta 均为 0。
 由于仍缺显式 backend、可选依赖/V100 fallback、batch/CFG 和 Dynamo 配置边界，当前
 仅保留实验包装器，不改生产默认。见
-[krea2_3080_speed_stage12.md](../findings/krea2_3080_speed_stage12.md)。
+[krea2_3080_speed_stage12.md](../../../docs/findings/krea2_3080_speed_stage12.md)。

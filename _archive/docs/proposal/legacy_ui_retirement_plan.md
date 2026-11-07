@@ -423,5 +423,5 @@ Next 配置库现通过现有 ZIP API 导出训练配置分组；无需打开详
 - [前端工程与验证命令](../../../web/frontend-next/README.md)
 - [静态路由](../../../web/server.py)与[当前字段依赖入口](../../../web/frontend-next/src/features/training-config/fieldCatalog.ts)
 - [旧 Dragon 功能图谱](../../../docs/features/dragon-ui-functional-map.md)
-- [新前端重建计划](../../../docs/proposal/dragon_frontend_rebuild_plan.md)与[历史实施记录](../../../docs/features/dragon-next-implementation.md)
+- [新前端重建计划](dragon_frontend_rebuild_plan.md)与[历史实施记录](../../../docs/features/dragon-next-implementation.md)
 - [Next 训练配置计划](../../../docs/proposal/dragon_next_training_config_plan.md)：功能修复与该计划协调，避免重复实现

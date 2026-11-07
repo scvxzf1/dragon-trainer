@@ -9,7 +9,7 @@
 - 状态：八个主工作区历史工程实现记录；生产默认切换已完成；数据集蒙版编辑为独立子路由
 - 日期：2026-09-09
 - 本页验收数字是 2026-09-09 的历史记录，不代表当前工作树；当前审计见 [2026-09-13 前端审计](../findings/webui_frontend_audit_20260913.md)。
-- 计划：[新前端开发计划书](../proposal/dragon_frontend_rebuild_plan.md)
+- 计划：[新前端开发计划书](../../_archive/docs/proposal/dragon_frontend_rebuild_plan.md)
 - 工作树：`dev`，实施开始基线 `2e96bd0ce3a7c2803d542e5b0b7dfeac77369d8b`，含大量已有未提交改动。
 - 本次未 pull、切分支、提交或推送，没有恢复/清理用户数据。
 

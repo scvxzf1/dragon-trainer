@@ -18,6 +18,8 @@
 | [krea2_raw_gradient_checkpointing.md](../_archive/docs/proposal/krea2_raw_gradient_checkpointing.md) | Krea-2 检查点已落地；保留早期调查、设计与实现分叉的历史核对 |
 | [webui-instrument-panel-reskin/README.md](../_archive/docs/proposal/webui-instrument-panel-reskin/README.md) | 2026-07-12 旧静态 UI 换皮已完成；设计、计划、迭代日志和最终评审成组归档 |
 | [anima-app-deglobalization.md](../_archive/docs/proposal/anima-app-deglobalization.md) | 阶段 0-3 已落地（85 轮，`globalThis` 从 1075 降到 270），剩余收尾由 `anima-app-legacy-bridge-cleanup.md` 接续 |
+| [dragon_frontend_rebuild_plan.md](../_archive/docs/proposal/dragon_frontend_rebuild_plan.md) | Next 已成为唯一入口；保留 FocusFlow / Zaptix 设计与原阶段决策 |
+| [krea2_nf4_blockswap.md](../_archive/docs/proposal/krea2_nf4_blockswap.md) | 方向 A 端到端验证已落地；后续方向见 findings 的 NF4 消融结论 |
 | [anima-app-legacy-bridge-cleanup.md](../_archive/docs/proposal/anima-app-legacy-bridge-cleanup.md) | `anima-app` legacy bridge 收尾已完成，仅保留实施上下文 |
 | [lora-network-decomposition.md](../_archive/docs/proposal/lora-network-decomposition.md) | `LoRANetwork` 分层拆分核心代码已落地，当前仅保留实施计划和历史上下文 |
 | [upstream_high_value_merge_roadmap_2026-06-24.md](../_archive/docs/proposal/upstream_high_value_merge_roadmap_2026-06-24.md) | 上游合并路线图已执行，当前仅保留历史上下文 |
@@ -42,6 +44,9 @@
 | [smc-cfg-analysis-and-proposal-202605.md](../_archive/docs/findings/smc-cfg-analysis-and-proposal-202605.md) | SMC-CFG α-adaptive 控制器的历史分析 |
 | [vr-loss-headroom/README.md](../_archive/docs/findings/vr-loss-headroom/README.md) | Variance-reduction loss headroom 历史实验结论 |
 | [vr-loss-headroom/proposal.md](../_archive/docs/findings/vr-loss-headroom/proposal.md) | Variance-reduction loss 历史接入提案 |
+| [project_cleanup_long_running_goal_20260705.md](../_archive/docs/findings/project_cleanup_long_running_goal_20260705.md) | 长程清理目标（2026-07-05）；状态块自述已完成归档 |
+| [project_cleanup_next_stage_goal_20260705.md](../_archive/docs/findings/project_cleanup_next_stage_goal_20260705.md) | 下一阶段清理目标（2026-07-05）；状态块自述已完成归档 |
+| [project_cleanup_sustained_goal_20260705.md](../_archive/docs/findings/project_cleanup_sustained_goal_20260705.md) | 持续清理目标（2026-07-05）；状态块自述已完成归档 |
 | [anima_balanced_16g_blockswap_ablation_plan.md](../_archive/docs/findings/anima_balanced_16g_blockswap_ablation_plan.md) | 2026-06-03 阶段快照；Balanced 16G 预测式块交换消融的完成态记录 |
 | [anima_fp8_blockswap_transfer_ablation_plan.md](../_archive/docs/findings/anima_fp8_blockswap_transfer_ablation_plan.md) | 消融目标与验收口径已并入 transfer 报告，旧计划转历史记录 |
 | [anima_lokr_16g_next_goal.md](../_archive/docs/findings/anima_lokr_16g_next_goal.md) | 目标已由 allocator/blocks/FP8 追加消融收口 |
