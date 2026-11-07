@@ -25,12 +25,16 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/Button";
 
 const SIDEBAR_WIDTH_KEY = "dragon-next-ui-v1-sidebar-width";
+// 侧边栏宽度按像素持久化，窗口变小或旧值过小时会把导航内容挤出列宽，
+// 造成横向滚动与文字被裁切，因此恢复与拖拽都设下限。
+const SIDEBAR_MIN_WIDTH = 168;
 const NAVIGATION_LAYOUT_KEY = "dragon-next-ui-v1-navigation-layout";
 
 function savedSidebarWidth() {
   try {
     const value = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    return Number.isFinite(value) && value > 0 ? value : null;
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return Math.max(value, SIDEBAR_MIN_WIDTH);
   } catch {
     return null;
   }
@@ -85,7 +89,10 @@ export function Topbar() {
     const rect = layout.getBoundingClientRect();
     const width = layout.clientWidth;
     const requested = ((clientX - rect.left) / rect.width) * width;
-    const next = Math.round(Math.max(width * 0.1, Math.min(requested, width - 320)));
+    const maxWidth = Math.max(width - 320, SIDEBAR_MIN_WIDTH);
+    const next = Math.round(
+      Math.min(Math.max(requested, SIDEBAR_MIN_WIDTH, width * 0.1), maxWidth),
+    );
     sidebarWidth.current = next;
     setWidthPercent(Math.round((next / width) * 100));
     layout.style.setProperty("--sidebar-width", `${next}px`);

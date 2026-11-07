@@ -52,6 +52,29 @@
   overflow: visible;
 }
 
+/* 三栏工作区是固定视口高度 + 内部滚动，页面本身不应产生整页滚动，
+   否则标题/顶栏会被滚走、底部内容被视口切断。 */
+@media (min-width: 801px) {
+  /* html 用 clip：hidden 仍允许程序化滚动，会把顶栏滚出可视区 */
+  :root:has(.next-layout[data-dataset-workspace="true"]),
+  :root:has(.next-layout[data-mask-workspace="true"]),
+  :root:has(.next-layout[data-dataset-image-workspace="true"]) {
+    height: 100%;
+    overflow: clip;
+  }
+
+  /* body 钉在视口上：否则文档仍可被滚动到内容高度（脚本滚动 / 聚焦回滚），
+     表现为顶栏被切走、底部出现空白带。 */
+  :root:has(.next-layout[data-dataset-workspace="true"]) > body,
+  :root:has(.next-layout[data-mask-workspace="true"]) > body,
+  :root:has(.next-layout[data-dataset-image-workspace="true"]) > body {
+    position: fixed;
+    inset: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+}
+
 @media (max-width: 800px) {
   .next-layout[data-dataset-workspace="true"] {
     display: flex;

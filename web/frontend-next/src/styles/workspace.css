@@ -55,6 +55,7 @@ fieldset {
   background: var(--surface);
   border-right: 1px solid var(--line);
   z-index: 5;
+  overflow-x: hidden;
   overflow-y: auto;
   box-shadow: var(--shadow-sm);
 }
@@ -189,6 +190,7 @@ fieldset {
   display: flex;
   align-items: center;
   gap: 11px;
+  min-width: 0;
   min-height: 42px;
   padding: 9px 11px;
   color: var(--muted);
@@ -196,6 +198,15 @@ fieldset {
   border-radius: var(--radius-sm);
   font-size: 13px;
   transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.app-links a > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-links a > svg {
+  flex: none;
 }
 .app-links a[aria-current="page"] {
   color: var(--accent);
@@ -224,7 +235,15 @@ fieldset {
   display: flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
   text-decoration: none;
+}
+.nav-footer a > span,
+.nav-appearance-controls > button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .nav-footer details a {
   padding: 7px 0;
