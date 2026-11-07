@@ -165,13 +165,22 @@ def _any_rank_bad(accelerator, bad: bool) -> bool:
     another skips it, which hangs the job instead of failing loudly. This costs one
     tiny all-reduce per optimizer boundary, and only on scaler-less multi-process
     runs; single-process runs never build the tensor or call ``reduce``.
+
+    The reduction is an explicit ``SUM`` over ``{0, 1}`` compared with ``> 0``:
+    accelerate only implements ``sum``/``mean`` (any other reduction string falls
+    through to ``all_reduce(SUM)``), so the previous ``reduction="max"`` spelling
+    was a misnomer that happened to work only because the flag was boolean. The
+    contract now forbids that spelling (``docs/proposal/
+    multigpu_reference_validation_contract.md`` §6 W-3.1).
     """
     processes = int(getattr(accelerator, "num_processes", 1) or 1)
     if processes <= 1:
         return bad
-    flag = torch.tensor([1.0 if bad else 0.0], device=accelerator.device)
-    flag = accelerator.reduce(flag, reduction="max")
-    return bool(float(flag.item()) > 0.0)
+    from library.training.multigpu.agreement import agree_any
+
+    return agree_any(accelerator, {"nonfinite_gradient": bool(bad)})[
+        "nonfinite_gradient"
+    ]
 
 
 def inspect_grad_ownership(accelerator, network) -> GradFiniteness:

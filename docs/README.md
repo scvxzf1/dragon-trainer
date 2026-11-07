@@ -10,6 +10,7 @@
 | 使用和维护当前 WebUI | [Next 前端 README](../web/frontend-next/README.md) |
 | 准备数据并训练 | [训练参考](guidelines/training.md) |
 | 推理与组合 DCW、Spectrum | [推理参考](guidelines/inference.md) |
+| 判断哪些操作可直接执行 | [授权分级](guidelines/authorization_tiers.md) |
 | 理解配置合并和外置路径 | [配置索引](configuration/README.md) |
 | 使用 WebUI 独立功能 | [功能索引](features/README.md) |
 | 查阅和清理训练产物 | [数据管理](features/data-management.md) |

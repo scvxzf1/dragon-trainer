@@ -52,6 +52,10 @@ DEFAULT_WINDOW_DISCARD_BUDGET = 3
 #: Failure reasons surfaced in warnings / telemetry.
 REASON_NONFINITE_LOSS = "nonfinite_loss"
 REASON_UPDATE_SKIPPED = "update_skipped"
+#: A peer rank asked to discard this window while this rank judged it clean.
+#: The window-seam agreement makes every rank take the stricter outcome, so the
+#: discard is attributed to the peer decision instead of inventing a local one.
+REASON_PEER_WINDOW_DECISION = "peer_window_decision"
 
 
 def window_size(accelerator: Any) -> int:
@@ -133,6 +137,12 @@ def ensure_counters(state: Any) -> None:
     for name, value in defaults.items():
         if not hasattr(state, name):
             setattr(state, name, value)
+    # Resume-cursor counters (contract §8 P1-2). They are real ``LoopState``
+    # fields; hand-built test states get the same "nothing consumed yet" default
+    # here instead of forcing every harness to know about them.
+    for name in ("batches_consumed", "batches_per_epoch", "resume_skipped_batches"):
+        if not hasattr(state, name):
+            setattr(state, name, 0)
 
 
 def _counter(state: Any, name: str) -> int:

@@ -30,7 +30,7 @@ import torch
 from accelerate import Accelerator
 from tqdm import tqdm
 
-from library.training import window_accounting
+from library.training import multigpu, window_accounting
 from library.training.finite_checks import (
     check_loss_finite,
     debug_finite_enabled,
@@ -284,6 +284,30 @@ class LoopState:
     ema_observation: Optional[dict] = None
     recent_step_rate_last: Optional[tuple[float, int]] = None
     recent_step_seconds: deque[float] = field(default_factory=lambda: deque(maxlen=9))
+    #: Batches **this rank** has consumed from its dataloader, cumulative across
+    #: epochs and including the prefix a resumed run skipped. It is the real
+    #: producer of the checkpoint's ``sampler_position`` (contract §8 P1-2): a
+    #: resume is exact only when this counter continues where it stopped.
+    batches_consumed: int = 0
+    batches_per_epoch: int = 0
+    #: Batches the resume plan skipped before the first fresh update; the counter
+    #: starts there so positions from two runs are comparable.
+    resume_skipped_batches: int = 0
+
+
+def loader_cursor_payload(state: "LoopState") -> Optional[dict]:
+    """The committed per-rank cursor, or ``None`` when it cannot be trusted yet."""
+    from library.training.multigpu import cursor as cursor_mod
+
+    if not state.batches_per_epoch:
+        # No dataloader length known: reporting a position would be a guess.
+        return None
+    return cursor_mod.make_cursor(
+        position=int(state.batches_consumed),
+        epoch=int(state.current_epoch.value),
+        rank=int(getattr(state.accelerator, "process_index", 0) or 0),
+        batches_per_epoch=int(state.batches_per_epoch),
+    )
 
 
 def _median_positive_finite(values: deque[float]) -> float | None:
@@ -375,6 +399,8 @@ def build_loop_state(
     initial_step,
     resume_global_step,
     metadata,
+    batches_per_epoch: Optional[int] = None,
+    resume_skipped_batches: int = 0,
 ) -> LoopState:
     """Build :class:`LoopState`. Mirrors the pre-loop setup that used to sit
     between ``_prepare_with_accelerator()`` and the for-epoch loop in
@@ -554,6 +580,12 @@ def build_loop_state(
         profile_range=profile_range,
         on_step_start_for_network=on_step_start_for_network,
         global_step=global_step,
+        batches_per_epoch=(
+            int(batches_per_epoch)
+            if batches_per_epoch is not None
+            else len(train_dataloader)
+        ),
+        resume_skipped_batches=max(0, int(resume_skipped_batches)),
     )
 
 
@@ -586,10 +618,18 @@ def run_training_loop(trainer, state: LoopState) -> None:
 
         state.optimizer_eval_fn()
         state.saver.maybe_save_epoch(
-            state.network, state.global_step, epoch, state.num_train_epochs
+            state.network,
+            state.global_step,
+            epoch,
+            state.num_train_epochs,
+            loader_cursor=loader_cursor_payload(state),
         )
         state.saver.maybe_save_resumable(
-            state.network, state.global_step, epoch, state.num_train_epochs
+            state.network,
+            state.global_step,
+            epoch,
+            state.num_train_epochs,
+            loader_cursor=loader_cursor_payload(state),
         )
 
         _run_sample_with_probe(
@@ -805,6 +845,10 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         state.initial_step = 1
 
     window_accounting.ensure_counters(state)
+    if state.batches_consumed == 0 and state.resume_skipped_batches:
+        # The resume plan rewound the dataloader; the counter starts at the skipped
+        # prefix so a later save reports the same position the original run had.
+        state.batches_consumed = state.resume_skipped_batches
 
     step = -1
     while state.global_step < args.max_train_steps and (
@@ -833,6 +877,7 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                 force_skip=not window_accounting.losses_are_finite(window.losses),
             )
             _profiler_step_end(state)
+            state.batches_consumed += 1
             window.add(batch, loss)
 
             keys_scaled, mean_norm, maximum_norm, max_mean_logs = _maybe_scale_norm(state)
@@ -853,6 +898,13 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                         update_skipped=bool(getattr(state, "update_skipped", False))
                     )
 
+                # The outcome of a replay is rank-local again. Agree it, so a peer
+                # that must discard cannot let this rank commit – committing here
+                # would advance ``global_step`` and every later collective out of
+                # step with that peer (contract §6 W-2(c)).
+                if multigpu.agree_window_discard(accelerator, discard=reason is not None):
+                    reason = reason or window_accounting.REASON_PEER_WINDOW_DECISION
+
                 if reason is None:
                     # Ledger first, then the boundary side effects (E3 contract E).
                     window_accounting.commit_window(state, window)
@@ -865,7 +917,12 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                         record=not bool(getattr(state, "update_skipped", False)),
                     )
                     _sample_at_step(trainer, state)
-                    state.saver.maybe_save_step(state.network, state.global_step, epoch)
+                    state.saver.maybe_save_step(
+                        state.network,
+                        state.global_step,
+                        epoch,
+                        loader_cursor=loader_cursor_payload(state),
+                    )
                     state.optimizer_train_fn()
                     adaptive_notify(trainer, "commit", state)
                 else:
@@ -1050,6 +1107,12 @@ def _run_microbatch(
     adaptive_notify(trainer, "forward")
     before_microstep(state, batch)
     args = state.args
+    # The opt-in noise/timestep fixture (contract §13 V-2.4) identifies samples by
+    # their global slot; the loop is the only place that knows this micro-batch's
+    # local dataloader index. One int per micro-batch, unread unless the fixture
+    # is enabled.
+    consumed = getattr(state, "batches_consumed", None)
+    args._multigpu_batch_index = None if consumed is None else int(consumed)
     accelerator = state.accelerator
     network = state.network
     memory_probe = _memory_probe_for_step(trainer, state)
@@ -1146,9 +1209,31 @@ def _run_microbatch(
                 # same reduced values. Any FP16 overflow then propagates to all
                 # ranks before GradScaler decides whether to skip the step.
                 if async_gradient_sync is not None:
-                    async_gradient_sync.finish_step()
+                    # The async path returns the same GradientSyncResult shape, so
+                    # identity evidence is filled from real counts here too instead
+                    # of staying at "pending" (review t17 low-②).
+                    async_result = async_gradient_sync.finish_step()
+                    try:
+                        from library.training.multigpu import identity as _identity
+
+                        _identity.note_gradient_sync(
+                            async_result, accelerator=accelerator, async_overlap=True
+                        )
+                    except Exception as exc:  # evidence bookkeeping must not train-fail
+                        logger.debug("identity evidence update skipped: %s", exc)
                 else:
-                    synchronize_optimizer_gradients(accelerator, state.optimizer)
+                    sync_result = synchronize_optimizer_gradients(
+                        accelerator, state.optimizer
+                    )
+                    # The identity manifest records what the gradient path really
+                    # did (bucket count / reduced parameters / mode), instead of a
+                    # static guess made before the first boundary (review t4 F1).
+                    try:
+                        from library.training.multigpu import identity as _identity
+
+                        _identity.note_gradient_sync(sync_result, accelerator=accelerator)
+                    except Exception as exc:  # evidence bookkeeping must not train-fail
+                        logger.debug("identity evidence update skipped: %s", exc)
             except Exception as exc:
                 _probe_step(
                     memory_probe,
@@ -1214,7 +1299,22 @@ def _run_microbatch(
             # Cleared before the step so an exception cannot leave the previous
             # boundary's answer behind for a later reader.
             state.update_skipped = None
-            drop_update = skip_update or force_skip or not loss_is_finite
+            boundary_error: Optional[BaseException] = None
+            # Multi-process: agree the drop/step decision *before* any rank may
+            # enter ``optimizer.step()``. A rank that is locally clean must still
+            # drop when a peer is not, otherwise only one rank reaches
+            # ``scaler.step()``/``update()`` inside AcceleratedOptimizer and the
+            # scale/growth tracker diverge (contract §6 W-3.1/§6 W-3.2).
+            if accelerator.sync_gradients:
+                state.multigpu_step_agreement = multigpu.agree_step(
+                    accelerator,
+                    loss_nonfinite=not loss_is_finite,
+                    gradient_nonfinite=bool(skip_update),
+                    force_skip=bool(force_skip),
+                )
+                drop_update = state.multigpu_step_agreement.drop_update
+            else:
+                drop_update = skip_update or force_skip or not loss_is_finite
             if drop_update:
                 state.update_skipped = True
                 # Nothing applied: clear the (possibly poisoned) gradients here so a
@@ -1223,14 +1323,39 @@ def _run_microbatch(
                 # Mid-window (sync_gradients False) the inner step is already a no-op
                 # through AcceleratedOptimizer; this call is the backstop for the
                 # boundary case and keeps the grad buffers finite either way.
-                state.optimizer.zero_grad(set_to_none=True)
+                #
+                # Multi-process mid-window this call is **skipped on purpose**: the
+                # boundary agreement above is what makes the final decision
+                # symmetric, and deleting this rank's real accumulation while a
+                # peer keeps accumulating is exactly the divergence the protocol
+                # removes. Every rank then drops and zeroes at the boundary.
+                if accelerator.sync_gradients or not multigpu.is_multiprocess(accelerator):
+                    state.optimizer.zero_grad(set_to_none=True)
             else:
-                state.optimizer.step()
+                # A rank-local failure here (adapter save hook, optimizer state,
+                # instrumented probe) must not let this rank leave the boundary
+                # while its peer enters the next collective. The failure is first
+                # captured, then agreed through the *same* primitive every rank
+                # calls in this order; the class-II transport case is excluded so
+                # we never start a new collective on a broken process group
+                # (contract §9; review t4 F4).
+                try:
+                    state.optimizer.step()
+                except Exception as exc:
+                    boundary_error = exc
                 state.update_skipped = bool(
                     getattr(accelerator, "optimizer_step_was_skipped", False)
                 )
                 if state.update_skipped:
                     state.optimizer.zero_grad(set_to_none=True)
+            if accelerator.sync_gradients:
+                multigpu.negotiate_boundary_error(
+                    accelerator, boundary_error, dropped=bool(drop_update)
+                )
+                # Bounded symmetric abort: scale/growth tracker must be identical
+                # on every rank, so a bypass of the agreement above fails loudly
+                # on all ranks instead of drifting silently (contract §6 W-3.6).
+                multigpu.assert_scaler_symmetry(accelerator, where="optimizer_boundary")
             if accelerator.sync_gradients and gradient_flow_probe is not None:
                 try:
                     gradient_flow_probe.capture_after_optimizer(state.global_step + 1)

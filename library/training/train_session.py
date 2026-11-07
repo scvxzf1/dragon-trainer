@@ -21,7 +21,7 @@ from library.training.checkpoints import (
     plan_resume_start,
     save_state_on_train_end,
 )
-from library.training.loop import build_loop_state, run_training_loop
+from library.training.loop import build_loop_state, loader_cursor_payload, run_training_loop
 from library.log import setup_logging
 from library.runtime.peak_probe import PeakProbe
 from library.training.cli_args import verify_training_args
@@ -51,6 +51,60 @@ from library.training.train_bootstrap import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def verify_resume_cursor(
+    args, accelerator, train_dataloader, *, epoch_to_start: int, initial_step: int
+) -> None:
+    """Compare the saved per-rank cursor with what this resume will actually skip.
+
+    This is the production consumer of the checkpoint cursor: the load hook stored a
+    :class:`ResumeDecision`, but only here are the resume plan and the dataloader
+    length both known, so only here can the saved position be compared with the
+    position the run is about to continue from. A mismatch is a named error, not a
+    warning, because continuing would silently replay or skip samples.
+    """
+    resume_dir = getattr(args, "resume", None)
+    if not resume_dir:
+        return
+    from library.training.multigpu import cursor as cursor_mod
+    from library.training.multigpu import resume_protocol
+
+    bundle = resume_protocol.read_bundle(resume_dir)
+    if bundle is None:
+        # Legacy state: ``guard_resume`` already reported it as not exact.
+        return
+    rank = int(getattr(accelerator, "process_index", 0) or 0)
+    expected = cursor_mod.make_cursor(
+        position=cursor_mod.expected_position(
+            epoch_to_start=epoch_to_start,
+            initial_step=initial_step,
+            batches_per_epoch=len(train_dataloader),
+        ),
+        epoch=int((bundle.get("extra") or {}).get("epoch", epoch_to_start)),
+        rank=rank,
+        batches_per_epoch=len(train_dataloader),
+    )
+    # The comparison goes through ``guard_resume`` so the topology decision and the
+    # per-rank cursor decision have a single entry point in production: the saved
+    # position for *this* rank against the position this run is about to skip to.
+    decision = resume_protocol.guard_resume(
+        resume_dir,
+        world_size=int(getattr(accelerator, "num_processes", 1) or 1),
+        resume_cursor=expected,
+        rank=rank,
+    )
+    if decision.code in (
+        resume_protocol.CODE_CURSOR_MISMATCH,
+        resume_protocol.CODE_CURSOR_UNKNOWN,
+    ):
+        raise resume_protocol.ResumeBundleError(decision.code, decision.message)
+    if not decision.exact:
+        logger.warning(
+            "resume cursor check did not produce an exact resume (%s): %s",
+            decision.code,
+            decision.message,
+        )
 
 
 def run_training_session(trainer, args) -> None:
@@ -635,6 +689,34 @@ def _run_training_session(trainer, args) -> None:
     precision_observe("resumed", resume_plan.global_step)
     initial_step = resume_plan.initial_step
     epoch_to_start = resume_plan.epoch_to_start
+    # Batches this rank already consumed before the run re-enters: whole epochs the
+    # loop skips plus the residual prefix inside the starting epoch. The loop's
+    # cursor counter starts here, and a resume is only "exact" when the bundle's
+    # saved position equals it (contract §8 P1-2).
+    #
+    # The residual prefix is ``initial_step``, not ``initial_step - 1``: the loop
+    # calls ``skip_first_batches(initial_step - 1)`` and then consumes one more
+    # batch through ``if state.initial_step > 0: ... continue``. So the first batch
+    # that really runs carries local dataloader index ``initial_step`` (t3 F-T3-2:
+    # counter 3 vs real index 4), and anything that treats this counter as a
+    # dataloader position - the per-sample noise fixture - was off by one batch
+    # after every resume.
+    from library.training.multigpu.cursor import (
+        resume_skipped_batches as _resume_skipped_batches,
+    )
+
+    resume_skipped_batches = _resume_skipped_batches(
+        epoch_to_start=epoch_to_start,
+        initial_step=initial_step,
+        batches_per_epoch=len(train_dataloader),
+    )
+    verify_resume_cursor(
+        args,
+        accelerator,
+        train_dataloader,
+        epoch_to_start=epoch_to_start,
+        initial_step=initial_step,
+    )
     apply_anima_block_freeze(
         args,
         accelerator,
@@ -689,6 +771,8 @@ def _run_training_session(trainer, args) -> None:
         initial_step=initial_step,
         resume_global_step=resume_plan.global_step,
         metadata=metadata,
+        batches_per_epoch=len(train_dataloader),
+        resume_skipped_batches=resume_skipped_batches,
     )
     precision_notify("loop_ready", loop_state)
     loop_state.train_dataset_group = stage_dataset
@@ -730,8 +814,16 @@ def _run_training_session(trainer, args) -> None:
         decode_deferred_samples_safely(accelerator, args, loop_state, vae)
 
         precision_notify("final_save", loop_state)
-        if is_main_process and (args.save_state or args.save_state_on_train_end):
-            save_state_on_train_end(args, accelerator)
+        if args.save_state or args.save_state_on_train_end:
+            # Every rank must take part: the directory is written shard by shard and
+            # only rank 0 publishes it (contract §8 P1-1). A rank-0-only dump used
+            # to leave a state no worker could resume.
+            save_state_on_train_end(
+                args,
+                accelerator,
+                global_step=loop_state.global_step,
+                loader_cursor=loader_cursor_payload(loop_state),
+            )
 
         saver.cleanup_resumable()
         saver.save_final(loop_state.network, loop_state.global_step, num_train_epochs)

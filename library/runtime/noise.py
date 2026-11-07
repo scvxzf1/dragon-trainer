@@ -93,7 +93,13 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
 
 
 def get_noisy_model_input_and_timesteps(
-    args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
+    args,
+    noise_scheduler,
+    latents: torch.Tensor,
+    noise: torch.Tensor,
+    device,
+    dtype,
+    sigma_override: torch.Tensor | None = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bsz, h, w = latents.shape[0], latents.shape[-2], latents.shape[-1]
     assert bsz > 0, "Batch size not large enough"
@@ -143,6 +149,16 @@ def get_noisy_model_input_and_timesteps(
         lo = t_min if t_min is not None else 0.0
         hi = t_max if t_max is not None else 1.0
         sigmas = lo + sigmas * (hi - lo)
+
+    # Measurement fixture only: a pinned per-sample sigma replaces the drawn one
+    # *before* the noising arithmetic, so noisy input, timesteps and target all
+    # stay consistent. ``None`` in every normal run keeps the draw untouched.
+    if sigma_override is not None:
+        sigmas = sigma_override.to(device=device, dtype=sigmas.dtype).reshape(-1)
+        if int(sigmas.shape[0]) != int(bsz):
+            raise ValueError(
+                f"sigma_override has {int(sigmas.shape[0])} entries for batch size {bsz}"
+            )
 
     # σ∈[0,1] IS the DiT's time argument — nothing downstream rescales it (cf.
     # inference's generation.py). Keep the flat per-sample σ as the returned

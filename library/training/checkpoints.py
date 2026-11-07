@@ -197,6 +197,8 @@ def save_and_remove_state_on_epoch_end(
     accelerator,
     epoch_no,
     created_state_dirs: set[str] | None = None,
+    global_step: Optional[int] = None,
+    loader_cursor: Optional[dict] = None,
 ):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
 
@@ -207,14 +209,18 @@ def save_and_remove_state_on_epoch_end(
     state_dir = os.path.join(
         args.output_dir, EPOCH_STATE_NAME.format(model_name, epoch_no)
     )
-    state_preexisting = (
-        created_state_dirs is not None
-        and os.path.exists(state_dir)
-        and not _path_created_in_current_run(created_state_dirs, state_dir)
+    # This path used to call ``accelerator.save_state`` directly, bypassing the
+    # rank-0 publish agreement and the versioned bundle. It is a resumable state,
+    # so it goes through the same protocol as every other state save.
+    publish_state_with_bundle(
+        args,
+        accelerator,
+        state_dir,
+        epoch_no=epoch_no,
+        global_step=global_step,
+        loader_cursor=loader_cursor,
+        created_state_dirs=created_state_dirs,
     )
-    accelerator.save_state(state_dir)
-    if not state_preexisting:
-        _record_created_path(created_state_dirs, state_dir)
 
     last_n_epochs = (
         args.save_last_n_epochs_state
@@ -222,7 +228,9 @@ def save_and_remove_state_on_epoch_end(
         else args.save_last_n_epochs
     )
     keep_count = _save_last_keep_count(last_n_epochs)
-    if keep_count is not None:
+    # Every rank calls this helper now, but only rank 0 may remove the shared
+    # directory (a peer deleting it mid-save is the race this protocol removes).
+    if keep_count is not None and accelerator.is_main_process:
         remove_epoch_no = epoch_no - args.save_every_n_epochs * keep_count
         if remove_epoch_no <= 0:
             return
@@ -244,6 +252,7 @@ def save_and_remove_state_stepwise(
     accelerator,
     step_no,
     created_state_dirs: set[str] | None = None,
+    loader_cursor: Optional[dict] = None,
 ):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
@@ -254,21 +263,26 @@ def save_and_remove_state_stepwise(
     state_dir = os.path.join(
         args.output_dir, STEP_STATE_NAME.format(model_name, step_no)
     )
-    state_preexisting = (
-        created_state_dirs is not None
-        and os.path.exists(state_dir)
-        and not _path_created_in_current_run(created_state_dirs, state_dir)
+    # A step-cadence state is a resume point too: same all-rank publish protocol,
+    # same versioned bundle and same per-rank cursor artifacts.
+    publish_state_with_bundle(
+        args,
+        accelerator,
+        state_dir,
+        epoch_no=None,
+        global_step=step_no,
+        loader_cursor=loader_cursor,
+        created_state_dirs=created_state_dirs,
     )
-    accelerator.save_state(state_dir)
-    if not state_preexisting:
-        _record_created_path(created_state_dirs, state_dir)
 
     last_n_steps = (
         args.save_last_n_steps_state
         if args.save_last_n_steps_state
         else args.save_last_n_steps
     )
-    if last_n_steps is not None:
+    if last_n_steps is not None and accelerator.is_main_process:
+        # Rank 0 only: peers are in this call too, and a shared directory must
+        # have a single owner.
         remove_step_no = step_no - last_n_steps - 1
         remove_step_no = remove_step_no - (remove_step_no % args.save_every_n_steps)
 
@@ -547,14 +561,15 @@ def _path_created_in_current_run(paths: set[str] | None, path: str) -> bool:
 
 
 def _recover_checkpoint_state_dirs(state_dir: str, tmp_dir: str, backup_dir: str) -> None:
-    """Clean stale tmp/backup dirs before writing a new resumable state."""
-    if os.path.exists(tmp_dir):
-        _remove_path(tmp_dir)
-    if os.path.exists(backup_dir):
-        if not os.path.exists(state_dir):
-            os.replace(backup_dir, state_dir)
-        else:
-            _remove_path(backup_dir)
+    """Compat shim: the recovery logic now lives in the publish protocol.
+
+    Kept as a thin delegate (not a second implementation) so old callers keep
+    working while there is exactly one definition of "clear stale dirs"
+    (``checkpoint_protocol.recover_state_dirs``).
+    """
+    from library.training.multigpu import checkpoint_protocol as ckpt_proto
+
+    ckpt_proto.recover_state_dirs(state_dir, tmp_dir, backup_dir)
 
 
 def _checkpoint_network_state_compatible(state_dir: str, network: Any) -> bool:
@@ -594,38 +609,201 @@ def _checkpoint_network_state_compatible(state_dir: str, network: Any) -> bool:
 
 
 def save_checkpoint_state(
-    args: argparse.Namespace, accelerator, epoch_no: Optional[int] = None
+    args: argparse.Namespace,
+    accelerator,
+    epoch_no: Optional[int] = None,
+    global_step: Optional[int] = None,
+    loader_cursor: Optional[dict] = None,
 ):
     state_dir = get_checkpoint_state_dir(args, epoch_no)
-    tmp_dir = state_dir + ".tmp"
-    backup_dir = state_dir + ".backup"
 
     logger.info("")
     logger.info(f"saving checkpoint state to {state_dir}")
     os.makedirs(args.output_dir, exist_ok=True)
+    return publish_state_with_bundle(
+        args,
+        accelerator,
+        state_dir,
+        epoch_no=epoch_no,
+        global_step=global_step,
+        loader_cursor=loader_cursor,
+    )
 
-    _recover_checkpoint_state_dirs(state_dir, tmp_dir, backup_dir)
-    try:
-        accelerator.save_state(tmp_dir)
-        if os.path.exists(state_dir):
-            os.replace(state_dir, backup_dir)
-        os.replace(tmp_dir, state_dir)
+
+#: Per-rank loader-cursor artifact written inside the state directory. A per-rank
+#: file name makes it a ``rank_local`` key: exactly one worker owns each name.
+RANK_CURSOR_FILE = "multigpu_cursor_rank{rank}.json"
+
+
+def _write_rank_cursor(state_dir: str, payload: dict) -> str:
+    name = RANK_CURSOR_FILE.format(rank=int(payload["rank"]))
+    path = os.path.join(state_dir, name)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(dict(payload), handle, sort_keys=True)
+        handle.write("\n")
+    os.replace(tmp, path)
+    return name
+
+
+def _read_rank_cursors(state_dir: str, world_size: int) -> dict:
+    out = {}
+    for rank in range(max(1, int(world_size))):
+        path = os.path.join(state_dir, RANK_CURSOR_FILE.format(rank=rank))
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError(f"{path}: cursor payload is not an object")
+        out[str(rank)] = data
+    return out
+
+
+def publish_state_with_bundle(
+    args: argparse.Namespace,
+    accelerator,
+    state_dir: str,
+    *,
+    epoch_no: Optional[int],
+    global_step: Optional[int],
+    loader_cursor: Optional[dict],
+    created_state_dirs: set[str] | None = None,
+):
+    """All-rank save + rank-0 atomic publish + versioned resume bundle.
+
+    ``accelerator.save_state`` is what makes the save all-rank; the publish itself
+    is rank-0 only, and the outcome is agreed before any rank continues (contract
+    §8 P1-1). Every rank writes **its own** cursor artifact into the state
+    directory before rank 0 renames it, so the published directory describes every
+    worker's real position and the bundle's RNG flags come from the files that
+    actually landed on disk.
+    """
+    from library.training.multigpu import checkpoint_protocol as ckpt_proto
+    from library.training.multigpu import cursor as cursor_mod
+    from library.training.multigpu import resume_protocol
+
+    tmp_dir = state_dir + ".tmp"
+    backup_dir = state_dir + ".backup"
+
+    # Every rank records the checkpoint position **before** any publish, in the
+    # same order, and the agreed value is written into the resume bundle. A rank
+    # that disagrees about step/epoch cannot produce a resumable state, so this
+    # aborts on all ranks instead of publishing (contract §8 P1-1).
+    # A step-cadence state has no epoch in its directory name, but the position it
+    # records is (step, epoch, cursor): defaulting that epoch to 0 made every step
+    # save refuse its own cursor ("per-rank cursors disagree about the epoch
+    # (agreed 0, got {'0': 1, ...})"), which is the RUN-C save path.
+    cursor_epoch = loader_cursor.get("epoch") if loader_cursor else None
+    if epoch_no is not None:
+        agreed_epoch_hint = int(epoch_no)
+    elif isinstance(cursor_epoch, int) and not isinstance(cursor_epoch, bool):
+        agreed_epoch_hint = int(cursor_epoch)
+    else:
+        agreed_epoch_hint = 0
+    records = ckpt_proto.checkpoint_records(
+        accelerator,
+        global_step=-1 if global_step is None else int(global_step),
+        epoch=agreed_epoch_hint,
+    )
+    recorded_step = int(records["global_step"])
+    agreed_epoch = int(records["epoch"])
+    world_size = int(getattr(accelerator, "num_processes", 1) or 1)
+    rank = int(getattr(accelerator, "process_index", 0) or 0)
+
+    local_cursor = None
+    if loader_cursor:
+        local_cursor = cursor_mod.make_cursor(
+            position=int(loader_cursor["sampler_position"]),
+            epoch=int(loader_cursor.get("epoch", agreed_epoch)),
+            rank=rank,
+            batches_per_epoch=loader_cursor.get("batches_per_epoch"),
+        )
+
+    def _before_publish(target_dir: str) -> None:
+        device = getattr(accelerator, "device", None)
+        payload = dict(local_cursor) if local_cursor else {
+            "schema": cursor_mod.CURSOR_SCHEMA,
+            "sampler_position": "not_reported",
+            "epoch": agreed_epoch,
+            "rank": rank,
+        }
+        # The device mapping is recorded per rank for the same reason the cursor
+        # is: only that worker knows which device it really ran on, and a bundle
+        # must be able to place every rank before a resume is called exact.
+        payload["device_type"] = str(getattr(device, "type", "unknown"))
+        payload["device_index"] = getattr(device, "index", None)
+        _write_rank_cursor(target_dir, payload)
+
+    def _after_publish(published_dir: str) -> None:
         if epoch_no is not None and getattr(accelerator, "is_main_process", True):
-            _write_checkpoint_latest_state_marker(args, state_dir, epoch_no)
-        if os.path.exists(backup_dir):
-            _remove_path(backup_dir)
-        return state_dir
-    except Exception:
-        if os.path.exists(tmp_dir):
-            _remove_path(tmp_dir)
-        if os.path.exists(backup_dir):
-            if os.path.exists(state_dir):
-                _remove_path(state_dir)
-            os.replace(backup_dir, state_dir)
-        raise
+            _write_checkpoint_latest_state_marker(args, published_dir, epoch_no)
+        dist_type = str(
+            getattr(getattr(accelerator, "state", None), "distributed_type", "")
+        ).lower()
+        backend = "nccl" if "cuda" in dist_type or "gpu" in dist_type else ("gloo" if dist_type else "none")
+        rank_cursors = _read_rank_cursors(published_dir, world_size)
+        mismatched = {
+            key: value.get("epoch")
+            for key, value in rank_cursors.items()
+            if value.get("epoch") != agreed_epoch
+        }
+        if mismatched:
+            # Rollback runs inside publish_state_dir; this refuses on every rank.
+            raise ckpt_proto.CheckpointPublishError(
+                f"{ckpt_proto.CODE_RECORD_FAILED}: per-rank cursors disagree about the "
+                f"epoch (agreed {agreed_epoch}, got {mismatched})"
+            )
+        bundle = resume_protocol.build_bundle(
+            accelerator,
+            backend=backend,
+            # Rank 0's cursor keeps the bundle's top-level field meaningful; the
+            # per-rank truth is ``extra.rank_cursors``.
+            loader_cursor=rank_cursors.get("0") or rank_cursors.get(str(rank)) or {},
+            # RNG flags are derived by *loading* the per-rank random_states_*.pkl
+            # that accelerate just wrote - never asserted (contract §8 P1-2).
+            evidence_dir=published_dir,
+            rank_local={key: [RANK_CURSOR_FILE.format(rank=int(key))] for key in rank_cursors},
+            global_step=recorded_step if recorded_step >= 0 else None,
+            extra={
+                "rank_identity": {
+                    "local_rank": rank,
+                    "world_size": world_size,
+                    "device": str(getattr(getattr(accelerator, "device", None), "type", "unknown")),
+                },
+                "rank_cursors": rank_cursors,
+                "epoch": agreed_epoch,
+            },
+        )
+        # ``build_bundle`` only knows this rank's device; the published state must
+        # describe every worker, and each rank just reported its own in its cursor
+        # artifact, so the mapping is taken from those files.
+        bundle["rank_devices"] = {
+            key: {
+                "type": str(value.get("device_type", "unknown")),
+                "index": value.get("device_index"),
+            }
+            for key, value in rank_cursors.items()
+        }
+        resume_protocol.write_bundle(bundle, published_dir, is_main=True)
+
+    ckpt_proto.save_state_published(
+        accelerator,
+        tmp_dir,
+        state_dir,
+        backup_dir,
+        before_publish=_before_publish,
+        after_publish=_after_publish,
+    )
+    if created_state_dirs is not None:
+        _record_created_path(created_state_dirs, state_dir)
+    return state_dir
 
 
-def save_state_on_train_end(args: argparse.Namespace, accelerator):
+def save_state_on_train_end(
+    args: argparse.Namespace,
+    accelerator,
+    global_step: Optional[int] = None,
+    loader_cursor: Optional[dict] = None,
+):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
 
     logger.info("")
@@ -633,7 +811,16 @@ def save_state_on_train_end(args: argparse.Namespace, accelerator):
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name))
-    accelerator.save_state(state_dir)
+    # Every rank must take part: a rank-0-only dump leaves a state directory that
+    # no worker can resume, and its bundle would describe only one process.
+    publish_state_with_bundle(
+        args,
+        accelerator,
+        state_dir,
+        epoch_no=None,
+        global_step=global_step,
+        loader_cursor=loader_cursor,
+    )
 
 
 def save_sd_model_on_train_end_common(
@@ -725,6 +912,10 @@ class CheckpointSaver:
                         weights.pop(i)
 
             train_state_file = os.path.join(output_dir, "train_state.json")
+            if not accelerator.is_main_process:
+                # One writer per state dir: every rank used to truncate-and-write
+                # the same sidecar, so a peer could read a half-written file (N-2).
+                return
             logger.info(
                 f"save train state to {train_state_file} at epoch "
                 f"{self.current_epoch.value} step {self.current_step.value + 1}"
@@ -745,6 +936,21 @@ class CheckpointSaver:
                     remove_indices.append(i)
             for i in reversed(remove_indices):
                 models.pop(i)
+
+            # Versioned resume validation (contract §8 P1-2): decide *before*
+            # accepting the state whether this is an exact resume, a named
+            # degraded one, legacy (not exact) or a hard rejection.
+            from library.training.multigpu import resume_protocol
+
+            try:
+                decision = resume_protocol.guard_resume(
+                    input_dir,
+                    world_size=int(getattr(accelerator, "num_processes", 1) or 1),
+                )
+            except resume_protocol.ResumeBundleError:
+                raise
+            self.resume_decision = decision
+            decision.raise_if_rejected()
 
             train_state_file = os.path.join(input_dir, "train_state.json")
             if os.path.exists(train_state_file):
@@ -852,7 +1058,13 @@ class CheckpointSaver:
             accelerator.print(f"removing old checkpoint: {moe_file}")
             os.remove(moe_file)
 
-    def maybe_save_step(self, network: Any, global_step: int, epoch: int) -> None:
+    def maybe_save_step(
+        self,
+        network: Any,
+        global_step: int,
+        epoch: int,
+        loader_cursor: Optional[dict] = None,
+    ) -> None:
         """Step-cadence save. ``global_step`` must already be incremented."""
         args = self.args
         accelerator = self.accelerator
@@ -862,23 +1074,37 @@ class CheckpointSaver:
         ):
             return
         accelerator.wait_for_everyone()
-        if not accelerator.is_main_process:
-            return
-        ckpt_name = get_step_ckpt_name(args, "." + args.save_model_as, global_step)
-        self.save(ckpt_name, network, global_step, epoch)
+        if accelerator.is_main_process:
+            ckpt_name = get_step_ckpt_name(args, "." + args.save_model_as, global_step)
+            self.save(ckpt_name, network, global_step, epoch)
         if args.save_state:
+            # Every rank takes part: accelerate writes one shard per rank, so a
+            # rank-0-only call produces a state directory nobody can resume from
+            # — and its first collective (the publish protocol's recovery barrier)
+            # would wait forever for peers that already returned (contract §8
+            # P1-1; review t25).
             save_and_remove_state_stepwise(
-                args, accelerator, global_step, self._created_state_dirs
+                args,
+                accelerator,
+                global_step,
+                self._created_state_dirs,
+                loader_cursor=loader_cursor,
             )
-        remove_step_no = get_remove_step_no(args, global_step)
-        if remove_step_no is not None:
-            remove_ckpt_name = get_step_ckpt_name(
-                args, "." + args.save_model_as, remove_step_no
-            )
-            self.remove(remove_ckpt_name)
+        if accelerator.is_main_process:
+            remove_step_no = get_remove_step_no(args, global_step)
+            if remove_step_no is not None:
+                remove_ckpt_name = get_step_ckpt_name(
+                    args, "." + args.save_model_as, remove_step_no
+                )
+                self.remove(remove_ckpt_name)
 
     def maybe_save_epoch(
-        self, network: Any, global_step: int, epoch: int, num_train_epochs: int
+        self,
+        network: Any,
+        global_step: int,
+        epoch: int,
+        num_train_epochs: int,
+        loader_cursor: Optional[dict] = None,
     ) -> None:
         """Epoch-cadence save. ``epoch`` is 0-indexed; saver writes ``epoch+1``."""
         args = self.args
@@ -886,24 +1112,36 @@ class CheckpointSaver:
         if args.save_every_n_epochs is None:
             return
         epoch_no = epoch + 1
-        saving = epoch_no % args.save_every_n_epochs == 0
-        if not saving or not accelerator.is_main_process:
+        if epoch_no % args.save_every_n_epochs != 0:
             return
-        ckpt_name = get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
-        self.save(ckpt_name, network, global_step, epoch_no)
-        remove_epoch_no = get_remove_epoch_no(args, epoch_no)
-        if remove_epoch_no is not None:
-            remove_ckpt_name = get_epoch_ckpt_name(
-                args, "." + args.save_model_as, remove_epoch_no
-            )
-            self.remove(remove_ckpt_name)
+        if accelerator.is_main_process:
+            ckpt_name = get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
+            self.save(ckpt_name, network, global_step, epoch_no)
+            remove_epoch_no = get_remove_epoch_no(args, epoch_no)
+            if remove_epoch_no is not None:
+                remove_ckpt_name = get_epoch_ckpt_name(
+                    args, "." + args.save_model_as, remove_epoch_no
+                )
+                self.remove(remove_ckpt_name)
         if args.save_state:
+            # Same reason as ``maybe_save_step``: the epoch state directory is
+            # written by every rank (contract §8 P1-1).
             save_and_remove_state_on_epoch_end(
-                args, accelerator, epoch_no, self._created_state_dirs
+                args,
+                accelerator,
+                epoch_no,
+                self._created_state_dirs,
+                global_step,
+                loader_cursor=loader_cursor,
             )
 
     def maybe_save_resumable(
-        self, network: Any, global_step: int, epoch: int, num_train_epochs: int
+        self,
+        network: Any,
+        global_step: int,
+        epoch: int,
+        num_train_epochs: int,
+        loader_cursor: Optional[dict] = None,
     ) -> None:
         """``checkpointing_epochs``-cadence resumable save. ``epoch`` is 0-indexed."""
         args = self.args
@@ -935,7 +1173,9 @@ class CheckpointSaver:
                 self._created_marker_paths, latest_marker
             )
         )
-        state_dir = save_checkpoint_state(args, accelerator, epoch_no)
+        state_dir = save_checkpoint_state(
+            args, accelerator, epoch_no, global_step=global_step, loader_cursor=loader_cursor
+        )
         if state_dir and not state_preexisting:
             _record_created_path(self._created_state_dirs, state_dir)
         if accelerator.is_main_process:

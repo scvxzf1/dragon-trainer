@@ -253,3 +253,244 @@ accumulation when changing the process count.
 This support applies to commands that use the standard `train.py` launcher.
 Bespoke experimental loops that bypass it remain single-GPU unless their own
 documentation says otherwise.
+
+### Multi-GPU startup admission
+
+The card selection and the worker count must agree **exactly**. When a GPU
+selection is present and the launch is active, `num_processes` must equal
+`len(selection)`; fewer workers than cards *and* more workers than cards are both
+refused, with stable reason codes:
+
+| Situation | Reason code |
+| --- | --- |
+| one worker over several selected cards | `multigpu_single_gpu_multi_process` |
+| any other count mismatch (fewer or more workers than cards) | `multigpu_num_processes_selection_mismatch` |
+| launch requested but the resolved count is 1 | `multigpu_launch_without_workers` |
+| launch disabled (`ANIMA_ACCELERATE_LAUNCH=0`) | worker count is dormant, not rewritten |
+
+Writing an explicit worker count is **not** an escape hatch: there is no approved
+multi-worker-per-card mode, so a conflicting explicit value is rejected instead of
+being "preserved". The CLI, the daemon and the WebUI launcher raise the same code
+because they all go through `library/runtime/launch.py` and
+`library/training/multigpu/admission.py`. Single-process launches keep their
+previous behaviour exactly: no collective is issued and no extra file is written.
+
+### Startup probe
+
+`--multigpu_startup_probe` (or `ANIMA_MULTIGPU_STARTUP_PROBE=1`) is **off by
+default**. When enabled on a multi-process run it issues one small collective
+before training: every rank reduces a vector of ones and checks that the result
+equals the world size. Use it when you suspect ranks disagree about topology
+(wrong `WORLD_SIZE`, a worker that failed to join, a mixed preprocess/training
+environment).
+
+Failure behaviour is fail-closed and symmetric: the probe result is agreed across
+ranks and **every** rank aborts with the same named error, so the job never
+continues with a partially joined group. On a single process the flag is a no-op.
+
+### Runtime identity manifest
+
+A multi-process run writes `<output_dir>/multigpu_identity.json` from rank 0,
+covering **every** rank (one small `all_gather` of device/precision/world size).
+It records:
+
+- `world_size` (how many workers really joined) and `configured_world_size` (what
+  the launcher intended) as **separate** fields;
+- the per-rank device/type/index mapping and the effective mixed precision with
+  its source;
+- `reduction_mode`, `gradient_buckets` and `reduced_parameter_count`, filled from
+  the real `synchronize_optimizer_gradients` result at the first optimizer
+  boundary (`pending_first_boundary` / `null` before that, never a guess).
+
+In a multi-process run a manifest that cannot be written is a **named failure**
+(`multigpu_identity_write_failed`) agreed across ranks: a run without identity
+evidence is not started rather than continued. `--output_dir` is therefore
+required for multi-process runs.
+
+### Precision on V100
+
+The launch path never assumes native BF16. On `sm_70`-class cards (V100) the
+precision policy rewrites `bf16` to the actual `fp16` path and records the rewrite
+source in the identity manifest (`mixed_precision.source`), so a run cannot report
+a precision it is not using. FP16 keeps gradients loss-scaled until the
+synchronized finite check, which is what makes the skip decision identical on all
+ranks.
+
+### State saves are all-rank, publishes are rank-0 only
+
+Every resumable save — step cadence (`save_every_n_steps`), epoch cadence
+(`save_every_n_epochs`), `checkpointing_epochs` and the end-of-training save —
+goes through `checkpoints.publish_state_with_bundle`. Each rank writes its own
+shard, RNG state, `rank<N>.json` cursor artifact and then reports to the group;
+rank 0 alone renames the directory. Two consequences that are easy to get wrong:
+
+- The cadence calls must be made by **every** rank. A rank-0-only call leaves the
+  other workers outside the first collective of the publish protocol, which is a
+  barrier — the save then blocks until the process-group timeout instead of
+  failing. The model file itself (`*.safetensors`) is still written by rank 0.
+- The save enters exactly **two** agreements in a fixed order: the *capture*
+  verdict right after each rank's own `accelerator.save_state` (before the
+  pre-publish barrier), then the *publish* verdict after rank 0 renamed the
+  directory. Negotiating a capture failure from the `except` block pairs a failing
+  rank's collective against its sibling's barrier — the same hang from the other
+  side. A transport-looking failure starts **no** collective and does not delete
+  the shared `*.tmp` directory: a peer may still be writing into it.
+
+A step-cadence state has no epoch in its directory name, but the position it
+records is `(step, epoch, cursor)`: the epoch comes from the loader cursor, so a
+step save does not refuse its own per-rank cursors.
+
+### Resume bundle: what counts as exact
+
+`multigpu_resume_bundle.json` is written by rank 0 into the published state. A
+resume is **exact** only when all of the following hold, and each failure has its
+own code:
+
+| Condition | Code | Result |
+| --- | --- | --- |
+| no bundle at all | `multigpu_resume_legacy_not_exact` | allowed, not exact |
+| version mismatch / unreadable | `multigpu_resume_bundle_invalid` | refused |
+| `rank_devices` missing a rank, or naming one this `world_size` does not have | `multigpu_resume_bundle_invalid` | refused |
+| different `world_size` (or backend) | `multigpu_resume_topology_mismatch` (`..._degraded` with the explicit opt-in) | refused / degraded |
+| RNG streams not proven from `random_states_*.pkl` | `multigpu_resume_topology_degraded` | not exact |
+| cursor has no integer position | `multigpu_resume_cursor_unknown` | not exact |
+| cursor != what this resume will skip to | `multigpu_resume_cursor_mismatch` | not exact |
+| `random_states_*.pkl` no longer readable **at resume time** | `multigpu_resume_rng_evidence_missing` | not exact |
+| readable, but a stream is gone or contradicts the bundle **at resume time** | `multigpu_resume_rng_streams_degraded` | not exact |
+
+An incomplete `rank_devices` is **invalid**, not degraded: the publish path builds
+that mapping from every rank's own report, so a partial mapping proves the state
+was not written by a save of this size. "Degraded" is reserved for a *known*
+topology change. The comparison of the cursor happens in
+`train_session.verify_resume_cursor`, through
+`resume_protocol.guard_resume(..., rank=<this rank>, resume_cursor=<expected>)`, so
+each rank compares its *own* saved position with the position it is about to skip
+to; extra fields in the cursor artifact (device type/index, batches per epoch) are
+recorded but never counted as drift.
+
+### Per-sample noise/timestep fixture (measurement only)
+
+The single-vs-dual numeric gate needs the same `(noise, timestep)` for the same
+sample in every run. `library/training/multigpu/noise_fixture.py` provides an
+opt-in JSONL fixture (`ANIMA_MULTIGPU_NOISE_FIXTURE=<path>`, one
+`{"sample_id", "noise", "timestep"}` record per sample). It is off unless the env
+var is set, and a missing/duplicate/wrong-shaped record is a named error rather
+than a quiet fallback to a random draw.
+
+Sample ids come from one of two sources (`ANIMA_MULTIGPU_NOISE_FIXTURE_IDS`):
+
+- `batch` (default) — the ids the training batch carries. The Anima dataloader
+  emits `image_keys` (the bucket's image keys for the samples of the batch), but
+  **only** in the `--debug_dataset` inspection mode, which does not train. A real
+  training batch therefore carries no per-sample id and this mode fails closed.
+- `cursor` — ids derived from the committed sampler position
+  (`s<global sample index>`), which is what `bench/multigpu_reference/hot_run.py`
+  selects for the bounded runs. With workers pinned to 0 and a fixed seed, global
+  batch `b` is rank `b % world_size`'s local batch `b // world_size`, so the same
+  global slot gets the same pinned draw in a 1-worker and a 2-worker run.
+
+Nothing here changes default training behaviour, the loss math, or any admission
+decision.
+
+### Per-sample comparison across world sizes (validation only)
+
+The single-vs-dual gate compares the *same sample* in the *same slot*, so the two
+runs must shuffle identically. accelerate 1.13.0 does not do that by default: its
+multi-process branch re-seeds the sampler from the global RNG and shuffles again,
+while the single-process branch shuffles once, so the permutations differ even
+with the same `--seed`.
+
+The fix is an **explicit opt-in**, exactly like the noise fixture:
+
+| Switch | Default | Effect when on |
+| --- | --- | --- |
+| `--multigpu_seedable_sampler` / `ANIMA_MULTIGPU_SEEDABLE_SAMPLER=1` | **off** | passes `DataLoaderConfiguration(use_seedable_sampler=True, data_seed=<--seed>)`, so a 1-worker and a 2-worker run produce the same permutation |
+| `ANIMA_MULTIGPU_SEEDABLE_SAMPLER_SEED` | `--seed` | explicit sampler seed |
+
+Off, nothing is passed to `Accelerator` and the loader keeps today's behaviour bit
+for bit; on, the sample order of **that** run changes, so every number it is
+compared against must have been produced with the same switch (`hot_run.py` pins
+the flag in RUN-A/B/C). It affects the sample order only — not the loss math, not
+any admission decision, and it is not a production default.
+
+### Per-device batch size
+
+`bootstrap` builds its `DataLoader` with `batch_size=1` because one *dataset item*
+already is one batch (`BaseDataset.__getitem__` walks `bucket_batch_size`
+samples). The number that matters — samples per device — is the dataset blueprint's
+`batch_size`, reachable from config (`--train_batch_size` / `datasets[].batch_size`,
+default `1`). `library/training/dataloader_batch.py::resolve_loader_batch` states
+both numbers explicitly and fails closed (`dataset_batch_size_mismatch`) when the
+configured value disagrees with what the datasets produce, or when subsets disagree
+— the step and scheduler arithmetic is computed from the configured value, so a
+silent disagreement would train a different batch than the run reports.
+
+With that, "one GPU at `batch_size=2`" and "two GPUs at `batch_size=1`" cover the
+same per-update sample multiset: `(local*world + rank)*batch_size + row` gives
+`{2k, 2k+1}` for both.
+
+### Resume cursor, RNG evidence and the noise slot
+
+* **Position.** `sampler_position` is the number of local dataloader batches this
+  rank has consumed, i.e. the index of the next batch. A resume skips
+  `skip_first_batches(initial_step - 1)` **plus** the batch the loop consumes
+  through `if state.initial_step > 0: ... continue`, so the counter starts at
+  `initial_step` (`cursor.resume_skipped_batches`, the single producer used by
+  `train_session` and `expected_position`). The first batch that really runs then
+  carries exactly that index; anything treating the counter as a dataloader
+  position (the noise fixture) would otherwise be off by one batch after a resume.
+* **RNG evidence** is read from the pickles accelerate *really* writes
+  (`random_state`, `numpy_random_seed`, `torch_manual_seed`,
+  `torch_cuda_manual_seed`), not from the bundle's vocabulary. A state whose
+  pickles were written in the older in-tree vocabulary still reports its named
+  verdict (`schema: legacy`), but exactness never depends on the schema guess.
+* **Second observation at resume time.** The bundle records what the RNG files
+  looked like when the state was *written*; that cannot prove the streams will be
+  loaded, because accelerate wraps its whole RNG restore in
+  `except Exception: logger.info("Could not load random states")`
+  (`checkpointing.py`), so a deleted or corrupt `random_states_<rank>.pkl` is
+  swallowed and the run silently continues on an unrelated RNG stream. Therefore
+  `guard_resume` re-reads the files on the real directory it is about to accept
+  (`rng_evidence.observe_state_dir`, the same reader and the same accelerate-key
+  schema the save-time check uses) and reports
+  `multigpu_resume_rng_evidence_missing` / `multigpu_resume_rng_streams_degraded`.
+  It is a few local pickle reads: no collective, no bulk IO, and it does not depend
+  on anything accelerate chooses to log or suppress.
+* **Order of checks.** The cursor comparison runs *before* the generic RNG verdict.
+  A drifted cursor is the specific "the data order moved" failure; leaving it
+  behind an early `..._degraded` return made a resume that would replay the wrong
+  samples look merely degraded. When both problems exist the RNG one is still
+  named in the message.
+
+  Independence is explicit in the result: `ResumeDecision.codes` carries **every**
+  named problem that was found (save-time RNG, resume-time RNG, cursor) and
+  `ResumeDecision.code` is only the most actionable one. A resume with both a
+  drifted cursor and a vanished RNG pickle therefore reports
+  `multigpu_resume_cursor_mismatch` *and*
+  `multigpu_resume_rng_evidence_missing`, with both explanations in `message`.
+
+### Sharding experiment entry
+
+`bench/multigpu_reference/sharding.py::run_two_rank` runs a task in real processes
+and refuses a `nccl` backend unless `MULTIGPU_REFERENCE_HARDWARE=1`, before any
+spawn (no GPU is touched). `fsdp2_numeric` runs on the device the backend implies,
+so it is executable on CPU/Gloo as an integration test and on CUDA under the gate;
+its numeric comparison materializes `DTensor` values (`full_tensor`/`to_local`)
+because `torch.allclose` refuses a mixed `Tensor`/`DTensor` pair on torch 2.10.
+Hardware-marked tests that need an externally provided process group still **skip**;
+a skip is not a pass and must not be reported as evidence.
+
+### Verified and unverified scope
+
+- **Verified on CPU/Gloo**: window/`GradScaler` cross-rank agreement, the startup
+  admission matrix, checkpoint publish agreement (rank-0 atomic publish, rollback
+  when a peer fails, class-II transport exit) and versioned resume bundle
+  validation (topology/RNG/loader cursor, legacy = not exact).
+- **Not yet verified** (a `skip` here counts as *not executed*, never as a pass):
+  NCCL/CUDA paths, real FP16 overflow behaviour on device,
+  FSDP2 / tensor-parallel adoption, and the bounded real Anima runs. Those are
+  gated behind the experiment entries in `bench/multigpu_reference/` and require
+  an explicit release plus the approved step budget (single GPU 10, dual GPU 20,
+  10+10 resume, at most 50 updates in total).
+- This section documents behavior; it does not approve any deployment, packaging
+  or cache/preprocessing side effect. Repository-wide rules stay in `AGENTS.md`.

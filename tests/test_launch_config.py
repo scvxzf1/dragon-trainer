@@ -187,13 +187,20 @@ def test_gpu_selection_world_size_matches_webui_launch_policy(
     )
 
 
-def test_gpu_selection_world_size_preserves_explicit_launch_override() -> None:
+def test_gpu_selection_world_size_rejects_more_workers_than_cards() -> None:
+    """repair round 2 / T3-F1：显式多 worker 共用少量卡不再被放行。
+
+    旧行为（保留 4 并原样启动）会把"N 张卡、4 个 worker"当作用户偏好放过，
+    与准入合同 §7 P0-1「冲突即拒绝启动」相反，因此改为同码拒绝。
+    """
     env = {
         ACCELERATE_LAUNCH_ENV: "1",
         ACCELERATE_NUM_PROCESSES_ENV: "4",
     }
 
-    assert resolve_training_world_size_for_gpu_selection([0, 1], env) == 4
+    with pytest.raises(ValueError) as excinfo:
+        resolve_training_world_size_for_gpu_selection([0, 1], env)
+    assert "multigpu_num_processes_selection_mismatch" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("value", ["no", "fp16", "bf16"])

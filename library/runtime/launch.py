@@ -51,7 +51,18 @@ def configure_accelerate_for_gpu_selection(
     env: MutableMapping[str, str],
     gpu_selection: Sequence[int],
 ) -> None:
-    """Default WebUI multi-GPU selections to one Accelerate worker per GPU."""
+    """Default WebUI multi-GPU selections to one Accelerate worker per GPU.
+
+    The selection and any explicit ``ANIMA_ACCELERATE_NUM_PROCESSES`` are checked
+    together first (:func:`library.training.multigpu.admission.resolve_admission`):
+    a contradiction is refused here, so the Web launcher, the CLI and the daemon
+    all fail closed with the same reason code instead of starting "N cards, 1
+    worker" or "1 card, N workers".
+    """
+    from library.training.multigpu.admission import resolve_admission
+
+    resolve_admission(gpu_selection, env).raise_if_rejected()
+
     if len(gpu_selection) < 2:
         return
 

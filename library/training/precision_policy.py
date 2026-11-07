@@ -42,6 +42,17 @@ def resolve_mixed_precision(
 
     if major < 8:
         args.mixed_precision = "fp16"
+        # Remember *why* the value changed: the runtime identity record must not
+        # present the launcher hint as the precision that was actually used.
+        try:
+            setattr(
+                args,
+                "_mixed_precision_source",
+                f"precision_policy:sm_{major}{_minor}<8 has no native bf16 "
+                "(rewritten from bf16)",
+            )
+        except Exception:  # pragma: no cover - defensive: args may be frozen
+            pass
         logger.warning(
             "GPU sm_%d%d has no native bf16 (bf16 autocast runs the slower "
             "fp32 emulation) — auto-switching --mixed_precision from bf16 to "

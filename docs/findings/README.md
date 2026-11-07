@@ -154,6 +154,7 @@
 | --- | --- |
 | [anima_dual_gpu_parallel_probe_20260904.md](anima_dual_gpu_parallel_probe_20260904.md) | Anima 异构双卡 PP2、TP2、TP2 INT8 通信的 BS=1 性能、显存、数值与同参数图片对比 |
 | [multigpu_v100_nvlink_baseline_20261107.md](multigpu_v100_nvlink_baseline_20261107.md) | 2×V100-SXM2-16GB NVLink 的 NCCL 集合通信/P2P/H2D 实测与 FP16/BF16 算力对照；BF16 在 SM70 上为仿真路径 |
+| [lulynx_multigpu_comparison_20261107.md](lulynx_multigpu_comparison_20261107.md) | Lulynx 多卡设计与本项目的源码对照：机制差异与正确性条件、P0-0 窗口/scaler 一致性优先项、控制面 P0 清单、FSDP2/TP 实验候选、基线口径纠偏与许可证边界 |
 | [z_image_170hx_100step_20260905.md](z_image_170hx_100step_20260905.md) | Z-Image 在 CMP 170HX 上的 100-step BF16 Flash varlen + full checkpoint + swap8 + fused AdamW 真机测试：运行时 PASS，单图过拟合在 step 100 出现明显曝光和细节退化 |
 | [lycoris_4_fused_kernel_audit_20260902.md](lycoris_4_fused_kernel_audit_20260902.md) | LyCORIS 4.0.0 Triton/TileLang fused kernel 发布、性能、精度与 release 宣传审计，以及对本项目 LoKr/LoHa 的借鉴优先级 |
 | [lokr_fused_backward_stage1_20260902.md](lokr_fused_backward_stage1_20260902.md) | 基于 LyCORIS 审计方向独立实现 LoKr `grad_w1` Triton reduction；RTX 3080 组件验证与 CMP 170HX 3-seed x 50-step 端到端热测、Nsight、resume/compile/swap gate |

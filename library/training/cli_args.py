@@ -1689,6 +1689,25 @@ def add_dataset_arguments(
     )
     parser.add_argument("--random_crop", action="store_true", help="enable random crop")
     parser.add_argument(
+        "--multigpu_startup_probe",
+        action="store_true",
+        default=False,
+        help="Multi-process only (opt-in, default off): run one tiny collective "
+        "right after the accelerator is built, so a broken transport fails "
+        "loudly instead of hanging inside the first gradient bucket. A failed "
+        "probe aborts the run; it never downgrades to a single card.",
+    )
+    parser.add_argument(
+        "--multigpu_seedable_sampler",
+        action="store_true",
+        default=False,
+        help="Validation only (opt-in, default off): pass "
+        "DataLoaderConfiguration(use_seedable_sampler=True, data_seed=<seed>) so a "
+        "single-worker and a multi-worker run shuffle into the same permutation. "
+        "Required for the single-vs-dual per-sample comparison; it changes the "
+        "sample order of the run that enables it.",
+    )
+    parser.add_argument(
         "--debug_dataset",
         action="store_true",
         help="show images for debugging (do not train)",

@@ -162,12 +162,20 @@ class TrainingBootstrap:
     def validate_qwen_dataset_config(args, user_config: dict) -> None:
         """Legacy hook name; validate loaded datasets for every model family."""
         from library.training.compat_matrix import check_training_compat
+        from library.training.multigpu.admission import resolve_world_size
 
-        result = check_training_compat({
-            **vars(args),
-            "general": user_config.get("general", {}),
-            "datasets": user_config.get("datasets", []),
-        })
+        result = check_training_compat(
+            {
+                **vars(args),
+                "general": user_config.get("general", {}),
+                "datasets": user_config.get("datasets", []),
+            },
+            # The real worker count, not a ``1`` placeholder: multi-process
+            # incompatibilities must be evaluated against the topology this
+            # process actually runs in (contract §7 P0-4). ``WORLD_SIZE`` is
+            # authoritative once a launcher started the worker.
+            world_size=resolve_world_size(env=os.environ),
+        )
         if result.errors:
             raise ValueError(result.errors[0].message)
 
@@ -870,8 +878,16 @@ class TrainingBootstrap:
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count())
         persistent_workers = args.persistent_data_loader_workers and n_workers > 0
 
+        # The per-device batch size is a *config* value (dataset blueprint
+        # ``batch_size`` / ``--train_batch_size``); the loader wrapper stays 1
+        # because one dataset item already is one batch. Both numbers are resolved
+        # and validated here instead of being implied by a literal (t3 F-T3-7).
+        from library.training.dataloader_batch import resolve_loader_batch
+
+        batch_plan = resolve_loader_batch(args, train_dataset_group)
+        args._dataloader_batch_plan = batch_plan.as_dict()
         dataloader_kwargs = {
-            "batch_size": 1,
+            "batch_size": batch_plan.loader_batch_size,
             "collate_fn": collator,
             "num_workers": n_workers,
             "persistent_workers": persistent_workers,

@@ -27,6 +27,10 @@ class SamplerContext:
     noise: torch.Tensor
     device: torch.device
     weight_dtype: torch.dtype
+    #: Optional per-sample sigma pin used by the measurement fixture
+    #: (``library/training/multigpu/noise_fixture.py``). ``None`` in every normal
+    #: run, so the draw is unchanged.
+    sigma_override: torch.Tensor | None = None
 
 
 @dataclass
@@ -47,6 +51,7 @@ def _default_sampler(ctx: SamplerContext) -> SamplerOut:
         ctx.noise,
         ctx.device,
         ctx.weight_dtype,
+        sigma_override=ctx.sigma_override,
     )
     return SamplerOut(noisy_input=noisy_input, timesteps=timesteps, sigmas=sigmas)
 

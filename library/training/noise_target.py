@@ -65,6 +65,28 @@ def compute_noise_pred_and_target(
 
     noise = torch.randn_like(latents)
 
+    # Opt-in measurement fixture (contract §13 V-2.4): pin (noise, sigma) per
+    # sample id so a single-vs-dual comparison sees identical random inputs.
+    # ``active()`` is None unless ANIMA_MULTIGPU_NOISE_FIXTURE is set, so the
+    # production draw above is used unchanged in every normal run.
+    from library.training.multigpu import noise_fixture
+
+    sigma_override = None
+    fixture = noise_fixture.active()
+    if fixture is not None:
+        # ``_multigpu_batch_index`` is stamped by the training loop: it is the
+        # local dataloader index of this micro-batch, the only place that can
+        # identify the samples in a real run (see noise_fixture.IDS_CURSOR).
+        noise, sigma_override = fixture.apply(
+            noise,
+            latents,
+            batch,
+            mode=noise_fixture.ids_mode(),
+            local_batch_index=getattr(args, "_multigpu_batch_index", None),
+            rank=int(getattr(accelerator, "process_index", 0) or 0),
+            world_size=int(getattr(accelerator, "num_processes", 1) or 1),
+        )
+
     # Draw noisy input + timesteps via the sampler registry (M1).
     sampler_fn = SAMPLER_REGISTRY[getattr(args, "sampler", "default") or "default"]
     sampler_out = sampler_fn(
@@ -75,6 +97,7 @@ def compute_noise_pred_and_target(
             noise=noise,
             device=accelerator.device,
             weight_dtype=weight_dtype,
+            sigma_override=sigma_override,
         )
     )
     noisy_model_input = sampler_out.noisy_input

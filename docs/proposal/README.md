@@ -22,6 +22,7 @@
 | [dcgen_anima_f32c32.md](dcgen_anima_f32c32.md) | POC / 阶段 1-2 | DC-Gen Anima f32c32 latent space、双缓存和 patch 对齐探针记录 |
 | [krea2_pipeline_parallel.md](krea2_pipeline_parallel.md) | 实验 / 阶段 1 | Anima、Krea-2、Z-Image 双卡 PP 配置、family stage adapter 与 fail-closed 规划；1F1B 主训练 runtime 尚未接线 |
 | [multi_gpu_training_plan.md](multi_gpu_training_plan.md) | 实验 / 研究分支 `codex/multi-gpu-training` | 多卡（DDP/PP/TP）能力盘点、2×V100 NVLink 硬件约束与 S0–S5 阶段计划；不改生产默认 |
+| [multigpu_reference_validation_contract.md](multigpu_reference_validation_contract.md) | 实验 / 验收契约 v1（冻结，待实施） | P0-0..5、P1-1..3、EXP-FSDP2-BASE/EXP-TP-COLROW 的验证目标/证据级别/采用否决条件/责任阶段；环境与资产核对、磁盘与 checkpoint 体积预算、50 次有效更新的预登记门槛和六个新测试接口 |
 | [adapter-aware-checkpoint.md](adapter-aware-checkpoint.md) | 半活跃 | Adapter-aware activation checkpoint 可行性探索 |
 | [turbo_anima_dmd_lora.md](turbo_anima_dmd_lora.md) | 半活跃 | Turbo Anima / DMD LoRA 蒸馏提案 |
 | [prior_preservation_from_synth_pool.md](prior_preservation_from_synth_pool.md) | 半活跃 | synth pool prior preservation 提案 |

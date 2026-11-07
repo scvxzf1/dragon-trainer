@@ -153,9 +153,21 @@ def prepare_accelerator(args: argparse.Namespace):
         require_training_contract(args)
         from library.training.adaptive_runtime.training_precision import accelerator_handlers
         precision_kwargs["kwargs_handlers"] = accelerator_handlers(args)
+    # Loader configuration is merged, never replaced: the stateful dataloader
+    # (adaptive OOM resume) and the opt-in seedable sampler (contract §13 V-2.4
+    # cross-world-size comparison, t3 F-T3-1a) are independent switches and only
+    # one ``DataLoaderConfiguration`` can be passed to ``Accelerator``.
+    loader_config_kwargs: dict = {}
     if getattr(args, "adaptive_oom_retry_resume", False):
+        loader_config_kwargs["use_stateful_dataloader"] = True
+    from library.training.multigpu import loader_seed
+
+    loader_config_kwargs.update(loader_seed.dataloader_config_kwargs(args))
+    if loader_config_kwargs:
         from accelerate import DataLoaderConfiguration
-        precision_kwargs["dataloader_config"] = DataLoaderConfiguration(use_stateful_dataloader=True)
+        precision_kwargs["dataloader_config"] = DataLoaderConfiguration(
+            **loader_config_kwargs
+        )
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -168,8 +180,46 @@ def prepare_accelerator(args: argparse.Namespace):
         require_training_contract(args, world_size=accelerator.num_processes)
         if accelerator.device.type != "cuda" or accelerator.scaler is None:
             raise ValueError("Adaptive FP16 training requires CUDA and the Accelerate FP16 scaler")
+    _record_multiprocess_identity(accelerator, args)
     print("accelerator device:", accelerator.device)
     return accelerator
+
+
+def _record_multiprocess_identity(accelerator, args) -> None:
+    """Opt-in startup probe plus the per-run identity manifest (contract §7).
+
+    Both are no-ops for single-process runs: no collective is issued and no file
+    is written, so the single-card path keeps its exact behaviour.
+
+    Multi-process: the manifest is written by rank 0 from an all-gathered view of
+    every rank (device / precision / world size), and a manifest that cannot be
+    written is a **named failure agreed across ranks** – a run without identity
+    evidence must not continue as if it were verifiable (review t4 F2).
+    """
+    from library.training.multigpu.probe import maybe_run_startup_probe
+
+    probe = maybe_run_startup_probe(accelerator, args)
+    if probe.ran:
+        logger.info(
+            "multi-process startup probe ok: world_size=%d reduced=%.1f",
+            probe.world_size,
+            probe.reduced_total,
+        )
+    if int(getattr(accelerator, "num_processes", 1) or 1) <= 1:
+        return
+
+    from library.training.multigpu import identity as identity_mod
+
+    written = identity_mod.record_or_fail(
+        accelerator,
+        args,
+        getattr(args, "output_dir", None),
+        accuracy_source=getattr(
+            args, "_mixed_precision_source", "cli: explicit --mixed_precision"
+        ),
+    )
+    if written is not None:
+        logger.info("multi-process identity written to %s", written)
 
 
 def prepare_dtype(args: argparse.Namespace):

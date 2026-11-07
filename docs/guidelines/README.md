@@ -16,6 +16,7 @@
 | [training.md](training.md) | 训练参考：LoRA 变体、caption shuffle、masked loss、数据集配置 |
 | [inference.md](inference.md) | 推理参考：推理命令、DCW、Spectrum、prompt 文件 |
 | [difference_between_comfy.md](difference_between_comfy.md) | anima_lora 与 ComfyUI 核心实现差异 |
+| [authorization_tiers.md](authorization_tiers.md) | 授权分级：哪些动作 agent 可直接做、哪些必须等用户 |
 
 ## 历史参考
 
