@@ -3,6 +3,10 @@
 日期：2026-10-21（CPU 静态面）；2026-11-06 补记 CUDA 热测（见「CUDA 热测补记」）。状态：CPU 静态回归完成，E2 与 E5/D1 已在真实 CUDA 复现；H3–H7 仍待热测。
 范围：CPU 可判定面（真 `torch.amp.GradScaler("cpu")`）加 2026-11-06 两张 V100 的合成张量热测；不含真实 trainer / 模型族 / 数据链路、跨 rank 归约与长程收敛。
 基线：`codex/fp16-nan-guards` @ 69fed4a0（CPU 静态面）、@ dfae1a4d（2026-11-06 CUDA 补记）；`library/`、`networks/` 相对 11b7bef5 无 diff，本文所有 library 行号沿用 t1 在 11b7bef5 的冻结值。
+**当前基线（2026-11-07，`a615a9e0` = `origin/dev`）**：13 个相关测试文件 **223 passed / 0 xfailed**，
+E3 窗口记账与 E5 所有权判定的规格用例均已转正。本文中其它测试数字是**各日期的历史快照**
+（按写作当天 HEAD 记录），以本节与文末「strict xfail 已清零」为准；引用时请用 223/0。
+
 证据：`tests/test_fp16_nan_static_equivalence.py`（1086 行、24 用例、22 passed + 2 xfailed）；数字来源已落盘为 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；P1–P9 对照表见 `bench/fp16_precision/README.md`），P1–P9 编号对应其输出；CUDA 合成探针为 `bench/fp16_precision/run_cuda_probe.py`（H1/H2/H8，需真 CUDA），E2 与 E5/D1 的生产接缝复现见「CUDA 热测补记」；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。
 相关代码：`library/training/loop.py`、`library/training/finite_checks.py`、`library/runtime/accelerator.py`、`library/training/precision_report.py`。
 
@@ -83,14 +87,14 @@
   「游标 `global_step == completed_steps + 1`」两者之一；③ online 跳步消息保留了
   `requires finite, completed optimizer updates` 短语，既有正则断言不再失配；
   ④ 进入优化器块前清空 `state.update_skipped`，异常路径不会读到陈旧值。
-  当前相关套件合计 **190 passed + 1 xfailed**（唯一 xfail 仍为 E3 规格）。
+  当时（2026-11-06）相关套件合计 190 passed + 1 xfailed（当时唯一 xfail 是 E3 规格；E3 已于 2026-11-07 实现并转正，见文末「E3 窗口记账：已实现」）。
 - **probe 采样器限制**：AUTO probe 用固定采样器，被容忍的跳步不会延长采样长度，因此
   「预算 > 0」在该探针里只能推迟报错、不能真正补采有效样本；这一点在预算语义里已注明。
 - **R2/R3 收尾（2026-11-06）**：`commit()` 在测量计数与游标一致时自检
   `attempted == effective + skipped == global_step`，避免写出恢复阶段会被
   `resume_checkpoint._counters` 拒绝的快照；新增 loop 级端到端用例（预算 2、真实
   `_run_epoch_steps`）确认「跳步被容忍 → scheduler 与游标照常推进 → 照常 commit →
-  `finish()` 因有效步数不足报 `nonfinite_skip`」。相关套件 191 passed + 1 xfailed。
+  `finish()` 因有效步数不足报 `nonfinite_skip`」。当时相关套件 191 passed + 1 xfailed。
 - **已知残留（low，未改）**：`training_state.save_training_state` 保存失败后残留
   `.state-XXXXXXXX.partial`，同一步重试会抛 `FileExistsError` 掩盖真实原因（先于本批
   变更存在，落盘失败本就终止 trial）。
