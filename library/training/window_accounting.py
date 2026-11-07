@@ -217,6 +217,20 @@ def discard_budget(args: Any) -> int:
     )
 
 
+def record_loss(recorder: Any, *, epoch: int, step: int, loss: float) -> bool:
+    """Add a training-loss sample unless it is non-finite.
+
+    E3: a non-finite micro-batch loss belongs to an invalidated window (replayed or
+    discarded), so it must never reach the loss ledger — otherwise one NaN poisons
+    the epoch average for the rest of the epoch (observed in the 2026-11-07 real
+    training run). Returns whether the sample was recorded.
+    """
+    if not losses_are_finite([loss]):
+        return False
+    recorder.add(epoch=epoch, step=step, loss=loss)
+    return True
+
+
 def ema_observation(state: Any, losses: Iterable[float]) -> dict[str, Any]:
     """Commit-path snapshot of the (absent) EMA slot — see module docstring."""
     values = list(losses)

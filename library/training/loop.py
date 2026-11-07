@@ -1457,11 +1457,18 @@ def _log_step(
     )
 
     current_loss = loss.detach().item()
+    # E3: a non-finite micro-batch loss belongs to an invalidated window (replayed
+    # or discarded), so it must never enter the training-loss ledger — otherwise a
+    # single NaN poisons the epoch average for the rest of the epoch.
+    loss_is_finite = window_accounting.losses_are_finite([current_loss])
     if should_log_step:
         from library.training.auto_block_swap.monitor import observe_training
 
         observe_training(args, state.accelerator.device, state.global_step)
-    state.loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+    if loss_is_finite:
+        window_accounting.record_loss(
+            state.loss_recorder, epoch=epoch, step=step, loss=current_loss
+        )
     avr_loss: float = state.loss_recorder.moving_average
     memory_logs = _cuda_memory_logs(state.accelerator.device) if should_log_step else {}
     recent_step_seconds = _recent_step_seconds(state)

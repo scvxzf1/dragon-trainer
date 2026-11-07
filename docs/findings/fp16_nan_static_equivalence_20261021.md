@@ -396,3 +396,38 @@ A 侧仍无命名双语义：`optimizer_step_executed` / `optimizer_update_appli
 - 计数器：`window_attempts` / `window_replays` / `window_discards` / `window_consecutive_discards` 只在 `LoopState` 与丢窗 warning 中可见，**尚未发布进 `precision_report.json`**；`updates.skipped` 在循环路径不再产生（跳步永不提交），`attempted` 只统计已提交边界。`window_discards` 与 runtime 的 `skipped_steps` 是两层口径（丢窗不经过优化器边界，永不计入 `skipped_steps`）。
 - 阻塞修复记录：重放起初被 `accelerate.accumulate` 的 `_do_sync()` 覆盖（`sync_with_dataloader and end_of_dataloader` 时每个微批强制同步），导致 epoch 末窗口重放会更新 2 次、失败重放也会改权重。现由 `_run_microbatch(manage_accumulate=False)` + `_forced_accumulate` 独占边界解决，并保存/恢复 `accelerator.step`；回退分支（缺 `_set_sync_gradients` 的测试替身）会显式 warning。
 - 已知边界：`adaptive_trial` 用 supervisor 的 `adaptive_oom_retry` / `_adaptive_training_worker` 标记判定；直接 `train.py --adaptive_precision`（无 supervisor）会被当作普通训练，使用预算 3。`block_swap_auto` 自带严格契约（非有限 loss 先抛），该开关下重放可能来不及生效。真机 trainer / 数据链路与分布式 reduce 时序的重放验证另表记录。
+
+### 真实小规模训练补记（2026-11-07，V100 / Krea-2 / fp16）
+
+目的：补上「真实 trainer + 真实数据链路」这一块证据（此前只有合成夹具）。
+
+**硬件边界（实测，与本次改动无关）**：16GB V100（sm_70）**在 1024 bucket 下无法训练 Krea-2**。
+根因是 `library/models/krea2_raw/attention_backend.py:124 _cudnn_attention`：sm_70 无 flash varlen，
+`attn_mode=torch` 回退 dense SDPA，1008×1024（4032 token）需额外 ~3.8 GiB 缓冲。
+三种配置均 OOM：swap=14（LoRA 挂载阶段）、swap=24（第 1 步）、swap=26+half_vae+全量 grad-ckpt（第 1 步，峰值 14878 MiB）。
+训练分辨率不由数据集配置决定（`library/config/loader.py:121` 把 `resolution`/`enable_bucket` 判为
+preprocess-only 丢弃，默认 1024），只能由预处理缓存的尺寸决定（`dreambooth.py:166`）。
+
+**可行路径**：先按 512 预处理出 `{stem}_0512x0512_anima.npz` + `{stem}_krea2_te.safetensors`，
+训练 bucket 落到 512 后 swap=20 即可：单步 7.2–8.5 s/it、max_allocated 10.4 GiB / reserved 14.9 GiB、
+启动到首步约 3 分钟（TE/VAE 因命中缓存被跳过）。sm_70 仍是 dense 回退，但 512 token 下不再爆。
+
+**预处理两个坑（真实踩到）**：
+- TE 缓存必须走 Krea-2 专用入口 `python -m scripts.krea2.preprocess_te_cache`；通用
+  `scripts/preprocess/cache_text_embeddings.py` 硬编码 Anima 策略，会写出 `_anima_te` 错后缀
+  （krea2 期望 `_krea2_te`，见 `library/models/family_registry.py:118`）。
+- TE 缓存脚本默认 `--min_pixels 500000`，512×512（262k px）的图会被**静默全部跳过**，必须传 `--min_pixels 0`。
+
+**E3 真实链路结论（g_accum=2，10 张图，512）**：
+- 干净 10 步：`replays=0 discards=0 commits=10`，日志零丢窗、零回退告警 → 重放机制对正常链路零介入。
+- 单次 NaN（注入窗口首微批）：`replays=1 discards=0 commits=4`，轨迹「注入 → 边界微批无提交 →
+  重放 → 提交」，`global_step` 只 +1，权重确实更新且全部 finite（LoRA 非零 45.44M 参数）。
+- 连续两次 NaN：`replays=1 discards=1 commits=4`（5 个窗口 4 次提交），丢窗不推进 `global_step`，
+  默认预算 3 下训练继续跑完并写出 ckpt。
+
+**由此修复的一处账本泄漏**：注入 NaN 后 `loss/epoch_average` 变成 NaN——`_log_step` 原来无条件把每个
+微批 loss 写进 `LossRecorder`。现由 `window_accounting.record_loss()` 拦截非有限样本（不占位、不进账本），
+`loss_recorder` 的 epoch 平均不再被单次 NaN 污染。
+
+**散热记录**：GPU0（水冷）满载 10–12 GiB 时 36–45°C；GPU1（风冷）空载 44°C。同一负载下水冷卡低约 10°C。
+本次全部运行在 GPU0，无温度保护触发。

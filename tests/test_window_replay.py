@@ -8,6 +8,8 @@ D2 guard 丢弃）→ 整个累积窗口作废并**重放同一窗口数据**；
 ``tests/window_replay_harness.py``），不加载模型、不建 CUDA 上下文。
 """
 
+import math
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
@@ -322,3 +324,24 @@ def test_real_accelerator_window_sequence_keeps_sync_landing(monkeypatch):
         assert landings[2] - landings[1] == 2, "重放后下一个窗口仍是满 2 个微批才 sync"
     finally:
         real.close()
+
+
+def test_nonfinite_loss_never_enters_training_loss_ledger():
+    """E3：非有限微批 loss 不得污染 LossRecorder 的 epoch 平均。
+
+    真实训练实测（2026-11-07）：注入一次 NaN 后 `loss/epoch_average` 变成 NaN，
+    因为 `_log_step` 无条件把每个微批 loss 写进 recorder。现由
+    ``window_accounting.record_loss`` 拦截。
+    """
+    from library.training.loss_recorder import LossRecorder
+
+    assert window_accounting.record_loss(LossRecorder(), epoch=0, step=0, loss=1.0) is True
+
+    recorder = LossRecorder()
+    assert window_accounting.record_loss(recorder, epoch=0, step=0, loss=2.0) is True
+    assert window_accounting.record_loss(recorder, epoch=0, step=1, loss=float("nan")) is False
+    assert window_accounting.record_loss(recorder, epoch=0, step=2, loss=float("inf")) is False
+    assert window_accounting.record_loss(recorder, epoch=0, step=3, loss=4.0) is True
+
+    assert math.isfinite(recorder.moving_average)
+    assert recorder.loss_list == [2.0, 4.0], "非有限样本必须被丢弃且不占位"
