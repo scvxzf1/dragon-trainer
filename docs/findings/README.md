@@ -163,6 +163,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [anima_1mp_speed_50hx_20261022.md](anima_1mp_speed_50hx_20261022.md) | Anima 1MP（1024×1024）/ bs1 / 完整检查点在 CMP 50HX 的速度基线：swap=0 两轮复测 **2.363 / 2.400 s/步**（差 1.6%，SM 1850~1905 MHz、显存峰值 6074 MiB、49% 利用率、≈56 W），swap=4 观测 21.07 s/步但夹着外部算力解锁动作，不算干净 A/B；附 fp16 tensor 85 TFLOPS（理论 99.38）的算力锁判定、gen1×8 链路与 120 W 功耗墙 |
+| [anima_1mp_speed_v100_20261025.md](anima_1mp_speed_v100_20261025.md) | 与 50HX 同口径（1MP/bs1/完整检查点/20 步）的 V100 跨卡对照：swap=0 **1.961 s/步**（复现 1.972，差 0.56%），比 50HX 最好档快 16%、默认档快 22%；两卡 MFU 近同（28.4% vs 27.9%）⇒ 差异来自带宽/时间占比而非算力；块交换在 V100（Gen3×16）只多 2%（50HX 同配置 21.07 s/步）；fp16 96.39 TFLOPS 无算力锁；300 W + SM 1530 MHz 锁定步时仅 +2.8% 但功耗 −22%、J/图 −20%、峰值温度 65→56 ℃，解除时钟锁只买回 0.8% ⇒ 瓶颈是功耗墙而非锁 |
 | [anima_dual_gpu_parallel_probe_20260904.md](anima_dual_gpu_parallel_probe_20260904.md) | Anima 异构双卡 PP2、TP2、TP2 INT8 通信的 BS=1 性能、显存、数值与同参数图片对比 |
 | [z_image_170hx_100step_20260905.md](z_image_170hx_100step_20260905.md) | Z-Image 在 CMP 170HX 上的 100-step BF16 Flash varlen + full checkpoint + swap8 + fused AdamW 真机测试：运行时 PASS，单图过拟合在 step 100 出现明显曝光和细节退化 |
 | [lycoris_4_fused_kernel_audit_20260902.md](lycoris_4_fused_kernel_audit_20260902.md) | LyCORIS 4.0.0 Triton/TileLang fused kernel 发布、性能、精度与 release 宣传审计，以及对本项目 LoKr/LoHa 的借鉴优先级 |
