@@ -38,6 +38,32 @@
 
 产物：`<run>/result.json`（原始 metrics）、`<run>/train.log`、`<run>/config.runtime.toml`、profile JSONL。
 
+## 速度测试与 GPU 遥测
+
+`--telemetry` 在训练期间用后台线程采样 `nvidia-smi`（SM 频率、显存频率、显存占用、利用率、
+功耗、温度、PCIe 链路 gen/width），落 `<run>/gpu_telemetry.csv` 并把分布写进
+`result.json` 的 `speed.telemetry`；`--memory-probe` 另外打开训练器自带显存探针
+（`speed.vram`，按加载/训练阶段给出 allocated/reserved 峰值）。
+
+| 开关 | 作用 |
+| --- | --- |
+| `--telemetry` | 训练阶段采样 nvidia-smi，写 `speed.telemetry` + `gpu_telemetry.csv` |
+| `--telemetry-gpu-index N` | 采样的 **nvidia-smi** 索引；默认取 `--gpu`，两者只有在 `CUDA_DEVICE_ORDER=PCI_BUS_ID` 时才一致（否则 CUDA 与 nvidia-smi 的序号顺序不同） |
+| `--telemetry-interval-ms N` | 采样间隔，默认 500 |
+| `--memory-probe` / `--memory-probe-max-steps N` | 打开训练器显存探针（`speed.vram`） |
+| `--metric-window lo-hi` | 步时统计的稳态窗口（例如 `6-50`），默认全部步 |
+
+速度口径一次给全：迭代速度用 `speed.progress`（avg/median/p90 步时、images/h、`peak_reserved_gb`），
+搬运带宽用 profile 的 `gb_per_s`（每步 H2D 字节 ÷ DMA 时长），链路上限用 `copy_bench.py`。
+
+```bash
+CUDA_DEVICE_ORDER=PCI_BUS_ID .venv/bin/python -m bench.block_swap_pipeline.run_probe \
+    --gpu 1 --telemetry --telemetry-gpu-index 1 --memory-probe \
+    --side 1024 --steps 50 --blocks-to-swap 4 --metric-window 6-50 --label 1mp-swap4
+```
+
+实测记录见 [1MP / bs1 / 完整检查点 / swap4 速度基线](../../docs/findings/anima_1mp_speed_50hx_20261022.md)。
+
 ## 跨族运行
 
 `--family` 预设了每族的 dit/te/vae、缓存后缀与运行时键，并按族选择 TE 缓存脚本：

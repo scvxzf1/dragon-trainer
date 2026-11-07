@@ -31,6 +31,9 @@ import sys
 import time
 from pathlib import Path
 
+from bench.gpu_telemetry import GpuTelemetry
+from bench.plain_lora_speed.run_matrix import _summarize_progress
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PY = str(REPO_ROOT / ".venv" / "bin" / "python")
 IMAGE_SIZE = (512, 512)
@@ -476,7 +479,80 @@ def _runtime_toml(
             f"block_swap_vram_margin_mib = {args.margin_mib}\n"
             f"block_swap_auto_stop_ratio = {args.stop_ratio}\n"
         )
+    if args.memory_probe:
+        text += (
+            'memory_probe_jsonl = "auto"\n'
+            f"memory_probe_max_steps = {args.memory_probe_max_steps}\n"
+        )
     return text
+
+
+def _parse_window(text: str | None) -> tuple[int, int] | None:
+    """Parse a ``lo-hi`` step window (e.g. ``6-50``) for steady-state metrics."""
+    if not text:
+        return None
+    raw = text.strip()
+    if "-" in raw:
+        lo, hi = raw.split("-", 1)
+    else:
+        lo = hi = raw
+    try:
+        start, end = int(lo), int(hi)
+    except ValueError as exc:
+        raise SystemExit(f"bad --metric-window {text!r}; expected lo-hi, e.g. 6-50") from exc
+    if start <= 0 or end < start:
+        raise SystemExit(f"bad --metric-window {text!r}; expected positive and ordered")
+    return start, end
+
+
+def _first_existing(*paths: Path) -> Path:
+    """Return the first path that exists (last one wins as the fallback)."""
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[-1]
+
+
+def _summarize_memory_probe(path: Path) -> dict:
+    """Compact VRAM/component view of the trainer's memory probe JSONL."""
+    if not path.exists():
+        return {"path": str(path), "missing": True}
+    records: list[dict] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    def peak(key: str) -> float | None:
+        values = [float(r[key]) for r in records if isinstance(r.get(key), (int, float))]
+        return round(max(values), 4) if values else None
+
+    by_label = [
+        {
+            "label": r.get("label"),
+            "phase": r.get("phase"),
+            "allocated_gb": r.get("cuda_allocated_gb"),
+            "reserved_gb": r.get("cuda_reserved_gb"),
+            "max_reserved_gb": r.get("cuda_max_reserved_gb"),
+        }
+        for r in records
+        if r.get("ev") == "memory" and r.get("label")
+    ]
+    return {
+        "path": str(path),
+        "records": len(records),
+        "peak_max_allocated_gb": peak("cuda_max_allocated_gb"),
+        "peak_max_reserved_gb": peak("cuda_max_reserved_gb"),
+        "min_free_gb": min(
+            (float(r["cuda_free_gb"]) for r in records if isinstance(r.get("cuda_free_gb"), (int, float))),
+            default=None,
+        ),
+        "by_label": by_label,
+    }
 
 
 def main() -> int:
@@ -501,6 +577,30 @@ def main() -> int:
         "--restore-mode",
         default=None,
         help="block_swap_restore_mode (foreach|slab); None keeps the project default",
+    )
+    parser.add_argument(
+        "--telemetry",
+        action="store_true",
+        help="sample nvidia-smi (SM/mem clock, VRAM, util, power, PCIe link) for the train stage",
+    )
+    parser.add_argument(
+        "--telemetry-gpu-index",
+        type=int,
+        default=None,
+        help="nvidia-smi index to sample; defaults to --gpu. Only equal to --gpu when "
+        "CUDA_DEVICE_ORDER=PCI_BUS_ID (otherwise CUDA and nvidia-smi index orders differ).",
+    )
+    parser.add_argument("--telemetry-interval-ms", type=int, default=500)
+    parser.add_argument(
+        "--memory-probe",
+        action="store_true",
+        help="enable the trainer memory probe JSONL (VRAM breakdown per load/train stage)",
+    )
+    parser.add_argument("--memory-probe-max-steps", type=int, default=5)
+    parser.add_argument(
+        "--metric-window",
+        default=None,
+        help="steady-state step window for the step-time summary, e.g. 6-50 (default: all steps)",
     )
     args = parser.parse_args()
 
@@ -542,7 +642,18 @@ def main() -> int:
         "--dataset_config", str(dataset_toml),
         "--require_cache_identity",
     ]
+    telemetry = (
+        GpuTelemetry(
+            args.telemetry_gpu_index if args.telemetry_gpu_index is not None else args.gpu,
+            interval_ms=args.telemetry_interval_ms,
+            csv_path=run_dir / "gpu_telemetry.csv",
+        ).start()
+        if args.telemetry
+        else None
+    )
     rc = _run(cmd, gpu=args.gpu, log=run_dir / "train.log")
+    if telemetry is not None:
+        telemetry.stop()
     print(json.dumps({"stage": "train", "returncode": rc}), flush=True)
 
     profile = run_dir / "logs" / "block_swap_pipeline.block_swap_profile.jsonl"
@@ -550,6 +661,17 @@ def main() -> int:
         analyze_profile(profile, train_log=run_dir / "train.log")
         if profile.exists()
         else {"error": "profile missing", "train": parse_step_time(run_dir / "train.log")}
+    )
+    progress = _summarize_progress(
+        _first_existing(
+            run_dir / "logs" / "block_swap_pipeline.progress.jsonl",
+            run_dir / "train_out" / "block_swap_pipeline.progress.jsonl",
+        ),
+        metric_window=_parse_window(args.metric_window),
+        images_per_step=1.0,
+    )
+    memory = _summarize_memory_probe(
+        run_dir / "logs" / "block_swap_pipeline.memory_probe.jsonl"
     )
     auto_lines = [
         line for line in (run_dir / "train.log").read_text(
@@ -562,10 +684,38 @@ def main() -> int:
         "args": vars(args),
         "train_returncode": rc,
         "metrics": metrics,
+        "speed": {
+            "progress": progress,
+            "telemetry": telemetry.summary() if telemetry is not None else None,
+            "vram": memory,
+        },
         "block_swap_auto": auto_lines[-3:],
     }
     (run_dir / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(metrics.get("mean", metrics), indent=2, ensure_ascii=False), flush=True)
+    speed_line = {
+        "avg_step_sec": progress.get("avg_step_sec"),
+        "median_step_sec": progress.get("median_step_sec"),
+        "p90_step_sec": progress.get("p90_step_sec"),
+        "images_per_hour": progress.get("images_per_hour"),
+        "peak_reserved_gb": progress.get("peak_reserved_gb"),
+        "vram_peak_max_reserved_gb": memory.get("peak_max_reserved_gb"),
+        "h2d_gb_per_s": metrics.get("mean", {}).get("gb_per_s") if isinstance(metrics.get("mean"), dict) else None,
+    }
+    if telemetry is not None:
+        tel = telemetry.summary()
+        active = tel.get("active") or {}
+        speed_line["sm_clock_mean_mhz"] = (tel.get("clocks.sm") or {}).get("mean")
+        speed_line["mem_clock_mean_mhz"] = (tel.get("clocks.mem") or {}).get("mean")
+        speed_line["util_gpu_mean_pct"] = tel.get("utilization_gpu_mean_pct")
+        speed_line["sm_clock_active_mean_mhz"] = (active.get("clocks.sm") or {}).get("mean")
+        speed_line["mem_clock_active_mean_mhz"] = (active.get("clocks.mem") or {}).get("mean")
+        speed_line["util_gpu_active_mean_pct"] = (active.get("utilization.gpu") or {}).get("mean")
+        speed_line["vram_used_active_peak_mib"] = (active.get("memory.used") or {}).get("max")
+        speed_line["power_active_mean_w"] = (active.get("power.draw") or {}).get("mean")
+        speed_line["pcie_width_current"] = tel.get("pcie.link.width.current")
+        speed_line["pcie_gen_current"] = tel.get("pcie.link.gen.current")
+    print(json.dumps(speed_line, ensure_ascii=False), flush=True)
     print(f"[probe] {'PASS' if rc == 0 else 'FAIL'} -> {run_dir}", flush=True)
     return 0 if rc == 0 else 1
 
