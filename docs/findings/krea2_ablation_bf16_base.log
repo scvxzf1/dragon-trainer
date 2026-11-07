@@ -1,66 +1,0 @@
-2026-08-09 07:32:26 INFO     Loading Krea-2 Qwen3-VL text        strategy.py:268
-                             encoder from                                       
-                             /home/scv/nvme0n1p1/训练器相关/krea                
-                             2-webui/models/text_encoders/qwen3v                
-                             l_4b_bf16.safetensors                              
-2026-08-09 07:34:46 INFO     Qwen3-VL state dict: missing=1,     strategy.py:291
-                             unexpected=0                                       
-2026-08-09 07:34:50 INFO     Loaded Krea-2 Qwen3-VL. Parameters: strategy.py:306
-                             4,437,815,808                                      
-                    INFO     load Krea-2 tokenizer from           strategy.py:89
-                             /home/scv/nvme0n1p1/训练器相关/krea2               
-                             -webui/library/models/krea2_raw/conf               
-                             igs/qwen3vl_4b                                     
-2026-08-09 07:34:51 INFO     Initializing VAE                   qwen_vae.py:1880
-2026-08-09 07:34:52 INFO     Loading VAE from                   qwen_vae.py:1904
-                             /home/scv/nvme0n1p1/训练器相关/kre                 
-                             a2-webui/models/vae/qwen_image_vae                 
-                             .safetensors                                       
-                    INFO     Converted ComfyUI AutoencoderKL    qwen_vae.py:1800
-                             state dict keys to official format                 
-                    INFO     Loaded VAE: <All keys matched      qwen_vae.py:1911
-                             successfully>                                      
-2026-08-09 07:34:53 INFO     Loading Krea-2 DiT from               weights.py:81
-                             /home/scv/nvme0n1p1/训练器相关/krea2-              
-                             webui/models/diffusion_models/krea2_r              
-                             aw_bf16.safetensors,                               
-                             dtype=torch.bfloat16, nf4=False                    
-                    INFO     Loaded Krea-2 DiT (430 keys) from     weights.py:95
-                             /home/scv/nvme0n1p1/训练器相关/krea2-              
-                             webui/models/diffusion_models/krea2_r              
-                             aw_bf16.safetensors                                
-2026-08-09 07:34:54 INFO     create LoRA network. base dim        builders.py:99
-                             (rank): 16, alpha: 8.0                             
-                    INFO     neuron dropout: p=None, rank        builders.py:102
-                             dropout: p=None, module dropout:                   
-                             p=None                                             
-=== NF4 消融探针 [tag=bf16_base] NF4=False SWAP=0 CKPT=False 1024×1024 steps=30 GPU=1 ===
-
---- A. TE (device=cuda) + VAE encode ---
-  encode: 147.1s, hiddens (1, 512, 12, 2560), latents (1, 16, 128, 128)
-
---- B. DiT + LoRA + block_swap=0 + grad-ckpt ---
-  DiT 加载 (bf16): 0.8s
-Creating DiT LoRA:   0%|          | 0/196 [00:00<?, ?it/s]Creating DiT LoRA:  14%|█▍        | 27/196 [00:00<00:00, 269.57it/s]Creating DiT LoRA:  29%|██▊       | 56/196 [00:00<00:00, 273.94it/s]Creating DiT LoRA:  43%|████▎     | 85/196 [00:00<00:00, 277.74it/s]Creating DiT LoRA:  58%|█████▊    | 113/196 [00:00<00:00, 277.02it/s]Creating DiT LoRA:  72%|███████▏  | 141/196 [00:00<00:00, 274.02it/s]Creating DiT LoRA:  87%|████████▋ | 170/196 [00:00<00:00, 277.88it/s]                                                                     2026-08-09 07:34:55 INFO     create LoRA for Anima DiT: 196      builders.py:183
-                             modules.                                           
-                    INFO     enable LoRA for DiT: 196 modules  application.py:53
-  LoRA: 196 模块, 48.17M 可训; DiT blocks=28 swap=None
-  setup 后 host RSS 峰值 26.10GB, 系统可用 42.79GB
-
---- 训练前: 落盘 bf16 reference velocity -> /tmp/k2_abl_ref_bf16.pt (shape (1, 16, 1, 128, 128)) ---
-
---- C. 训练 30 步 ---
-  step   0: loss=0.0026, grad_norm=0.0001, step=3.77s
-  step   5: loss=0.0010, grad_norm=0.0004, step=3.28s
-  step  10: loss=0.0007, grad_norm=0.0004, step=3.27s
-  step  15: loss=0.0006, grad_norm=0.0002, step=3.28s
-  step  20: loss=0.0005, grad_norm=0.0001, step=3.27s
-  step  25: loss=0.0005, grad_norm=0.0001, step=3.27s
-  step  29: loss=0.0004, grad_norm=0.0001, step=3.27s
-
-=== JSONL 落盘: /home/scv/nvme0n1p1/训练器相关/krea2-webui/docs/findings/krea2_nf4_ablation.jsonl (tag=bf16_base) ===
-
-=== 判定 [tag=bf16_base]: 通过=False ===
-  GPU peak 29.45GB | host RSS 26.10GB (<20: False)
-  loss 0.0020->0.0005 (↓:True) | grad≠0:True | finite:True
-  avg step 3.29s | train 100.0s
