@@ -70,6 +70,7 @@
 
 ## Runtime 和能力边界
 
+- [fp16/E3 窗口事务实施记录](fp16_transaction_implementation_20261107.md)：统计事务、多卡一致性与可观测性的实现边界（含未验项）。
 - [Qwen-Image 2.1 上的 Block Swap 与自动水位（CMP 50HX 第 12 轮）](block_swap_qwen_image_21_hot_50hx_20261019.md)：第四族、也是四族收口的一轮。固定 `swap=30` 每步 60 任务、24.38 GiB，自动晋升 `30 → 14`（free=7.00 GiB、margin=0.39 GiB、block=416.0 MiB，可晋升 16 块但受 `current-2` 契约限制）后降到每步 28 任务、11.38 GiB（−53.3%），步跨度 7848 → 3877 ms（−50.6%）；每块 416.0 MiB 与头部推算逐字节一致。**修正 P0' 结论**：`exposed_wait` 小不等于搬运不构成瓶颈——baseline 的 DMA 忙时间（8362 ms）甚至超过步跨度（7848 ms），步时约一半由搬运量间接决定。另修正第 9 轮的 qwen 载荷数字，并把 `duplicate_restores` 判定为跨相位误报。含 tokenizer 定位、`timestep_sampling` 漏配、错误 checkpoint 三个实测坑。
 - [Z-Image 上的 Block Swap 与自动水位（CMP 50HX 第 11 轮）](block_swap_zimage_hot_50hx_20261019.md)：给探针加 `--family` 族预设（各族 TE 缓存入口、缓存后缀、运行时键；目录型组件原地引用），并在第三族真机验收。日志 `10.11 GiB across 30 blocks` 与头部推算一致；固定 swap=28 每步 56 任务、20260 MB（预测 20262）、3.117 GB/s（天花板 99.3%）、DMA 占步时约 93%。**非 Anima 族的正向晋升首次实测**：`28 → 13`（free=6.15 GiB、margin=0.78 GiB、block=345.0 MiB，可晋升 15 块），步时 7.69/8.12 → 5.30/5.38 s（−30%），每步少搬 10853 MB，一次性晋升约 1.6 s 且一步回本。含三个实测坑与未验证边界。
 - [Krea-2-Raw 上的 Block Swap 与自动水位（CMP 50HX 第 10 轮）](block_swap_krea2_hot_50hx_20261019.md)：第二个模型族的真机验收。日志 `22.64 GiB across 28 blocks` 与只读头部推算的 22.64 GiB/28 块/828.1 MiB 相差 0.011%；每步 52 任务（=2S）、45147 MB（预测 45153，−0.013%）、有效带宽 3.114 GB/s（天花板 99.2%）、DMA 占步时约 96%。无余量时调优器正确保持 `blocks_to_swap=26`（free=0.67 GiB 小于 1.17 GiB 余量），且单块 828 MiB > 空闲 686 MiB 说明该卡上 Krea-2 的晋升结构性不可行。含原生分辨率 OOM、缓存 identity、`image_dir` glob、`save_every_n_steps=0` 零除四个实测坑与未验证边界。

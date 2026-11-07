@@ -112,6 +112,35 @@ def resolve_run_log_dir(args: argparse.Namespace) -> Optional[str]:
     return resolved
 
 
+def _warn_fp16_without_scaler(args: argparse.Namespace, accelerator) -> bool:
+    """Warn once if fp16 was requested but Accelerate built no ``GradScaler``.
+
+    Observability only (user ruling: a warning, never a new fail-fast default). Without a
+    scaler there is no fp16 overflow protection, so a non-finite gradient can only be
+    dropped by the no-scaler guard — a path that used to be completely silent. Returns
+    whether this call emitted the warning; repeat calls on the same accelerator are no-ops.
+    """
+    if getattr(args, "mixed_precision", None) != "fp16" or accelerator.scaler is not None:
+        return False
+    if getattr(accelerator, "_fp16_no_scaler_warned", False):
+        return False
+    setattr(accelerator, "_fp16_no_scaler_warned", True)
+    logger.warning(
+        "mixed_precision=fp16 but Accelerate created no GradScaler: "
+        "requested mixed_precision=fp16, resolved mixed_precision=%s, "
+        "device.type=%s, scaler is None, rank=%s, world_size=%s, distributed=%s. "
+        "Without a scaler there is no fp16 overflow protection: non-finite gradients "
+        "can only be dropped by the no-scaler guard (the update is skipped). "
+        "Warning only — training continues.",
+        getattr(accelerator, "mixed_precision", None),
+        accelerator.device.type,
+        getattr(accelerator, "process_index", 0),
+        getattr(accelerator, "num_processes", 1),
+        getattr(accelerator, "distributed_type", None),
+    )
+    return True
+
+
 def prepare_accelerator(args: argparse.Namespace):
     logging_dir = resolve_run_log_dir(args)
 
@@ -168,6 +197,7 @@ def prepare_accelerator(args: argparse.Namespace):
         require_training_contract(args, world_size=accelerator.num_processes)
         if accelerator.device.type != "cuda" or accelerator.scaler is None:
             raise ValueError("Adaptive FP16 training requires CUDA and the Accelerate FP16 scaler")
+    _warn_fp16_without_scaler(args, accelerator)
     print("accelerator device:", accelerator.device)
     return accelerator
 
