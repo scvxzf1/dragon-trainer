@@ -7,7 +7,7 @@
 > **一句话：** 这是迁移当时逐条核对的历史清单，不是当前能力说明。每条风险保留原始
 > 触发条件、现象和缓解过程；已经落地的结论以当前源码、
 > [`krea2_raw_migration.md`](krea2_raw_migration.md) 顶部状态和
-> [`../multi_model_support.md`](../multi_model_support.md) 为准。
+> [`../multi_model_support.md`](../../../docs/multi_model_support.md) 为准。
 
 ---
 

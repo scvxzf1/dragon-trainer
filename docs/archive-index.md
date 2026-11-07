@@ -20,6 +20,8 @@
 | [anima-app-deglobalization.md](../_archive/docs/proposal/anima-app-deglobalization.md) | 阶段 0-3 已落地（85 轮，`globalThis` 从 1075 降到 270），剩余收尾由 `anima-app-legacy-bridge-cleanup.md` 接续 |
 | [dragon_frontend_rebuild_plan.md](../_archive/docs/proposal/dragon_frontend_rebuild_plan.md) | Next 已成为唯一入口；保留 FocusFlow / Zaptix 设计与原阶段决策 |
 | [krea2_nf4_blockswap.md](../_archive/docs/proposal/krea2_nf4_blockswap.md) | 方向 A 端到端验证已落地；后续方向见 findings 的 NF4 消融结论 |
+| [krea2_raw_migration.md](../_archive/docs/proposal/krea2_raw_migration.md) | 历史迁移计划；阶段 0-6 已落地，状态块原标记「待归档」 |
+| [krea2_raw_migration_notes.md](../_archive/docs/proposal/krea2_raw_migration_notes.md) | 配套历史风险登记册 |
 | [anima-app-legacy-bridge-cleanup.md](../_archive/docs/proposal/anima-app-legacy-bridge-cleanup.md) | `anima-app` legacy bridge 收尾已完成，仅保留实施上下文 |
 | [lora-network-decomposition.md](../_archive/docs/proposal/lora-network-decomposition.md) | `LoRANetwork` 分层拆分核心代码已落地，当前仅保留实施计划和历史上下文 |
 | [upstream_high_value_merge_roadmap_2026-06-24.md](../_archive/docs/proposal/upstream_high_value_merge_roadmap_2026-06-24.md) | 上游合并路线图已执行，当前仅保留历史上下文 |

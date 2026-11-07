@@ -282,7 +282,7 @@ network/method-adapter capability、inference mode/sampler/attention/Flow Shift 
 ### P2-3 历史文档状态落后于代码
 
 审计时 `docs/multi_model_support.md` 仍写“Nothing here has been implemented”，
-`docs/proposal/krea2_raw_migration.md` 和阶段 6 findings 的部分段落仍写推理 dispatch 未闭合。
+`_archive/docs/proposal/krea2_raw_migration.md` 和阶段 6 findings 的部分段落仍写推理 dispatch 未闭合。
 本轮已更新前两份文档的状态说明；阶段 findings 保留历史原文。本审计是 2026-08-10 的
 当前事实入口。
 

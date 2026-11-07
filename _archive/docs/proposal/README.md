@@ -45,3 +45,5 @@
 | [anima-app-runtime-migration.md](anima-app-runtime-migration.md) | WebUI `anima-app` runtime 迁移阶段计划已执行 |
 | [dragon_frontend_rebuild_plan.md](dragon_frontend_rebuild_plan.md) | 历史重建计划；Next 已成为唯一入口 |
 | [krea2_nf4_blockswap.md](krea2_nf4_blockswap.md) | NF4 × block swap 方向 A 已落地 |
+| [krea2_raw_migration.md](krea2_raw_migration.md) | Anima → Krea-2-Raw 迁移计划；阶段 0-6 已落地 |
+| [krea2_raw_migration_notes.md](krea2_raw_migration_notes.md) | 配套历史风险登记册 |

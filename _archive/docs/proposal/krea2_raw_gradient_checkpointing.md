@@ -10,7 +10,7 @@
 
 ---
 
-状态：已实现（配套 [`krea2_raw_migration.md`](../../../docs/proposal/krea2_raw_migration.md) 阶段 4 训练串通；落地见 `library/models/krea2_raw/dit.py`，1024×1024 真实训练实测通过，见 [`../findings/krea2_raw_migration_stage6_findings.md`](../../../docs/findings/krea2_raw_migration_stage6_findings.md)）
+状态：已实现（配套 [`krea2_raw_migration.md`](krea2_raw_migration.md) 阶段 4 训练串通；落地见 `library/models/krea2_raw/dit.py`，1024×1024 真实训练实测通过，见 [`../findings/krea2_raw_migration_stage6_findings.md`](../../../docs/findings/krea2_raw_migration_stage6_findings.md)）
 适用版本：当前 main（grad-ckpt 已落地，提交 `0f8f934c`；本文档作设计背景，部分假设已与实现分叉——见 §11 落地核对）
 日期：2026-08-08（原调查稿）；2026-08-09 补落地核对 §11
 入口命令：`python tasks.py lora model_family=krea2_raw` + `gradient_checkpointing=true`（落地后训练入口）
@@ -152,7 +152,7 @@ swap out **不会抢先于 recompute**：被 checkpoint 的 block 重算时，�
 ### 5.1 直接复用（不用改）
 
 1. **`torch.utils.checkpoint.checkpoint(use_reentrant=False)`** —— Krea-2 同样适用，与 compile 共存前提。
-2. **compile-after-grad-ckpt 顺序**（`harness.py:64` 6 步不变量）—— Krea-2 加载器照搬，建议补运行时断言防乱序（见 [`krea2_raw_migration_notes.md`](../../../docs/proposal/krea2_raw_migration_notes.md) R3）。
+2. **compile-after-grad-ckpt 顺序**（`harness.py:64` 6 步不变量）—— Krea-2 加载器照搬，建议补运行时断言防乱序（见 [`krea2_raw_migration_notes.md`](krea2_raw_migration_notes.md) R3）。
 3. **compile 编译 `_forward` 不编译 `forward`** —— Krea-2 DiT 必须沿用 `forward`(checkpoint 包装)/`_forward`(实际计算)分离结构。
 4. **`UnslothOffloadedGradientCheckpointer`（CPU offload 档位）** —— 13B 下显存更吃紧，offload 档位价值更高，直接复用 `models.py:88-140` 的 autograd.Function。
 5. **block swap 调度**（`offloading.py`）—— `_run_blocks` 主循环 + backward hook + 预取深度 1 + `include_trainable=False`，Krea-2 复用编排，调度逻辑不动。
@@ -185,11 +185,11 @@ swap out **不会抢先于 recompute**：被 checkpoint 的 block 重算时，�
 | FP8 训练（需 SM≥8.9）+ LoRA + grad-ckpt | ~13GB | ⚠️ 可能可行，README 未给确切数字 | diffusers |
 | bf16 + grad-ckpt + LoRA + block swap | 26GB（可 swap 出去） | ⚠️ 需验证 block swap 与 grad-ckpt 调度兼容性（§4 已理论确认，待实测） | anima 独有路径 |
 
-**建议：** anima 训练器走第三条路（block swap 是其强项），但首日优先实现 NF4 路径作为保底（diffusers 官方验证过）。block swap 叠加 grad-ckpt 作为优化目标，阶段 4 用 `tests/test_compile_checkpoint_block_swap_hot.py` 等价矩阵 + `peak_probe.py` 实测验证。是否新增 `low_vram_krea2` preset 见 [`krea2_raw_migration_notes.md`](../../../docs/proposal/krea2_raw_migration_notes.md) R7。
+**建议：** anima 训练器走第三条路（block swap 是其强项），但首日优先实现 NF4 路径作为保底（diffusers 官方验证过）。block swap 叠加 grad-ckpt 作为优化目标，阶段 4 用 `tests/test_compile_checkpoint_block_swap_hot.py` 等价矩阵 + `peak_probe.py` 实测验证。是否新增 `low_vram_krea2` preset 见 [`krea2_raw_migration_notes.md`](krea2_raw_migration_notes.md) R7。
 
 ## 7. 阶段 4 验证项
 
-落地后必须验证（对应 [`krea2_raw_migration.md`](../../../docs/proposal/krea2_raw_migration.md) 阶段 4 退出条件）：
+落地后必须验证（对应 [`krea2_raw_migration.md`](krea2_raw_migration.md) 阶段 4 退出条件）：
 
 1. **block 级 grad-ckpt 单 forward 通过**：`SingleStreamBlock` 加 `enable_gradient_checkpointing`，`torch.utils.checkpoint.checkpoint(self._forward, x, vec, freqs, mask, use_reentrant=False)` 跑通 forward + backward。
 2. **compile × grad-ckpt 共存**：compile 编译 `_forward`，grad-ckpt 开启，无 `COMPILED_AUTOGRAD_POISON` 崩溃，无 recompile storm。
@@ -222,7 +222,7 @@ swap out **不会抢先于 recompute**：被 checkpoint 的 block 重算时，�
 
 **触发：** 13B 量化后 + LoRA + optimizer state + activation + VAE/TE 残留超 24GB。
 **现象：** OOM。
-**缓解：** 缩小 LoRA rank / 限制可训层 / offload VAE/TE 到 CPU / 评估是否需 int8 base（Krea-2 官方无 int8 base，自建工程量大，见 [`krea2_raw_migration_notes.md`](../../../docs/proposal/krea2_raw_migration_notes.md) R7）。
+**缓解：** 缩小 LoRA rank / 限制可训层 / offload VAE/TE 到 CPU / 评估是否需 int8 base（Krea-2 官方无 int8 base，自建工程量大，见 [`krea2_raw_migration_notes.md`](krea2_raw_migration_notes.md) R7）。
 
 ### F5: `adapter_aware` 档位阈值不适配 Krea-2 modulation
 
@@ -232,8 +232,8 @@ swap out **不会抢先于 recompute**：被 checkpoint 的 block 重算时，�
 
 ## 9. 与其他提案/文档的关系
 
-- **[`krea2_raw_migration.md`](../../../docs/proposal/krea2_raw_migration.md)**：本文件是其阶段 4（训练串通）的 grad-ckpt 子设计。阶段 4 退出条件"单 prompt 过拟合 loss 下降"依赖本文件的 §5 落地清单和 §7 验证项。
-- **[`krea2_raw_migration_notes.md`](../../../docs/proposal/krea2_raw_migration_notes.md)**：
+- **[`krea2_raw_migration.md`](krea2_raw_migration.md)**：本文件是其阶段 4（训练串通）的 grad-ckpt 子设计。阶段 4 退出条件"单 prompt 过拟合 loss 下降"依赖本文件的 §5 落地清单和 §7 验证项。
+- **[`krea2_raw_migration_notes.md`](krea2_raw_migration_notes.md)**：
   - R3（compile after apply 无运行时防呆）—— 本文件 §5.1 第 2 条建议补 `_applied` 断言，与 R3 同步受益。
   - R7（13B 显存可行性）—— 本文件 §6 的三条显存路径是 R7 的具体化。
 - **[`../multi_model_support.md`](../../../docs/multi_model_support.md)**：`forward_for_loss` 承重接口由 family 实现，grad-ckpt 是 `forward_for_loss` 内部细节，不跨 family 边界。
@@ -241,10 +241,10 @@ swap out **不会抢先于 recompute**：被 checkpoint 的 block 重算时，�
 
 ## 10. 不在本文件范围
 
-- Krea-2 DiT 架构本体移植细节（见 [`krea2_raw_migration.md`](../../../docs/proposal/krea2_raw_migration.md) 阶段 2 + [`krea2_raw_migration_notes.md`](../../../docs/proposal/krea2_raw_migration_notes.md) R4 LoRA 注入点）。
+- Krea-2 DiT 架构本体移植细节（见 [`krea2_raw_migration.md`](krea2_raw_migration.md) 阶段 2 + [`krea2_raw_migration_notes.md`](krea2_raw_migration_notes.md) R4 LoRA 注入点）。
 - NF4 量化的具体实现（diffusers `prepare_krea2_model_for_4bit` 路径，落地时参照 diffusers `train_dreambooth_lora_krea2.py`，不在本文件展开）。
-- text encoder（Qwen3-VL）侧的 grad-ckpt（anima 在 `bootstrap.py:566-571`/`:911-923` 有 text-encoder grad-ckpt workaround，Krea-2 文本链路见 [`krea2_raw_migration.md`](../../../docs/proposal/krea2_raw_migration.md) 阶段 1，本文件只覆盖 DiT block 级）。
-- ConvRot / Turbo / DCW 等与 grad-ckpt 的交互（Krea-2 首日不做这些，见 [`krea2_raw_migration.md`](../../../docs/proposal/krea2_raw_migration.md) §1 非目标）。
+- text encoder（Qwen3-VL）侧的 grad-ckpt（anima 在 `bootstrap.py:566-571`/`:911-923` 有 text-encoder grad-ckpt workaround，Krea-2 文本链路见 [`krea2_raw_migration.md`](krea2_raw_migration.md) 阶段 1，本文件只覆盖 DiT block 级）。
+- ConvRot / Turbo / DCW 等与 grad-ckpt 的交互（Krea-2 首日不做这些，见 [`krea2_raw_migration.md`](krea2_raw_migration.md) §1 非目标）。
 
 ## 11. 落地核对（2026-08-09 补）
 

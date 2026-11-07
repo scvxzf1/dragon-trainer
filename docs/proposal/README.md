@@ -39,7 +39,6 @@
 
 | 文档 | 状态 | 说明 |
 | --- | --- | --- |
-| [krea2_raw_migration.md](krea2_raw_migration.md) | 核心已落地 / 待归档 | Anima → Krea-2-Raw 历史迁移计划；当前事实见 [多模型说明](../multi_model_support.md)，配套风险快照见 [krea2_raw_migration_notes.md](krea2_raw_migration_notes.md) |
 
 ## 已归档记录
 
@@ -50,6 +49,9 @@
 
 | [dragon_frontend_rebuild_plan.md](../../_archive/docs/proposal/dragon_frontend_rebuild_plan.md) | 历史重建计划；Next 已是唯一入口，原阶段决策保留 |
 | [krea2_nf4_blockswap.md](../../_archive/docs/proposal/krea2_nf4_blockswap.md) | 方向 A 端到端验证已落地；结论保留 |
+
+| [krea2_raw_migration.md](../../_archive/docs/proposal/krea2_raw_migration.md) | Anima → Krea-2-Raw 历史迁移计划；阶段 0-6 已落地，状态块标记「待归档」 |
+| [krea2_raw_migration_notes.md](../../_archive/docs/proposal/krea2_raw_migration_notes.md) | 配套历史风险登记册；核心迁移已落地 |
 
 ## 归档规则
 

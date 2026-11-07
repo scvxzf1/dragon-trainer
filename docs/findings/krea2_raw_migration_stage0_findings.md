@@ -5,7 +5,7 @@
 日期：2026-08-08
 入口命令：`python scripts/krea2/probe_vae.py`（R2 验证脚本）
 相关代码：`scripts/krea2/probe_vae.py`、`library/models/qwen_vae.py`、权重 `models/{diffusion_models,text_encoders,vae}/`
-相关提案：[`../proposal/krea2_raw_migration.md`](../proposal/krea2_raw_migration.md)、[`../proposal/krea2_raw_migration_notes.md`](../proposal/krea2_raw_migration_notes.md)
+相关提案：[`../../_archive/docs/proposal/krea2_raw_migration.md`](../../_archive/docs/proposal/krea2_raw_migration.md)、[`../../_archive/docs/proposal/krea2_raw_migration_notes.md`](../../_archive/docs/proposal/krea2_raw_migration_notes.md)
 
 > 本文保留阶段 0 当时的开放问题与下一步；当前能力以
 > [`../multi_model_support.md`](../multi_model_support.md) 和实时源码为准。

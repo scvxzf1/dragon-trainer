@@ -5,7 +5,7 @@
 日期：2026-08-08
 入口命令：`python scripts/krea2/probe_dit.py`（阶段 2 验证脚本）
 相关代码：`library/models/krea2_raw/dit.py`、`library/models/krea2_raw/weights.py`、`scripts/krea2/probe_dit.py`
-相关提案：[`../proposal/krea2_raw_migration.md`](../proposal/krea2_raw_migration.md)
+相关提案：[`../../_archive/docs/proposal/krea2_raw_migration.md`](../../_archive/docs/proposal/krea2_raw_migration.md)
 
 > “已知限制 / 后续”保留阶段 2 当时状态；compile、block swap、lazy loading 等后续
 > 已落地能力以 [`../multi_model_support.md`](../multi_model_support.md) 和实时源码为准。
