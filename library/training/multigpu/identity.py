@@ -280,6 +280,72 @@ def write_runtime_identity(
     return target if is_main else None
 
 
+RESUME_MANIFEST_NAME = "multigpu_identity.json"
+
+
+def record_resume_outcome(
+    output_dir_or_path: str | os.PathLike[str],
+    *,
+    decision: Any,
+    accelerator: Any = None,
+    bundle_version: Any = None,
+) -> Optional[Path]:
+    """Merge the resume verdict into the run's ``multigpu_identity.json``.
+
+    Written by rank 0 only, **without a collective**: the resume verdict is already
+    identical on every rank (``guard_resume`` reads the same published directory),
+    so a second agreement here would add a failure mode for no information. The
+    three top-level fields — ``resume_exact``, ``resume_codes`` and
+    ``resume_bundle_version`` — are what a verification ledger machine-checks; the
+    nested ``resume`` object keeps the human-readable detail.
+
+    Returns the manifest path (``None`` when a non-main rank calls it).
+    """
+    is_main = int(getattr(accelerator, "process_index", 0) or 0) == 0
+    if accelerator is not None and not is_main:
+        return None
+    path = Path(output_dir_or_path)
+    target = path if path.suffix == ".json" else path / RESUME_MANIFEST_NAME
+
+    document: dict[str, Any] = {}
+    try:
+        if target.is_file():
+            document = json.loads(target.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                document = {}
+    except (OSError, ValueError):
+        document = {}
+
+    if bundle_version is None:
+        # The bundle travels with the decision, so the caller does not have to
+        # re-read the state directory just to stamp the version.
+        bundle_version = (getattr(decision, "bundle", None) or {}).get("version")
+
+    codes = [str(code) for code in getattr(decision, "codes", ()) or ()]
+    primary = getattr(decision, "code", None)
+    if primary is not None and str(primary) not in codes:
+        codes.insert(0, str(primary))
+
+    document["resume_exact"] = bool(getattr(decision, "exact", False))
+    document["resume_codes"] = codes
+    document["resume_bundle_version"] = bundle_version
+    document["resume"] = {
+        "exact": bool(getattr(decision, "exact", False)),
+        "codes": codes,
+        "primary_code": None if primary is None else str(primary),
+        "message": str(getattr(decision, "message", "") or ""),
+        "bundle_version": bundle_version,
+        "rng_recheck": getattr(decision, "rng_recheck", None),
+    }
+
+    encoded = json.dumps(document, indent=2, sort_keys=True, default=str) + "\n"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_target = target.with_name(target.name + ".tmp")
+    tmp_target.write_text(encoded, encoding="utf-8")
+    os.replace(tmp_target, target)
+    return target
+
+
 def note_gradient_sync(
     result: Any, *, accelerator=None, async_overlap: bool = False
 ) -> None:

@@ -31,6 +31,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 
 from library.training import multigpu, window_accounting
+from library.training.adaptive_runtime import pinned_order
 from library.training.finite_checks import (
     check_loss_finite,
     debug_finite_enabled,
@@ -623,6 +624,10 @@ def run_training_loop(trainer, state: LoopState) -> None:
             epoch,
             state.num_train_epochs,
             loader_cursor=loader_cursor_payload(state),
+            # Group R: each rank digests what it really holds at this boundary.
+            # Passed as a reference only; the hashing happens inside the saver,
+            # after its cadence gate (never on the per-step path).
+            digest_context=state,
         )
         state.saver.maybe_save_resumable(
             state.network,
@@ -630,6 +635,7 @@ def run_training_loop(trainer, state: LoopState) -> None:
             epoch,
             state.num_train_epochs,
             loader_cursor=loader_cursor_payload(state),
+            digest_context=state,
         )
 
         _run_sample_with_probe(
@@ -705,11 +711,12 @@ def _maybe_apply_stage_schedule(state: LoopState, *, force: bool = False) -> Non
     kwargs = dict(state.dataloader_kwargs)
     # Avoid inheriting a dead iterator / stale length under persistent workers.
     kwargs["persistent_workers"] = False
-    raw_dataloader = torch.utils.data.DataLoader(
-        state.train_dataset_group,
-        shuffle=True,
-        **kwargs,
-    )
+    # Same pinned-order gate as the primary loader (t36). With
+    # ANIMA_MULTIGPU_PINNED_ORDER unset this is exactly the previous
+    # DataLoader(group, shuffle=True, **kwargs); with it set the descriptors are
+    # re-sorted and the items are served in natural order, so a stage switch no
+    # longer reshuffles the stream per world size.
+    raw_dataloader = pinned_order.train_dataloader(state.train_dataset_group, kwargs)
     state.train_dataloader = state.accelerator.prepare_data_loader(raw_dataloader)
     state.stage_index = next_index
     stage = stages[next_index]
@@ -922,6 +929,7 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                         state.global_step,
                         epoch,
                         loader_cursor=loader_cursor_payload(state),
+                        digest_context=state,
                     )
                     state.optimizer_train_fn()
                     adaptive_notify(trainer, "commit", state)

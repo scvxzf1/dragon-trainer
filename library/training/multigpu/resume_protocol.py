@@ -53,6 +53,11 @@ CODE_RNG_EVIDENCE_MISSING_AT_RESUME = "multigpu_resume_rng_evidence_missing"
 #: The files are readable but the streams they carry no longer match the bundle.
 CODE_RNG_STREAMS_DEGRADED_AT_RESUME = "multigpu_resume_rng_streams_degraded"
 
+#: Whether the resume-time RNG re-read actually happened (it is skipped when the
+#: caller passes ``verify_rng_files=False``, e.g. a read-only inspection).
+RNG_RECHECK_DONE = "rng_reread_at_resume"
+RNG_RECHECK_SKIPPED = "save_time_evidence_only"
+
 REQUIRED_STREAMS = ("python", "torch", "cuda")
 
 
@@ -70,6 +75,8 @@ class ResumeDecision:
     message: str = ""
     bundle: Optional[dict[str, Any]] = None
     codes: tuple[str, ...] = ()
+    #: :data:`RNG_RECHECK_DONE` or :data:`RNG_RECHECK_SKIPPED`.
+    rng_recheck: str = RNG_RECHECK_SKIPPED
 
     def raise_if_rejected(self) -> None:
         if self.code in (CODE_BUNDLE_INVALID, CODE_TOPOLOGY_MISMATCH):
@@ -428,7 +435,9 @@ def validate_bundle(
                 )
             )
 
+    rng_recheck = RNG_RECHECK_SKIPPED
     if live_rng is not None:
+        rng_recheck = RNG_RECHECK_DONE
         live = dict(live_rng)
         if live.get("source") != "loaded_random_states":
             problems.append(
@@ -474,11 +483,26 @@ def validate_bundle(
             message="; ".join(text for _, text in problems),
             bundle=dict(bundle),
             codes=tuple(dict.fromkeys(code for code, _ in problems)),
+            rng_recheck=rng_recheck,
+        )
+    # The wording says which claim was actually checked: "re-read at resume time"
+    # only when a live observation was supplied. Without one this decision rests on
+    # the save-time evidence alone, and it must not borrow the stronger phrasing
+    # (a bundle's recorded flags cannot see a file that vanished afterwards).
+    if rng_recheck == RNG_RECHECK_DONE:
+        message = (
+            "topology, RNG streams (re-read at resume time) and loader cursor match"
+        )
+    else:
+        message = (
+            "topology, RNG streams as recorded at save time "
+            "(no resume-time re-read requested) and loader cursor match"
         )
     return ResumeDecision(
         exact=True,
-        message="topology, RNG streams (re-read at resume time) and loader cursor match",
+        message=message,
         bundle=dict(bundle),
+        rng_recheck=rng_recheck,
     )
 
 
@@ -527,7 +551,13 @@ def guard_resume(
         rank=rank,
         live_rng=live_rng,
     )
-    if decision.exact:
+    if decision.exact and decision.rng_recheck != RNG_RECHECK_DONE:
+        logger.info(
+            "resume bundle verified from save-time evidence only for %s: the "
+            "resume-time RNG re-read was not requested (verify_rng_files=False)",
+            state_dir,
+        )
+    elif decision.exact:
         logger.info("resume bundle verified for exact resume: %s", state_dir)
     elif decision.code in (CODE_BUNDLE_INVALID, CODE_TOPOLOGY_MISMATCH):
         logger.error("resume refused (%s): %s", decision.code, decision.message)

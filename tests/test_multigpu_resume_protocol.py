@@ -710,3 +710,92 @@ def test_legacy_pickle_vocabulary_is_still_readable_and_marked(tmp_path):
     assert evidence["schema"] == "legacy"
     assert evidence["python"] and evidence["numpy"] and evidence["torch"]
     assert evidence["source"] == "loaded_random_states"
+
+
+# ---------------------------------------------------------------------------
+# F-T18：exact 的措辞必须说清"是否真的在恢复时刻重读过"
+# ---------------------------------------------------------------------------
+
+
+def test_exact_says_whether_the_rng_was_reread(tmp_path):
+    from library.training.multigpu import cursor as cursor_mod
+
+    state = _real_two_rank_state(tmp_path)
+    reread = rp.guard_resume(str(state), world_size=2)
+    assert reread.exact
+    assert reread.rng_recheck == rp.RNG_RECHECK_DONE
+    assert "re-read at resume time" in reread.message
+
+    # ``verify_rng_files=False`` is a read-only inspection: the decision then rests
+    # on the save-time evidence and must say so instead of borrowing the stronger
+    # wording.
+    save_time_only = rp.guard_resume(
+        str(state), world_size=2, verify_rng_files=False
+    )
+    assert save_time_only.exact
+    assert save_time_only.rng_recheck == rp.RNG_RECHECK_SKIPPED
+    assert "no resume-time re-read requested" in save_time_only.message
+
+    # A direct ``validate_bundle`` call has no state dir to re-read either.
+    decision = rp.validate_bundle(rp.read_bundle(str(state)), world_size=2)
+    assert decision.rng_recheck == rp.RNG_RECHECK_SKIPPED
+    assert "no resume-time re-read requested" in decision.message
+
+
+def test_a_rejected_resume_keeps_the_reread_flag(tmp_path):
+    state = _real_two_rank_state(tmp_path)
+    (state / "random_states_1.pkl").unlink()
+    decision = rp.guard_resume(str(state), world_size=2)
+    assert not decision.exact
+    assert decision.rng_recheck == rp.RNG_RECHECK_DONE
+    assert decision.code == rp.CODE_RNG_EVIDENCE_MISSING_AT_RESUME
+
+
+# ---------------------------------------------------------------------------
+# F-T18：恢复判决必须落盘进 multigpu_identity.json（可机检）
+# ---------------------------------------------------------------------------
+
+
+def test_the_resume_verdict_is_written_into_the_identity_manifest(tmp_path):
+    import json
+
+    from library.training.multigpu import identity
+
+    state = _real_two_rank_state(tmp_path)
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    (out_dir / "multigpu_identity.json").write_text(
+        json.dumps({"schema": "multigpu-identity", "accuracy_source": "fp16"}),
+        encoding="utf-8",
+    )
+
+    decision = rp.guard_resume(str(state), world_size=2)
+    target = identity.record_resume_outcome(out_dir, decision=decision)
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["resume_exact"] is True
+    assert document["resume_codes"] == []
+    assert document["resume_bundle_version"] == decision.bundle["version"]
+    assert document["resume"]["rng_recheck"] == rp.RNG_RECHECK_DONE
+    # The manifest keeps what the run-identity writer put there.
+    assert document["schema"] == "multigpu-identity"
+    assert document["accuracy_source"] == "fp16"
+
+    # A non-main rank writes nothing (rank 0 owns the manifest).
+    (state / "random_states_1.pkl").unlink()
+    broken = rp.guard_resume(str(state), world_size=2)
+    assert (
+        identity.record_resume_outcome(
+            out_dir, decision=broken, accelerator=_Acc(index=1, world=2)
+        )
+        is None
+    )
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["resume_exact"] is True  # untouched by rank 1
+
+    identity.record_resume_outcome(
+        out_dir, decision=broken, accelerator=_Acc(index=0, world=2)
+    )
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["resume_exact"] is False
+    assert rp.CODE_RNG_EVIDENCE_MISSING_AT_RESUME in document["resume_codes"]

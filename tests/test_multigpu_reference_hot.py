@@ -869,3 +869,47 @@ def test_mock_execute_reports_the_env_keys_without_spawning(_assets, tmp_path):
     assert "ANIMA_ACCELERATE_LAUNCH" in env_keys
     # A single worker run carries no process-count key at all.
     assert "ANIMA_ACCELERATE_NUM_PROCESSES" not in env_keys
+
+
+def test_a_short_probe_can_stop_at_an_explicit_step(tmp_path, monkeypatch):
+    """F-T22-3: a probe must not spend the whole RUN-C horizon.
+
+    Without ``stop_at_step`` the save cadence and the verifier's stop point are both
+    ``spec.steps``, so a caller that only needs the first state directory has to run
+    all ten updates (8 over budget). With it, both follow the probe horizon.
+    """
+    spec = hot.RunSpec(
+        "PROBE", 2, 10, "two-worker short probe", resume_steps=10, stop_at_step=2
+    )
+    monkeypatch.setitem(hot.RUN_SPECS, "PROBE", spec)
+    assets = {
+        "train_script": str(tmp_path / "train.py"),
+        "config": str(tmp_path / "config.toml"),
+        "base": str(tmp_path / "base.safetensors"),
+    }
+    for path in assets.values():
+        tmp_path.joinpath(path).write_text("x", encoding="utf-8")
+    fixture = tmp_path / "fixture.jsonl"
+    fixture.write_text(
+        '{"sample_id": "s00000000", "timestep": 0.5, "noise": [0.0]}\n',
+        encoding="utf-8",
+    )
+
+    plan = hot.plan_hot_run(
+        "PROBE",
+        train_script=assets["train_script"],
+        config=assets["config"],
+        base_assets=[assets["base"]],
+        l3_fixture=str(fixture),
+        env={hot.HOT_ENV: "1"},
+        project_root=str(tmp_path),
+    )
+
+    commit, resume = plan.facts["phases"]
+    assert _value(commit["command"], "--save_every_n_steps") == "2"
+    assert commit["expected_committed_step"] == 2
+    assert commit["stop_when_state_dir"].endswith("-step00000002-state")
+    # The horizon itself is untouched: the probe still declares the 10-step plan.
+    assert _value(commit["command"], "--max_train_steps") == "20"
+    assert plan.facts["stop_at_step"] == 2
+    assert resume["resume_from"] == commit["stop_when_state_dir"]

@@ -199,6 +199,7 @@ def save_and_remove_state_on_epoch_end(
     created_state_dirs: set[str] | None = None,
     global_step: Optional[int] = None,
     loader_cursor: Optional[dict] = None,
+    rank_digest: Optional[dict] = None,
 ):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
 
@@ -220,6 +221,7 @@ def save_and_remove_state_on_epoch_end(
         global_step=global_step,
         loader_cursor=loader_cursor,
         created_state_dirs=created_state_dirs,
+        rank_digest=rank_digest,
     )
 
     last_n_epochs = (
@@ -253,6 +255,7 @@ def save_and_remove_state_stepwise(
     step_no,
     created_state_dirs: set[str] | None = None,
     loader_cursor: Optional[dict] = None,
+    rank_digest: Optional[dict] = None,
 ):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
@@ -273,6 +276,7 @@ def save_and_remove_state_stepwise(
         global_step=step_no,
         loader_cursor=loader_cursor,
         created_state_dirs=created_state_dirs,
+        rank_digest=rank_digest,
     )
 
     last_n_steps = (
@@ -614,6 +618,7 @@ def save_checkpoint_state(
     epoch_no: Optional[int] = None,
     global_step: Optional[int] = None,
     loader_cursor: Optional[dict] = None,
+    rank_digest: Optional[dict] = None,
 ):
     state_dir = get_checkpoint_state_dir(args, epoch_no)
 
@@ -627,6 +632,7 @@ def save_checkpoint_state(
         epoch_no=epoch_no,
         global_step=global_step,
         loader_cursor=loader_cursor,
+        rank_digest=rank_digest,
     )
 
 
@@ -667,6 +673,7 @@ def publish_state_with_bundle(
     global_step: Optional[int],
     loader_cursor: Optional[dict],
     created_state_dirs: set[str] | None = None,
+    rank_digest: Optional[dict] = None,
 ):
     """All-rank save + rank-0 atomic publish + versioned resume bundle.
 
@@ -679,6 +686,7 @@ def publish_state_with_bundle(
     """
     from library.training.multigpu import checkpoint_protocol as ckpt_proto
     from library.training.multigpu import cursor as cursor_mod
+    from library.training.multigpu import rank_digest as rank_digest_mod
     from library.training.multigpu import resume_protocol
 
     tmp_dir = state_dir + ".tmp"
@@ -732,6 +740,12 @@ def publish_state_with_bundle(
         payload["device_type"] = str(getattr(device, "type", "unknown"))
         payload["device_index"] = getattr(device, "index", None)
         _write_rank_cursor(target_dir, payload)
+        if rank_digest is not None:
+            # Same mechanism, same moment, one file per rank: a per-rank digest of
+            # what this worker really holds at the commit boundary (group R).
+            digest_payload = dict(rank_digest)
+            digest_payload["rank"] = rank
+            rank_digest_mod.write(digest_payload, target_dir)
 
     def _after_publish(published_dir: str) -> None:
         if epoch_no is not None and getattr(accelerator, "is_main_process", True):
@@ -783,6 +797,22 @@ def publish_state_with_bundle(
             }
             for key, value in rank_cursors.items()
         }
+        if rank_digest is not None:
+            # Every rank just wrote its own digest into the published directory, so
+            # the comparison is a local read of files that already landed - no
+            # collective, no extra IO on the data path. A disagreement is reported
+            # as a named WARNING: an existing run keeps its verdict, and the
+            # verifier decides what a rank difference means (R-a/R-b/R-c).
+            digest_summary = rank_digest_mod.summarize_state_dir(
+                published_dir, world_size
+            )
+            rank_digest_mod.log_outcome(digest_summary, published_dir)
+            bundle.setdefault("extra", {})["rank_digests"] = digest_summary
+            bundle.setdefault("rank_local_keys", {})
+            for key in digest_summary["files"]:
+                bundle["rank_local_keys"].setdefault(str(key), []).append(
+                    rank_digest_mod.FILE.format(rank=int(key))
+                )
         resume_protocol.write_bundle(bundle, published_dir, is_main=True)
 
     ckpt_proto.save_state_published(
@@ -848,6 +878,26 @@ def save_sd_model_on_train_end_common(
 
         logger.info(f"save trained model as Diffusers to {out_dir}")
         diffusers_saver(out_dir)
+
+
+def _rank_digest_payload(
+    digest_context, network: Any, global_step: Optional[int], epoch: Optional[int]
+) -> Optional[dict]:
+    """This rank's commit-boundary digest, or ``None`` when it is switched off.
+
+    Built **after** the cadence gate in every ``maybe_save_*``: hashing the adapter
+    tensors is commit-boundary work, never per-step work.
+    """
+    if digest_context is None:
+        return None
+    from library.training.multigpu import rank_digest as rank_digest_mod
+
+    return rank_digest_mod.build_from_loop_state(
+        digest_context,
+        global_step=global_step,
+        epoch=epoch,
+        network=network,
+    )
 
 
 class CheckpointSaver:
@@ -951,6 +1001,25 @@ class CheckpointSaver:
                 raise
             self.resume_decision = decision
             decision.raise_if_rejected()
+            # Machine-checkable resume evidence next to the run identity
+            # (``resume_exact`` / ``resume_codes`` / ``resume_bundle_version``), so a
+            # verification ledger can read the verdict without replaying the run.
+            # Best-effort: a manifest that cannot be updated must not abort a resume
+            # that the protocol just accepted.
+            try:
+                from library.training.multigpu import identity as identity_mod
+
+                identity_mod.record_resume_outcome(
+                    self.args.output_dir,
+                    decision=decision,
+                    accelerator=accelerator,
+                    bundle_version=(decision.bundle or {}).get("version"),
+                )
+            except Exception as exc:  # pragma: no cover - best-effort by design
+                logger.warning(
+                    "could not record the resume outcome in the identity manifest: %s",
+                    exc,
+                )
 
             train_state_file = os.path.join(input_dir, "train_state.json")
             if os.path.exists(train_state_file):
@@ -1064,6 +1133,7 @@ class CheckpointSaver:
         global_step: int,
         epoch: int,
         loader_cursor: Optional[dict] = None,
+        digest_context: Any = None,
     ) -> None:
         """Step-cadence save. ``global_step`` must already be incremented."""
         args = self.args
@@ -1089,6 +1159,9 @@ class CheckpointSaver:
                 global_step,
                 self._created_state_dirs,
                 loader_cursor=loader_cursor,
+                rank_digest=_rank_digest_payload(
+                    digest_context, network, global_step, epoch
+                ),
             )
         if accelerator.is_main_process:
             remove_step_no = get_remove_step_no(args, global_step)
@@ -1105,6 +1178,7 @@ class CheckpointSaver:
         epoch: int,
         num_train_epochs: int,
         loader_cursor: Optional[dict] = None,
+        digest_context: Any = None,
     ) -> None:
         """Epoch-cadence save. ``epoch`` is 0-indexed; saver writes ``epoch+1``."""
         args = self.args
@@ -1133,6 +1207,9 @@ class CheckpointSaver:
                 self._created_state_dirs,
                 global_step,
                 loader_cursor=loader_cursor,
+                rank_digest=_rank_digest_payload(
+                    digest_context, network, global_step, epoch_no
+                ),
             )
 
     def maybe_save_resumable(
@@ -1142,6 +1219,7 @@ class CheckpointSaver:
         epoch: int,
         num_train_epochs: int,
         loader_cursor: Optional[dict] = None,
+        digest_context: Any = None,
     ) -> None:
         """``checkpointing_epochs``-cadence resumable save. ``epoch`` is 0-indexed."""
         args = self.args
@@ -1174,7 +1252,14 @@ class CheckpointSaver:
             )
         )
         state_dir = save_checkpoint_state(
-            args, accelerator, epoch_no, global_step=global_step, loader_cursor=loader_cursor
+            args,
+            accelerator,
+            epoch_no,
+            global_step=global_step,
+            loader_cursor=loader_cursor,
+            rank_digest=_rank_digest_payload(
+                digest_context, network, global_step, epoch_no
+            ),
         )
         if state_dir and not state_preexisting:
             _record_created_path(self._created_state_dirs, state_dir)

@@ -661,7 +661,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=str,
         default="no",
         choices=["no", "fp16", "bf16"],
-        help="use mixed precision",
+        help=(
+            "accelerate mixed precision: 'no' | 'fp16' | 'bf16'. Full fp32 "
+            "training is spelled 'no' (there is no 'fp32' value; passing it is an "
+            "argparse error before any device work starts)."
+        ),
     )
     parser.add_argument(
         "--full_fp16", action="store_true", help="fp16 training including gradients"
