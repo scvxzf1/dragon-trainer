@@ -63,6 +63,14 @@ CODE_L3_FIXTURE_INVALID = "hot_run_l3_fixture_invalid"
 CODE_L2_ONLY_CANDIDATE = "hot_run_l2_candidate_only"
 
 #: Frozen budgets from the team goal. A/B/C together must stay inside these.
+#:
+#: ``TOTAL_UPDATE_BUDGET`` is the cap for **one batch of runs** (the single DAG that
+#: A/B/C form together). The cumulative budget the team is allowed to spend is
+#: *not* a constant here: the caller expresses it as ``prior_updates`` (updates
+#: already charged by earlier, user-approved runs) plus this run's
+#: ``spec.budgeted_updates``, and ``plan_hot_run`` refuses when that sum crosses the
+#: cap. A user-approved increase is therefore expressed by passing the real
+#: ``prior_updates``, never by editing this number.
 TOTAL_UPDATE_BUDGET = 50
 STEP_CAP_PER_RUN = 20
 MINUTES_PER_RUN = 20
@@ -78,6 +86,18 @@ class RunSpec:
     needs_l3_fixture: bool = True
     #: continuation steps counted separately in the budget (RUN-C = 10 + 10)
     resume_steps: int = 0
+    #: Explicit stop point for a *short probe* (F-T22-3). Without it the stop point
+    #: is ``steps``, so a probe that only wants the first state directory has to
+    #: set ``--save_every_n_steps 1`` and would still run to ``steps`` because the
+    #: verifier waits for the state dir of step ``steps``. With ``stop_at_step`` the
+    #: save cadence, the expected committed step and ``stop_when_state_dir`` all
+    #: follow the probe horizon, so the run spends exactly that many updates.
+    stop_at_step: Optional[int] = None
+
+    @property
+    def stop_step(self) -> int:
+        """The step whose state directory ends the commit phase."""
+        return int(self.stop_at_step or self.steps)
 
     @property
     def budgeted_updates(self) -> int:
@@ -93,6 +113,49 @@ RUN_SPECS: dict[str, RunSpec] = {
         "RUN-C", 2, 10, "two GPUs, 10 + 10 resume updates", resume_steps=10
     ),
 }
+
+
+def pinned_order_env() -> str:
+    """The env var name of the pinned-order gate (single source: the bench module)."""
+    from bench.multigpu_reference import loader_order
+
+    return loader_order.ENV
+
+
+def verify_pinned_gate(plan: "HotRunPlan", env: Mapping[str, str]) -> dict:
+    """Read the gate back out of a plan and the env that was actually handed over.
+
+    Returns the recorded facts and raises when the artifact would be unable to prove
+    which mode ran — the failure t35 hit, where the gate was exported by hand outside
+    the plan and could not be audited afterwards (V40-F3).
+    """
+    name = pinned_order_env()
+    recorded = plan.facts.get("pinned_order")
+    in_launch_env = (plan.facts.get("launch_env") or {}).get(name)
+    in_handed_env = dict(env).get(name)
+    if recorded is None:
+        raise HotRunRefused(
+            CODE_HOT_NOT_RELEASED,
+            f"plan facts do not record the pinned gate ({name}); the artifact could "
+            "not prove whether the measurement mode was on",
+        )
+    expected = "1" if recorded else None
+    if in_launch_env != expected:
+        raise HotRunRefused(
+            CODE_HOT_NOT_RELEASED,
+            f"facts['pinned_order']={recorded!r} but launch_env[{name}]={in_launch_env!r}",
+        )
+    if in_handed_env != expected:
+        raise HotRunRefused(
+            CODE_HOT_NOT_RELEASED,
+            f"the runner env carries {name}={in_handed_env!r}, plan expects {expected!r}",
+        )
+    return {
+        "pinned_order": bool(recorded),
+        "env_name": name,
+        "launch_env": in_launch_env,
+        "handed_env": in_handed_env,
+    }
 
 
 def hot_released(env: Mapping[str, str] | None = None) -> bool:
@@ -227,11 +290,21 @@ def plan_hot_run(
     prior_updates: int = 0,
     run_id: Optional[str] = None,
     python: Optional[str] = None,
+    pinned_order: bool = True,
 ) -> HotRunPlan:
     """Validate every gate for one bounded run and return the would-be command.
 
     ``python`` overrides the interpreter used for the run; it must be an absolute
     path and defaults to ``sys.executable`` (see :func:`resolve_interpreter`).
+
+    ``pinned_order`` requests the pinned data-order measurement gate. It defaults to
+    on because every single-vs-dual comparison needs it: without it the two
+    topologies consume unrelated descriptor permutations and the numbers compare
+    different data. The request is recorded twice — as ``facts["pinned_order"]`` and
+    as the real ``ANIMA_MULTIGPU_PINNED_ORDER=1`` in ``facts["launch_env"]`` — so the
+    artifact can prove the gate was open instead of relying on whoever exported it
+    by hand (t35 did exactly that, V40-F3). Pass ``pinned_order=False`` only for a
+    run that must reproduce the production shuffle.
     """
     spec = RUN_SPECS.get(name)
     if spec is None:
@@ -329,16 +402,22 @@ def plan_hot_run(
     ]
     command = list(base)
     commit_command = list(base)
-    resume_state = out / _state_dir_name(RUN_OUTPUT_NAME, spec.steps)
+    resume_state = out / _state_dir_name(RUN_OUTPUT_NAME, spec.stop_step)
     if spec.resume_steps:
         # The interrupt point is a *real* state directory this run writes; the
         # verifier stops the process once it appears.
-        commit_command += ["--save_state", "--save_every_n_steps", str(spec.steps)]
+        commit_command += [
+            "--save_state",
+            "--save_every_n_steps",
+            str(spec.stop_step),
+        ]
     phases = [
         {
             "phase": "commit",
             "command": commit_command,
-            "expected_committed_step": spec.steps,
+            # A short probe commits exactly ``stop_at_step``; the full run commits
+            # ``steps`` (they are equal unless the probe asked for less).
+            "expected_committed_step": int(spec.stop_step if spec.resume_steps else spec.steps),
             "stop_when_state_dir": (
                 str(resume_state) if spec.resume_steps else None
             ),
@@ -375,18 +454,29 @@ def plan_hot_run(
                 "ANIMA_ACCELERATE_NUM_PROCESSES": launch_env.get(
                     "ANIMA_ACCELERATE_NUM_PROCESSES"
                 ),
+
             }
         ),
         "interpreter": interpreter,
+        # Cumulative accounting is the caller's ``prior_updates`` + this run's
+        # charge; the constant above only caps a single batch of runs.
+        "prior_updates": int(prior_updates),
         "updates_after_this_run": int(prior_updates) + spec.budgeted_updates,
+        "stop_at_step": int(spec.stop_at_step or spec.steps),
         "minutes_per_run_cap": MINUTES_PER_RUN,
         "minutes_total_cap": MINUTES_TOTAL,
+        "pinned_order": bool(pinned_order),
         "seedable_sampler": True,
         "s0_permutation_shared_across_world_sizes": True,
         "reads_only_model_and_cache": True,
         "no_download": True,
         "no_preprocessing": True,
     }
+    if pinned_order:
+        # The measurement gate travels with the plan, exactly like the noise fixture
+        # below: a run whose facts say "pinned" but whose env does not carry it would
+        # silently compare different data (V40-F3).
+        facts["launch_env"][pinned_order_env()] = "1"
     fixture = inspect_l3_fixture(l3_fixture) if spec.needs_l3_fixture else {"ok": True}
     if spec.needs_l3_fixture and not fixture["ok"]:
         # Path 3's fixed 4096-token cache is an L1/L2 candidate only; the numeric
@@ -449,6 +539,10 @@ def execute(plan: HotRunPlan, *, runner=None, base_env=None) -> dict:
     if plan.status != "ready":
         plan.raise_if_not_ready()
     launch_env = clean_launch_env(plan.facts.get("launch_env") or {})
+    # Refuse to hand over an env whose gate state disagrees with the plan (a hand
+    # export outside the plan is exactly the t35 hole, V40-F3 / t44).
+    handed_env = {**dict(os.environ if base_env is None else base_env), **launch_env}
+    verify_pinned_gate(plan, handed_env)
     results: list[dict] = []
     for phase in plan.facts.get("phases") or [
         {"phase": "single", "command": plan.command}
@@ -464,12 +558,11 @@ def execute(plan: HotRunPlan, *, runner=None, base_env=None) -> dict:
                     # What a real runner would have been given, so a mock run can
                     # assert the env shape without spawning anything.
                     "env_keys": sorted(launch_env),
+                    "pinned_order": launch_env.get(pinned_order_env()),
                 }
             )
             continue
-        kwargs = {
-            "env": {**dict(os.environ if base_env is None else base_env), **launch_env}
-        }
+        kwargs = {"env": dict(handed_env)}
         if stop_when:
             # A real runner polls for this directory and terminates the run, which is
             # how RUN-C stops after its committed 10th update while keeping the same
@@ -482,6 +575,7 @@ def execute(plan: HotRunPlan, *, runner=None, base_env=None) -> dict:
                 "command": command,
                 "ran": True,
                 "stop_when_state_dir": kwargs.get("stop_when_state_dir"),
+                "pinned_order": launch_env.get(pinned_order_env()),
                 "returncode": getattr(completed, "returncode", None),
             }
         )

@@ -69,3 +69,19 @@ skip 不计通过；`run_two_rank` 在 `nccl` 且未 `MULTIGPU_REFERENCE_HARDWAR
 `ANIMA_ACCELERATE_NUM_PROCESSES=None`，`Popen` 遇到 `None` 值会抛 `TypeError`，
 t13 第 1 次尝试就是这么挂的）；`execute` 侧再过滤一次，并把发射键叠加到当前环境之上，
 真实 runner 拿到的 `env` 不会是"只有两三个键"的残缺环境。
+
+## L3 fixture 的 slot 数（F-T13-8）
+
+L3 per-sample noise fixture 的 slot 数必须 **= 总步数 × world_size**：`global_slot =
+(local_batch_index * world_size + rank) * batch_size + row`，所以双卡跑 20 步需要 40 个
+slot。填少了会在启动前 fail-closed 报 `noise_fixture_sample_missing`——**这是预期的
+fail-closed 行为，不是 bug**（RUN-B 首次就因为 fixture 只填了 24 slot 而被拒）。按预算一次
+性填够并留余量（例如 48 slot），不要等到运行时才发现。
+
+## 预算口径（`TOTAL_UPDATE_BUDGET`）
+
+`hot_run.TOTAL_UPDATE_BUDGET = 50` 是**单批 DAG 的上限**（RUN-A/B/C 合起来那一批）。用户批准
+后的**累计**预算不由这个常量表达，而是由调用方的 `prior_updates`（此前已计提的更新数）加上本次
+`spec.budgeted_updates` 表达：`plan_hot_run` 在 `prior_updates + budgeted_updates > 50` 时拒绝，
+并把 `prior_updates` 原样落进 `facts["prior_updates"]`（同时给出 `facts["updates_after_this_run"]`）。
+要表达"用户追加了预算"，传真实 `prior_updates`，**不要改这个常量**。
