@@ -20,6 +20,7 @@
 | [dragon_config_progressive_disclosure.md](dragon_config_progressive_disclosure.md) | 探索 / 未实现 | Dragon 训练配置由静态等级与双重分类迁移到模型族、Adapter、功能开关驱动的渐进披露方案 |
 | [auto_vram_v1.md](auto_vram_v1.md) | 提案 / 未实现 | AutoVram v1 自动显存档位搜索与可审计协议 |
 | [dcgen_anima_f32c32.md](dcgen_anima_f32c32.md) | POC / 阶段 1-2 | DC-Gen Anima f32c32 latent space、双缓存和 patch 对齐探针记录 |
+| [krea2_nf4_fp16_layer_scaling.md](krea2_nf4_fp16_layer_scaling.md) | 活跃 / 原型已验证、生产未落地 | 把 fp16 缩放从全局 loss 标量下沉到每个 NF4 Linear 的 backward（frexp/ldexp 2 的整数次幂平移）。真实权重实测 LoRA 梯度与 bf16 持平（40.97% vs 40.61%）、单步 9.0s→3.1s（2.9×）、22 处契约 0 改动、免 GradScaler；**只提速不提精度，仅对 sm70/sm75（无原生 bf16 tensor core）有价值** |
 | [krea2_pipeline_parallel.md](krea2_pipeline_parallel.md) | 实验 / 阶段 1 | Anima、Krea-2、Z-Image 双卡 PP 配置、family stage adapter 与 fail-closed 规划；1F1B 主训练 runtime 尚未接线 |
 | [multi_gpu_training_plan.md](multi_gpu_training_plan.md) | 实验 / 研究分支 `codex/multi-gpu-training`（**2026-11-08 已归档**，提交并入 `dev` `7a6b13c4`） | 多卡（DDP/PP/TP）能力盘点、2×V100 NVLink 硬件约束与 S0–S5 阶段计划；不改生产默认。当前逐点状态以[多卡参考点集成验收](../findings/multigpu_reference_validation_20261107.md)为准 |
 | [multigpu_reference_validation_contract.md](multigpu_reference_validation_contract.md) | 实验 / 验收契约（v1 冻结 `80dfdb02…`；**已被 [修订 v2](multigpu_reference_validation_contract_amendment_v2.md) 部分取代**——§13 S-d/S-g 两条数值门解除，其余条款继续有效；旧文一字未删，§19 为追加修订记录） | P0-0..5、P1-1..3、EXP-FSDP2-BASE/EXP-TP-COLROW 的验证目标/证据级别/采用否决条件/责任阶段；环境与资产核对、磁盘与 checkpoint 体积预算、50 次有效更新的预登记门槛和六个新测试接口。逐点裁定、取数顺序三层缺陷与口径更正见[集成验收报告](../findings/multigpu_reference_validation_20261107.md)（§12–§13） |
