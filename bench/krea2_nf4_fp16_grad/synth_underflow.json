@@ -1,0 +1,1989 @@
+{
+  "probe": "krea2_nf4_fp16_grad/synth_underflow",
+  "date": "2026-11-08T22:25:57+08:00",
+  "torch": "2.10.0+cu129",
+  "env": {
+    "device": "cpu",
+    "cpu_only": true,
+    "cuda_used": false,
+    "note": "纯 CPU 数学仿真；未初始化 CUDA，未 import bitsandbytes、未 import 本仓库模块",
+    "torch_threads": 18,
+    "python": "3.13.9",
+    "platform": "Linux-7.2.14-arch1-1-x86_64-with-glibc2.44",
+    "machine": "x86_64"
+  },
+  "params": {
+    "seed": 20261108,
+    "scales": [
+      1.0,
+      0.01,
+      0.001,
+      0.0001,
+      1e-05,
+      1e-06,
+      1e-07,
+      1e-08,
+      1e-09
+    ],
+    "attr_scales": [
+      1e-05,
+      1e-06,
+      1e-07,
+      1e-08,
+      1e-09
+    ],
+    "k_max": 24,
+    "shapes": [
+      {
+        "M": 1024,
+        "N": 1024,
+        "K": 1024
+      }
+    ],
+    "fp16_constants": {
+      "min_normal": 6.103515625e-05,
+      "min_subnormal": 5.960464477539063e-08,
+      "max": 65504.0
+    },
+    "reported_fingerprints": {
+      "grad_rel_l2": 0.3565,
+      "grad_cosine": 0.9434
+    }
+  },
+  "experiments": [
+    {
+      "shape": {
+        "M": 1024,
+        "N": 1024,
+        "K": 1024
+      },
+      "seed": 20261108,
+      "nf4": {
+        "block_size": 64,
+        "codebook_levels": 16,
+        "weight_rel_l2_vs_fp32": 0.09194255126659036,
+        "weight_operand_identical_across_arms": true
+      },
+      "A_dy_scale_sweep": [
+        {
+          "dy_scale": 1.0,
+          "fp64_ref_norm": 654.6344579246252,
+          "bf16_arm": {
+            "rel_l2": 0.0023407662141196974,
+            "cosine": 0.999997260409277,
+            "norm_ratio": 1.0000008204030308
+          },
+          "fp16_arm": {
+            "rel_l2": 0.0016611573041533513,
+            "cosine": 0.9999986202833289,
+            "norm_ratio": 1.0000021282419707
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.001663206631853841,
+            "cosine": 0.999998616871219,
+            "norm_ratio": 0.9999977259182986
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.000207733816119942,
+            "cosine": 0.9999999784237055,
+            "norm_ratio": 0.9999990314030536
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 4.863739013671875e-05,
+            "frac_below_min_subnormal": 0.0,
+            "frac_flushed_to_zero": 0.0,
+            "frac_fp16_subnormal": 4.863739013671875e-05,
+            "frac_fp16_normal": 0.9999513626098633,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 4.932295799255371,
+            "rms_dy": 0.9992485046386719
+          },
+          "fp16_max_abs_dy": 4.93359375,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 0.01,
+          "fp64_ref_norm": 6.546344433007953,
+          "bf16_arm": {
+            "rel_l2": 0.002337482665804948,
+            "cosine": 0.9999972680860411,
+            "norm_ratio": 0.9999994827538294
+          },
+          "fp16_arm": {
+            "rel_l2": 0.001661510077975431,
+            "cosine": 0.9999986197000479,
+            "norm_ratio": 1.000002848955893
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.001658293957877817,
+            "cosine": 0.9999986250320616,
+            "norm_ratio": 0.9999963859086854
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.0002071263620823827,
+            "cosine": 0.9999999785492916,
+            "norm_ratio": 0.9999997511479555
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 0.004942893981933594,
+            "frac_below_min_subnormal": 1.9073486328125e-06,
+            "frac_flushed_to_zero": 9.5367431640625e-07,
+            "frac_fp16_subnormal": 0.004939079284667969,
+            "frac_fp16_normal": 0.9950599670410156,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 0.049322955310344696,
+            "rms_dy": 0.009992484003305435
+          },
+          "fp16_max_abs_dy": 0.04931640625,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 0.001,
+          "fp64_ref_norm": 0.65463448904509,
+          "bf16_arm": {
+            "rel_l2": 0.0023427431178166818,
+            "cosine": 0.9999972557742526,
+            "norm_ratio": 0.9999960248266504
+          },
+          "fp16_arm": {
+            "rel_l2": 0.001661334684935615,
+            "cosine": 0.9999986199944123,
+            "norm_ratio": 1.000003500203564
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.0016642289710423564,
+            "cosine": 0.9999986151861053,
+            "norm_ratio": 0.9999929288046636
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.0002079742374883676,
+            "cosine": 0.9999999783733826,
+            "norm_ratio": 1.0000004031213385
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 0.04880714416503906,
+            "frac_below_min_subnormal": 4.673004150390625e-05,
+            "frac_flushed_to_zero": 2.288818359375e-05,
+            "frac_fp16_subnormal": 0.04876232147216797,
+            "frac_fp16_normal": 0.9512147903442383,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 0.004932295996695757,
+            "rms_dy": 0.0009992485865950584
+          },
+          "fp16_max_abs_dy": 0.004932403564453125,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 0.0001,
+          "fp64_ref_norm": 0.06546344413907931,
+          "bf16_arm": {
+            "rel_l2": 0.002338239569995242,
+            "cosine": 0.9999972663292556,
+            "norm_ratio": 1.0000027810105767
+          },
+          "fp16_arm": {
+            "rel_l2": 0.001664642322095773,
+            "cosine": 0.9999986144921743,
+            "norm_ratio": 1.0000031377799978
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.0016575870633409298,
+            "cosine": 0.9999986262021134,
+            "norm_ratio": 0.9999996830575587
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.00023371477166837635,
+            "cosine": 0.999999972688642,
+            "norm_ratio": 1.0000000404874019
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 0.45875072479248047,
+            "frac_below_min_subnormal": 0.0004444122314453125,
+            "frac_flushed_to_zero": 0.000213623046875,
+            "frac_fp16_subnormal": 0.45832347869873047,
+            "frac_fp16_normal": 0.5414628982543945,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 0.0004932295414619148,
+            "rms_dy": 9.992484410759062e-05
+          },
+          "fp16_max_abs_dy": 0.0004930496215820312,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 1e-05,
+          "fp64_ref_norm": 0.006546344413581224,
+          "bf16_arm": {
+            "rel_l2": 0.0023373670711793553,
+            "cosine": 0.9999972683620323,
+            "norm_ratio": 1.0000013313418943
+          },
+          "fp16_arm": {
+            "rel_l2": 0.0023816913595124103,
+            "cosine": 0.9999971638394161,
+            "norm_ratio": 1.0000090310134242
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.001657550135093162,
+            "cosine": 0.9999986262628417,
+            "norm_ratio": 0.9999982316103371
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.001720067219848394,
+            "cosine": 0.9999985207107063,
+            "norm_ratio": 1.0000059348701946
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 1.0,
+            "frac_below_min_subnormal": 0.004828453063964844,
+            "frac_flushed_to_zero": 0.002399444580078125,
+            "frac_fp16_subnormal": 0.9976005554199219,
+            "frac_fp16_normal": 0.0,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 4.932295632897876e-05,
+            "rms_dy": 9.992484592658002e-06
+          },
+          "fp16_max_abs_dy": 4.935264587402344e-05,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 1e-06,
+          "fp64_ref_norm": 0.0006546344562965479,
+          "bf16_arm": {
+            "rel_l2": 0.0023425751669472463,
+            "cosine": 0.9999972562173849,
+            "norm_ratio": 1.0000072995008298
+          },
+          "fp16_arm": {
+            "rel_l2": 0.017294974715487955,
+            "cosine": 0.9998504882418262,
+            "norm_ratio": 1.0001895863975288
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.001663472170788821,
+            "cosine": 0.9999986164447192,
+            "norm_ratio": 1.000004198729121
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.017214014650747424,
+            "cosine": 0.9998518838533587,
+            "norm_ratio": 1.0001864666601414
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 1.0,
+            "frac_below_min_subnormal": 0.04770374298095703,
+            "frac_flushed_to_zero": 0.02392864227294922,
+            "frac_fp16_subnormal": 0.9760713577270508,
+            "frac_fp16_normal": 0.0,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 4.932295723847346e-06,
+            "rms_dy": 9.992485274779028e-07
+          },
+          "fp16_max_abs_dy": 4.947185516357422e-06,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 1e-07,
+          "fp64_ref_norm": 6.546344656178726e-05,
+          "bf16_arm": {
+            "rel_l2": 0.002340932113002065,
+            "cosine": 0.9999972600172303,
+            "norm_ratio": 0.9999995542257658
+          },
+          "fp16_arm": {
+            "rel_l2": 0.17206425897622651,
+            "cosine": 0.9855178863589319,
+            "norm_ratio": 1.0147003048744012
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.0016619964005869417,
+            "cosine": 0.9999986188853047,
+            "norm_ratio": 0.9999964595743284
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.17205737225662723,
+            "cosine": 0.9855189807972963,
+            "norm_ratio": 1.014697754927311
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 1.0,
+            "frac_below_min_subnormal": 0.44928836822509766,
+            "frac_flushed_to_zero": 0.23503494262695312,
+            "frac_fp16_subnormal": 0.7649650573730469,
+            "frac_fp16_normal": 0.0,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 4.93229606490786e-07,
+            "rms_dy": 9.992483995802104e-08
+          },
+          "fp16_max_abs_dy": 4.76837158203125e-07,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 1e-08,
+          "fp64_ref_norm": 6.546344539504017e-06,
+          "bf16_arm": {
+            "rel_l2": 0.002333215220095549,
+            "cosine": 0.9999972780593365,
+            "norm_ratio": 1.0000016932169156
+          },
+          "fp16_arm": {
+            "rel_l2": 0.995374701896358,
+            "cosine": 0.17361274673287852,
+            "norm_ratio": 0.31822319934052906
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.0016550387679371873,
+            "cosine": 0.9999986304223336,
+            "norm_ratio": 0.9999986023366635
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 0.995374510218868,
+            "cosine": 0.17361231406159472,
+            "norm_ratio": 0.31822092786893114
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 1.0,
+            "frac_below_min_subnormal": 1.0,
+            "frac_flushed_to_zero": 0.9971580505371094,
+            "frac_fp16_subnormal": 0.002841949462890625,
+            "frac_fp16_normal": 0.0,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 4.932295638582218e-08,
+            "rms_dy": 9.992484173437788e-09
+          },
+          "fp16_max_abs_dy": 5.960464477539063e-08,
+          "fp16_overflow": false
+        },
+        {
+          "dy_scale": 1e-09,
+          "fp64_ref_norm": 6.546344394177539e-07,
+          "bf16_arm": {
+            "rel_l2": 0.002341116683209332,
+            "cosine": 0.9999972595913853,
+            "norm_ratio": 1.000001472712346
+          },
+          "fp16_arm": {
+            "rel_l2": 1.0,
+            "cosine": 0.0,
+            "norm_ratio": 0.0,
+            "note": "arm 全零（全部冲零）"
+          },
+          "bf16_arm_fp32_weight": {
+            "rel_l2": 0.001664601233357232,
+            "cosine": 0.9999986145503702,
+            "norm_ratio": 0.9999983779363232
+          },
+          "fp16_arm_fp32_weight": {
+            "rel_l2": 1.0,
+            "cosine": 0.0,
+            "norm_ratio": 0.0,
+            "note": "arm 全零（全部冲零）"
+          },
+          "dy_stats": {
+            "frac_below_min_normal": 1.0,
+            "frac_below_min_subnormal": 1.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0,
+            "frac_fp16_normal": 0.0,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 4.932295460946534e-09,
+            "rms_dy": 9.992484617526998e-10
+          },
+          "fp16_max_abs_dy": 0.0,
+          "fp16_overflow": false
+        }
+      ],
+      "A2_fingerprint_scan": {
+        "target": {
+          "rel_l2": 0.3565,
+          "cosine": 0.9434
+        },
+        "grid_log2": [
+          -31.0,
+          -20.0,
+          44
+        ],
+        "best_match": {
+          "dy_scale": 5.012133212409702e-08,
+          "rel_l2": 0.34309776040290474,
+          "cosine": 0.945872229857848,
+          "distance": 0.015874469454943252,
+          "dy_stats": {
+            "frac_below_min_normal": 1.0,
+            "frac_below_min_subnormal": 0.7660884857177734,
+            "frac_flushed_to_zero": 0.4482574462890625,
+            "frac_fp16_subnormal": 0.5517425537109375,
+            "frac_fp16_normal": 0.0,
+            "frac_exact_zero": 0.0,
+            "max_abs_dy": 2.4721325075915956e-07,
+            "rms_dy": 5.0083663438726944e-08
+          }
+        },
+        "curve": [
+          {
+            "dy_scale": 4.656612873077393e-10,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 5.537677160476898e-10,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 6.585445079827193e-10,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 7.831458144390159e-10,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 9.313225746154785e-10,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 1.1075354320953796e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 1.3170890159654386e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 1.5662916288780319e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 1.862645149230957e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 2.215070864190759e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 2.634178031930877e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 3.1325832577560637e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 3.725290298461914e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 4.430141728381518e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 5.268356063861754e-09,
+            "fp16_rel_l2": 1.0,
+            "fp16_cosine": 0.0,
+            "frac_flushed_to_zero": 1.0,
+            "frac_fp16_subnormal": 0.0
+          },
+          {
+            "dy_scale": 6.2651665155121274e-09,
+            "fp16_rel_l2": 1.0000095414592105,
+            "fp16_cosine": 0.005794050637428728,
+            "frac_flushed_to_zero": 0.9999980926513672,
+            "frac_fp16_subnormal": 1.9073486328125e-06
+          },
+          {
+            "dy_scale": 7.450580596923828e-09,
+            "fp16_rel_l2": 0.999934396293108,
+            "fp16_cosine": 0.03337127266053634,
+            "frac_flushed_to_zero": 0.9999351501464844,
+            "frac_fp16_subnormal": 6.4849853515625e-05
+          },
+          {
+            "dy_scale": 8.860283456763037e-09,
+            "fp16_rel_l2": 0.9985095623029353,
+            "fp16_cosine": 0.10323469464021912,
+            "frac_flushed_to_zero": 0.9991979598999023,
+            "frac_fp16_subnormal": 0.0008020401000976562
+          },
+          {
+            "dy_scale": 1.0536712127723509e-08,
+            "fp16_rel_l2": 0.9925508932585364,
+            "fp16_cosine": 0.21167732994006644,
+            "frac_flushed_to_zero": 0.9953804016113281,
+            "frac_fp16_subnormal": 0.004619598388671875
+          },
+          {
+            "dy_scale": 1.2530333031024255e-08,
+            "fp16_rel_l2": 0.9720700412471253,
+            "fp16_cosine": 0.3583655205172665,
+            "frac_flushed_to_zero": 0.9825525283813477,
+            "frac_fp16_subnormal": 0.017447471618652344
+          },
+          {
+            "dy_scale": 1.4901161193847656e-08,
+            "fp16_rel_l2": 0.9298971661534242,
+            "fp16_cosine": 0.5062803407776901,
+            "frac_flushed_to_zero": 0.9545106887817383,
+            "frac_fp16_subnormal": 0.04548931121826172
+          },
+          {
+            "dy_scale": 1.7720566913526073e-08,
+            "fp16_rel_l2": 0.8617323595592755,
+            "fp16_cosine": 0.636959205650415,
+            "frac_flushed_to_zero": 0.907832145690918,
+            "frac_fp16_subnormal": 0.09216785430908203
+          },
+          {
+            "dy_scale": 2.1073424255447017e-08,
+            "fp16_rel_l2": 0.7725040553101106,
+            "fp16_cosine": 0.7398756252850406,
+            "frac_flushed_to_zero": 0.8434543609619141,
+            "frac_fp16_subnormal": 0.15654563903808594
+          },
+          {
+            "dy_scale": 2.506066606204851e-08,
+            "fp16_rel_l2": 0.6734385005663298,
+            "fp16_cosine": 0.8138070584268373,
+            "frac_flushed_to_zero": 0.7660884857177734,
+            "frac_fp16_subnormal": 0.23391151428222656
+          },
+          {
+            "dy_scale": 2.9802322387695312e-08,
+            "fp16_rel_l2": 0.5750884574382635,
+            "fp16_cosine": 0.8639930855848745,
+            "frac_flushed_to_zero": 0.6829891204833984,
+            "frac_fp16_subnormal": 0.31701087951660156
+          },
+          {
+            "dy_scale": 3.544113382705215e-08,
+            "fp16_rel_l2": 0.48481639812448624,
+            "fp16_cosine": 0.8997166793530644,
+            "frac_flushed_to_zero": 0.5998525619506836,
+            "frac_fp16_subnormal": 0.4001474380493164
+          },
+          {
+            "dy_scale": 4.2146848510894035e-08,
+            "fp16_rel_l2": 0.40814944483168397,
+            "fp16_cosine": 0.9259444344045564,
+            "frac_flushed_to_zero": 0.5210447311401367,
+            "frac_fp16_subnormal": 0.4789552688598633
+          },
+          {
+            "dy_scale": 5.012133212409702e-08,
+            "fp16_rel_l2": 0.34309776040290474,
+            "fp16_cosine": 0.945872229857848,
+            "frac_flushed_to_zero": 0.4482574462890625,
+            "frac_fp16_subnormal": 0.5517425537109375
+          },
+          {
+            "dy_scale": 5.960464477539063e-08,
+            "fp16_rel_l2": 0.2885813892378509,
+            "fp16_cosine": 0.9607939249028584,
+            "frac_flushed_to_zero": 0.38312816619873047,
+            "frac_fp16_subnormal": 0.6168718338012695
+          },
+          {
+            "dy_scale": 7.08822676541043e-08,
+            "fp16_rel_l2": 0.24261349434348434,
+            "fp16_cosine": 0.9717947641915172,
+            "frac_flushed_to_zero": 0.32628631591796875,
+            "frac_fp16_subnormal": 0.6737136840820312
+          },
+          {
+            "dy_scale": 8.429369702178807e-08,
+            "fp16_rel_l2": 0.20402956917846413,
+            "fp16_cosine": 0.979825746666932,
+            "frac_flushed_to_zero": 0.2770099639892578,
+            "frac_fp16_subnormal": 0.7229900360107422
+          },
+          {
+            "dy_scale": 1.0024266424819404e-07,
+            "fp16_rel_l2": 0.17161699274381884,
+            "fp16_cosine": 0.9855908266356813,
+            "frac_flushed_to_zero": 0.23450183868408203,
+            "frac_fp16_subnormal": 0.765498161315918
+          },
+          {
+            "dy_scale": 1.1920928955078125e-07,
+            "fp16_rel_l2": 0.14444019898389926,
+            "fp16_cosine": 0.9897252417618967,
+            "frac_flushed_to_zero": 0.19816303253173828,
+            "frac_fp16_subnormal": 0.8018369674682617
+          },
+          {
+            "dy_scale": 1.417645353082086e-07,
+            "fp16_rel_l2": 0.12126480836550846,
+            "fp16_cosine": 0.9927275906811842,
+            "frac_flushed_to_zero": 0.1673440933227539,
+            "frac_fp16_subnormal": 0.8326559066772461
+          },
+          {
+            "dy_scale": 1.6858739404357614e-07,
+            "fp16_rel_l2": 0.10232653973849193,
+            "fp16_cosine": 0.9948072765159008,
+            "frac_flushed_to_zero": 0.14099502563476562,
+            "frac_fp16_subnormal": 0.8590049743652344
+          },
+          {
+            "dy_scale": 2.0048532849638808e-07,
+            "fp16_rel_l2": 0.08583869578408286,
+            "fp16_cosine": 0.9963348771822809,
+            "frac_flushed_to_zero": 0.11853694915771484,
+            "frac_fp16_subnormal": 0.8814630508422852
+          },
+          {
+            "dy_scale": 2.384185791015625e-07,
+            "fp16_rel_l2": 0.07221418933604978,
+            "fp16_cosine": 0.9974028095652219,
+            "frac_flushed_to_zero": 0.09972095489501953,
+            "frac_fp16_subnormal": 0.9002790451049805
+          },
+          {
+            "dy_scale": 2.835290706164172e-07,
+            "fp16_rel_l2": 0.060836945692020666,
+            "fp16_cosine": 0.9981546037687352,
+            "frac_flushed_to_zero": 0.08399391174316406,
+            "frac_fp16_subnormal": 0.9160060882568359
+          },
+          {
+            "dy_scale": 3.371747880871523e-07,
+            "fp16_rel_l2": 0.05112883978417948,
+            "fp16_cosine": 0.9986954859858753,
+            "frac_flushed_to_zero": 0.07069683074951172,
+            "frac_fp16_subnormal": 0.9293031692504883
+          },
+          {
+            "dy_scale": 4.0097065699277616e-07,
+            "fp16_rel_l2": 0.042941513420841744,
+            "fp16_cosine": 0.9990793213682563,
+            "frac_flushed_to_zero": 0.059490203857421875,
+            "frac_fp16_subnormal": 0.9405097961425781
+          },
+          {
+            "dy_scale": 4.76837158203125e-07,
+            "fp16_rel_l2": 0.03615663996259141,
+            "fp16_cosine": 0.9993470276370355,
+            "frac_flushed_to_zero": 0.049981117248535156,
+            "frac_fp16_subnormal": 0.9500188827514648
+          },
+          {
+            "dy_scale": 5.670581412328344e-07,
+            "fp16_rel_l2": 0.030387893893431054,
+            "fp16_cosine": 0.9995385942162776,
+            "frac_flushed_to_zero": 0.04207038879394531,
+            "frac_fp16_subnormal": 0.9579296112060547
+          },
+          {
+            "dy_scale": 6.743495761743046e-07,
+            "fp16_rel_l2": 0.025611185476908167,
+            "fp16_cosine": 0.9996721843449883,
+            "frac_flushed_to_zero": 0.035437583923339844,
+            "frac_fp16_subnormal": 0.9645624160766602
+          },
+          {
+            "dy_scale": 8.019413139855523e-07,
+            "fp16_rel_l2": 0.02152281209605995,
+            "fp16_cosine": 0.9997684972950039,
+            "frac_flushed_to_zero": 0.029867172241210938,
+            "frac_fp16_subnormal": 0.9701328277587891
+          },
+          {
+            "dy_scale": 9.5367431640625e-07,
+            "fp16_rel_l2": 0.018150693704402292,
+            "fp16_cosine": 0.9998353176919733,
+            "frac_flushed_to_zero": 0.025033950805664062,
+            "frac_fp16_subnormal": 0.9749660491943359
+          }
+        ]
+      },
+      "B_error_attribution": [
+        {
+          "dy_scale": 1e-05,
+          "dy_rounding_only": {
+            "rel_l2_vs_fp64_ref": 0.0017200671073459791,
+            "err_sq_total": 1.2679101628805908e-10,
+            "additive_share_sum": 1.0001382680195634,
+            "cross_term_share": -0.0001382680195633407
+          },
+          "buckets": {
+            "fp16_normal": {
+              "element_fraction": 0.0,
+              "err_sq_norm": 0.0,
+              "err_sq_share_additive": 0.0
+            },
+            "fp16_subnormal": {
+              "element_fraction": 0.9976005554199219,
+              "err_sq_norm": 1.1247281659394954e-05,
+              "err_sq_share_additive": 0.9977153620912788
+            },
+            "fp16_flushed": {
+              "element_fraction": 0.002399444580078125,
+              "err_sq_norm": 5.542586986395169e-07,
+              "err_sq_share_additive": 0.002422905928284625
+            }
+          },
+          "signal_restricted_abs_threshold": {
+            "threshold_abs": 6.103515625e-05,
+            "quantile": null,
+            "n_signal": 0,
+            "signal_fraction": 0.0,
+            "rel_l2": null,
+            "cosine": null,
+            "norm_ratio": null,
+            "note": "该量级下没有 fp16 正规元素，绝对阈值口径不可定义"
+          },
+          "signal_restricted_rel_quantile": {
+            "threshold_abs": 1.642264032852836e-05,
+            "quantile": 0.9,
+            "n_signal": 104858,
+            "signal_fraction": 0.10000038146972656,
+            "rel_l2": 0.0008200097818662443,
+            "cosine": 0.9999996638192298,
+            "norm_ratio": 1.0000070635595666
+          }
+        },
+        {
+          "dy_scale": 1e-06,
+          "dy_rounding_only": {
+            "rel_l2_vs_fp64_ref": 0.017214014800994628,
+            "err_sq_total": 1.2698781917548038e-10,
+            "additive_share_sum": 1.0002288939879036,
+            "cross_term_share": -0.0002288939879036026
+          },
+          "buckets": {
+            "fp16_normal": {
+              "element_fraction": 0.0,
+              "err_sq_norm": 0.0,
+              "err_sq_share_additive": 0.0
+            },
+            "fp16_subnormal": {
+              "element_fraction": 0.9760713577270508,
+              "err_sq_norm": 1.1134103412101004e-05,
+              "err_sq_share_additive": 0.9762216533544172
+            },
+            "fp16_flushed": {
+              "element_fraction": 0.02392864227294922,
+              "err_sq_norm": 1.746031824586082e-06,
+              "err_sq_share_additive": 0.02400724063348629
+            }
+          },
+          "signal_restricted_abs_threshold": {
+            "threshold_abs": 6.103515625e-05,
+            "quantile": null,
+            "n_signal": 0,
+            "signal_fraction": 0.0,
+            "rel_l2": null,
+            "cosine": null,
+            "norm_ratio": null,
+            "note": "该量级下没有 fp16 正规元素，绝对阈值口径不可定义"
+          },
+          "signal_restricted_rel_quantile": {
+            "threshold_abs": 1.6422641238023061e-06,
+            "quantile": 0.9,
+            "n_signal": 104858,
+            "signal_fraction": 0.10000038146972656,
+            "rel_l2": 0.00815984619722821,
+            "cosine": 0.9999667379584121,
+            "norm_ratio": 1.0002119180522124
+          }
+        },
+        {
+          "dy_scale": 1e-07,
+          "dy_rounding_only": {
+            "rel_l2_vs_fp64_ref": 0.1720573725030271,
+            "err_sq_total": 1.2686572513775238e-10,
+            "additive_share_sum": 0.9999020287510715,
+            "cross_term_share": 9.79712489284842e-05
+          },
+          "buckets": {
+            "fp16_normal": {
+              "element_fraction": 0.0,
+              "err_sq_norm": 0.0,
+              "err_sq_share_additive": 0.0
+            },
+            "fp16_subnormal": {
+              "element_fraction": 0.7649650573730469,
+              "err_sq_norm": 9.870375035319098e-06,
+              "err_sq_share_additive": 0.7679324201400021
+            },
+            "fp16_flushed": {
+              "element_fraction": 0.23503494262695312,
+              "err_sq_norm": 5.4248495468873535e-06,
+              "err_sq_share_additive": 0.2319696086110694
+            }
+          },
+          "signal_restricted_abs_threshold": {
+            "threshold_abs": 6.103515625e-05,
+            "quantile": null,
+            "n_signal": 0,
+            "signal_fraction": 0.0,
+            "rel_l2": null,
+            "cosine": null,
+            "norm_ratio": null,
+            "note": "该量级下没有 fp16 正规元素，绝对阈值口径不可定义"
+          },
+          "signal_restricted_rel_quantile": {
+            "threshold_abs": 1.6422640669588873e-07,
+            "quantile": 0.9,
+            "n_signal": 104858,
+            "signal_fraction": 0.10000038146972656,
+            "rel_l2": 0.07221568631400947,
+            "cosine": 0.9973943941652644,
+            "norm_ratio": 1.0006628589790036
+          }
+        },
+        {
+          "dy_scale": 1e-08,
+          "dy_rounding_only": {
+            "rel_l2_vs_fp64_ref": 0.9953745097007837,
+            "err_sq_total": 4.2459096390151184e-11,
+            "additive_share_sum": 0.9996732308935419,
+            "cross_term_share": 0.00032676910645808885
+          },
+          "buckets": {
+            "fp16_normal": {
+              "element_fraction": 0.0,
+              "err_sq_norm": 0.0,
+              "err_sq_share_additive": 0.0
+            },
+            "fp16_subnormal": {
+              "element_fraction": 0.002841949462890625,
+              "err_sq_norm": 9.438553732684582e-07,
+              "err_sq_share_additive": 0.02098167510353294
+            },
+            "fp16_flushed": {
+              "element_fraction": 0.9971580505371094,
+              "err_sq_norm": 6.446267067343317e-06,
+              "err_sq_share_additive": 0.9786915557900089
+            }
+          },
+          "signal_restricted_abs_threshold": {
+            "threshold_abs": 6.103515625e-05,
+            "quantile": null,
+            "n_signal": 0,
+            "signal_fraction": 0.0,
+            "rel_l2": null,
+            "cosine": null,
+            "norm_ratio": null,
+            "note": "该量级下没有 fp16 正规元素，绝对阈值口径不可定义"
+          },
+          "signal_restricted_rel_quantile": {
+            "threshold_abs": 1.642264102486024e-08,
+            "quantile": 0.9,
+            "n_signal": 104858,
+            "signal_fraction": 0.10000038146972656,
+            "rel_l2": 0.9886482950991141,
+            "cosine": 0.2634135290899567,
+            "norm_ratio": 0.4797746594023471
+          }
+        },
+        {
+          "dy_scale": 1e-09,
+          "dy_rounding_only": {
+            "rel_l2_vs_fp64_ref": 0.9999999998281567,
+            "err_sq_total": 4.285462491244547e-13,
+            "additive_share_sum": 1.0,
+            "cross_term_share": 0.0
+          },
+          "buckets": {
+            "fp16_normal": {
+              "element_fraction": 0.0,
+              "err_sq_norm": 0.0,
+              "err_sq_share_additive": 0.0
+            },
+            "fp16_subnormal": {
+              "element_fraction": 0.0,
+              "err_sq_norm": 0.0,
+              "err_sq_share_additive": 0.0
+            },
+            "fp16_flushed": {
+              "element_fraction": 1.0,
+              "err_sq_norm": 6.546344393052161e-07,
+              "err_sq_share_additive": 1.0
+            }
+          },
+          "signal_restricted_abs_threshold": {
+            "threshold_abs": 6.103515625e-05,
+            "quantile": null,
+            "n_signal": 0,
+            "signal_fraction": 0.0,
+            "rel_l2": null,
+            "cosine": null,
+            "norm_ratio": null,
+            "note": "该量级下没有 fp16 正规元素，绝对阈值口径不可定义"
+          },
+          "signal_restricted_rel_quantile": {
+            "threshold_abs": 1.6422639914637216e-09,
+            "quantile": 0.9,
+            "n_signal": 104858,
+            "signal_fraction": 0.10000038146972656,
+            "rel_l2": 1.0,
+            "cosine": 0.0,
+            "norm_ratio": 0.0,
+            "note": "arm 全零（全部冲零）"
+          }
+        }
+      ],
+      "B2_energy_budget": {
+        "reported_fingerprint_consistency": {
+          "reported_rel_l2": 0.3565,
+          "reported_cosine": 0.9434,
+          "rel_l2_squared": 0.12709225,
+          "pure_energy_loss_prediction_tan_sq": 0.12359101125393246,
+          "orthogonal_residual": 0.05917126621991058,
+          "interpretation": "rel_l2²≈tan²θ 说明误差几乎全是幅度（能量被压碎）损失，方向扰动很小"
+        },
+        "rows": [
+          {
+            "dy_scale": 1e-06,
+            "fp16_rel_l2": 0.017214014800994628,
+            "fp16_rel_l2_squared": 0.0002963223055688621,
+            "buckets": {
+              "fp16_normal": {
+                "signal_energy_share": 0.0,
+                "err_energy_share": 0.0
+              },
+              "fp16_subnormal": {
+                "signal_energy_share": 0.9999928876552104,
+                "err_energy_share": 0.9759736889026754
+              },
+              "fp16_flushed": {
+                "signal_energy_share": 7.112344789666821e-06,
+                "err_energy_share": 0.024026311097324594
+              }
+            },
+            "flush_only_model_rel_l2": 0.002666897971364263,
+            "granularity_residual_sq": 0.0002892099607791953
+          },
+          {
+            "dy_scale": 1e-07,
+            "fp16_rel_l2": 0.1720573725030271,
+            "fp16_rel_l2_squared": 0.029603739432645427,
+            "buckets": {
+              "fp16_normal": {
+                "signal_energy_share": 0.0,
+                "err_energy_share": 0.0
+              },
+              "fp16_subnormal": {
+                "signal_energy_share": 0.9931250138143836,
+                "err_energy_share": 0.7678299280723956
+              },
+              "fp16_flushed": {
+                "signal_energy_share": 0.006874986185616598,
+                "err_energy_share": 0.2321700719276045
+              }
+            },
+            "flush_only_model_rel_l2": 0.08291553645497687,
+            "granularity_residual_sq": 0.02272875324702883
+          },
+          {
+            "dy_scale": 5e-08,
+            "fp16_rel_l2": 0.3439423587380073,
+            "fp16_rel_l2_squared": 0.11829634613426412,
+            "buckets": {
+              "fp16_normal": {
+                "signal_energy_share": 0.0,
+                "err_energy_share": 0.0
+              },
+              "fp16_subnormal": {
+                "signal_energy_share": 0.9492521177667974,
+                "err_energy_share": 0.5714784603049018
+              },
+              "fp16_flushed": {
+                "signal_energy_share": 0.05074788223320277,
+                "err_energy_share": 0.4285215396950984
+              }
+            },
+            "flush_only_model_rel_l2": 0.22527290612322373,
+            "granularity_residual_sq": 0.06754846390106135
+          },
+          {
+            "dy_scale": 3e-08,
+            "fp16_rel_l2": 0.5715052074113335,
+            "fp16_rel_l2_squared": 0.3266182020982713,
+            "buckets": {
+              "fp16_normal": {
+                "signal_energy_share": 0.0,
+                "err_energy_share": 0.0
+              },
+              "fp16_subnormal": {
+                "signal_energy_share": 0.8042464993207633,
+                "err_energy_share": 0.40093247473516375
+              },
+              "fp16_flushed": {
+                "signal_energy_share": 0.19575350067923664,
+                "err_energy_share": 0.5990675252648363
+              }
+            },
+            "flush_only_model_rel_l2": 0.4424403922329387,
+            "granularity_residual_sq": 0.13086470141903467
+          },
+          {
+            "dy_scale": 1e-08,
+            "fp16_rel_l2": 0.9953745097007837,
+            "fp16_rel_l2_squared": 0.9907704145620755,
+            "buckets": {
+              "fp16_normal": {
+                "signal_energy_share": 0.0,
+                "err_energy_share": 0.0
+              },
+              "fp16_subnormal": {
+                "signal_energy_share": 0.030699337972788,
+                "err_energy_share": 0.02096977124820425
+              },
+              "fp16_flushed": {
+                "signal_energy_share": 0.9693006620272122,
+                "err_energy_share": 0.9790302287517959
+              }
+            },
+            "flush_only_model_rel_l2": 0.984530681099991,
+            "granularity_residual_sq": 0.021469752534863273
+          }
+        ]
+      },
+      "C_loss_scale": [
+        {
+          "dy_scale": 1e-09,
+          "bf16_target_rel_l2": 0.002341116683209332,
+          "rows": [
+            {
+              "k": 0,
+              "loss_scale": 1.0,
+              "max_abs_dy": 4.932295460946534e-09,
+              "fp16_arm": {
+                "rel_l2": 1.0,
+                "cosine": 0.0,
+                "norm_ratio": 0.0,
+                "note": "arm 全零（全部冲零）"
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 13280631811020.791,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0,
+              "frac_flushed_to_zero": 1.0
+            },
+            {
+              "k": 1,
+              "loss_scale": 2.0,
+              "max_abs_dy": 9.864590921893068e-09,
+              "fp16_arm": {
+                "rel_l2": 1.0,
+                "cosine": 0.0,
+                "norm_ratio": 0.0,
+                "note": "arm 全零（全部冲零）"
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 6640315905510.3955,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0,
+              "frac_flushed_to_zero": 1.0
+            },
+            {
+              "k": 2,
+              "loss_scale": 4.0,
+              "max_abs_dy": 1.9729181843786137e-08,
+              "fp16_arm": {
+                "rel_l2": 1.0,
+                "cosine": 0.0,
+                "norm_ratio": 0.0,
+                "note": "arm 全零（全部冲零）"
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 3320157952755.1978,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0,
+              "frac_flushed_to_zero": 1.0
+            },
+            {
+              "k": 3,
+              "loss_scale": 8.0,
+              "max_abs_dy": 3.945836368757227e-08,
+              "fp16_arm": {
+                "rel_l2": 0.9995932100108292,
+                "cosine": 0.057052039718713095,
+                "norm_ratio": 0.10646378666026649
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 1660078976377.5989,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0002040863037109375,
+              "frac_flushed_to_zero": 0.9997959136962891
+            },
+            {
+              "k": 4,
+              "loss_scale": 16.0,
+              "max_abs_dy": 7.891672737514455e-08,
+              "fp16_arm": {
+                "rel_l2": 0.9048314990908725,
+                "cosine": 0.5627793618300989,
+                "norm_ratio": 0.9308019859293973
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 830039488188.7994,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.06227874755859375,
+              "frac_flushed_to_zero": 0.9377212524414062
+            },
+            {
+              "k": 5,
+              "loss_scale": 32.0,
+              "max_abs_dy": 1.578334547502891e-07,
+              "fp16_arm": {
+                "rel_l2": 0.5367465258866264,
+                "cosine": 0.8799293095238673,
+                "norm_ratio": 1.129674024804298
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 415019744094.3997,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.3513603210449219,
+              "frac_flushed_to_zero": 0.6486396789550781
+            },
+            {
+              "k": 6,
+              "loss_scale": 64.0,
+              "max_abs_dy": 3.156669095005782e-07,
+              "fp16_arm": {
+                "rel_l2": 0.26893147476143436,
+                "cosine": 0.9656660366981615,
+                "norm_ratio": 1.0352004350178994
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 207509872047.19986,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.6411600112915039,
+              "frac_flushed_to_zero": 0.3588399887084961
+            },
+            {
+              "k": 7,
+              "loss_scale": 128.0,
+              "max_abs_dy": 6.313338190011564e-07,
+              "fp16_arm": {
+                "rel_l2": 0.13460819103781985,
+                "cosine": 0.9910642500730005,
+                "norm_ratio": 1.0091670914860364
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 103754936023.59993,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.815333366394043,
+              "frac_flushed_to_zero": 0.18466663360595703
+            },
+            {
+              "k": 8,
+              "loss_scale": 256.0,
+              "max_abs_dy": 1.2626676380023127e-06,
+              "fp16_arm": {
+                "rel_l2": 0.06715914359015068,
+                "cosine": 0.9977523031655946,
+                "norm_ratio": 1.0022254497095664
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 51877468011.799965,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9069986343383789,
+              "frac_flushed_to_zero": 0.0930013656616211
+            },
+            {
+              "k": 9,
+              "loss_scale": 512.0,
+              "max_abs_dy": 2.5253352760046255e-06,
+              "fp16_arm": {
+                "rel_l2": 0.03368738460917696,
+                "cosine": 0.9994330758053552,
+                "norm_ratio": 1.000578891136249
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 25938734005.899982,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.953455924987793,
+              "frac_flushed_to_zero": 0.04654407501220703
+            },
+            {
+              "k": 10,
+              "loss_scale": 1024.0,
+              "max_abs_dy": 5.050670552009251e-06,
+              "fp16_arm": {
+                "rel_l2": 0.016907078703507106,
+                "cosine": 0.9998571015485629,
+                "norm_ratio": 1.000126966609702
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 12969367002.949991,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9766674041748047,
+              "frac_flushed_to_zero": 0.023332595825195312
+            },
+            {
+              "k": 11,
+              "loss_scale": 2048.0,
+              "max_abs_dy": 1.0101341104018502e-05,
+              "fp16_arm": {
+                "rel_l2": 0.008572536793967876,
+                "cosine": 0.9999632590065549,
+                "norm_ratio": 1.0000512968526327
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 6484683501.474996,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9882879257202148,
+              "frac_flushed_to_zero": 0.011712074279785156
+            },
+            {
+              "k": 12,
+              "loss_scale": 4096.0,
+              "max_abs_dy": 2.0202682208037004e-05,
+              "fp16_arm": {
+                "rel_l2": 0.004515105029896869,
+                "cosine": 0.9999898072736709,
+                "norm_ratio": 1.000018532413577
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 3242341750.737498,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.994084358215332,
+              "frac_flushed_to_zero": 0.005915641784667969
+            },
+            {
+              "k": 13,
+              "loss_scale": 8192.0,
+              "max_abs_dy": 4.040536441607401e-05,
+              "fp16_arm": {
+                "rel_l2": 0.00266932767023533,
+                "cosine": 0.9999964373545384,
+                "norm_ratio": 1.00000211813995
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 1621170875.368749,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9970626831054688,
+              "frac_flushed_to_zero": 0.00293731689453125
+            },
+            {
+              "k": 14,
+              "loss_scale": 16384.0,
+              "max_abs_dy": 8.081072883214802e-05,
+              "fp16_arm": {
+                "rel_l2": 0.0019538699202455863,
+                "cosine": 0.9999980912099797,
+                "norm_ratio": 1.0000036990797274
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 810585437.6843745,
+              "frac_fp16_normal": 0.0002040863037109375,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9983406066894531,
+              "frac_flushed_to_zero": 0.0014553070068359375
+            },
+            {
+              "k": 15,
+              "loss_scale": 32768.0,
+              "max_abs_dy": 0.00016162145766429603,
+              "fp16_arm": {
+                "rel_l2": 0.0017306319986742113,
+                "cosine": 0.9999985024674357,
+                "norm_ratio": 1.000003440670097
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 405292718.8421872,
+              "frac_fp16_normal": 0.062397003173828125,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9368953704833984,
+              "frac_flushed_to_zero": 0.0007076263427734375
+            },
+            {
+              "k": 16,
+              "loss_scale": 65536.0,
+              "max_abs_dy": 0.00032324291532859206,
+              "fp16_arm": {
+                "rel_l2": 0.0016734950006912486,
+                "cosine": 0.9999985997143784,
+                "norm_ratio": 1.0000026479129438
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 202646359.4210936,
+              "frac_fp16_normal": 0.35157108306884766,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.6480846405029297,
+              "frac_flushed_to_zero": 0.00034427642822265625
+            },
+            {
+              "k": 17,
+              "loss_scale": 131072.0,
+              "max_abs_dy": 0.0006464858306571841,
+              "fp16_arm": {
+                "rel_l2": 0.0016634595990503783,
+                "cosine": 0.999998616458304,
+                "norm_ratio": 1.0000026788221763
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 101323179.7105468,
+              "frac_fp16_normal": 0.6413297653198242,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.35849761962890625,
+              "frac_flushed_to_zero": 0.00017261505126953125
+            },
+            {
+              "k": 18,
+              "loss_scale": 262144.0,
+              "max_abs_dy": 0.0012929716613143682,
+              "fp16_arm": {
+                "rel_l2": 0.0016620182588466775,
+                "cosine": 0.999998618855754,
+                "norm_ratio": 1.0000028900586446
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 50661589.8552734,
+              "frac_fp16_normal": 0.8154287338256836,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.1844797134399414,
+              "frac_flushed_to_zero": 9.1552734375e-05
+            },
+            {
+              "k": 19,
+              "loss_scale": 524288.0,
+              "max_abs_dy": 0.0025859433226287365,
+              "fp16_arm": {
+                "rel_l2": 0.001661821173095732,
+                "cosine": 0.9999986191832114,
+                "norm_ratio": 1.0000028713716431
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 25330794.9276367,
+              "frac_fp16_normal": 0.9070539474487305,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.09290218353271484,
+              "frac_flushed_to_zero": 4.38690185546875e-05
+            },
+            {
+              "k": 20,
+              "loss_scale": 1048576.0,
+              "max_abs_dy": 0.005171886645257473,
+              "fp16_arm": {
+                "rel_l2": 0.0016617874433062026,
+                "cosine": 0.9999986192392627,
+                "norm_ratio": 1.0000028706585908
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 12665397.46381835,
+              "frac_fp16_normal": 0.9534721374511719,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.04650688171386719,
+              "frac_flushed_to_zero": 2.09808349609375e-05
+            },
+            {
+              "k": 21,
+              "loss_scale": 2097152.0,
+              "max_abs_dy": 0.010343773290514946,
+              "fp16_arm": {
+                "rel_l2": 0.0016617955260888404,
+                "cosine": 0.9999986192258536,
+                "norm_ratio": 1.00000287683616
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 6332698.731909175,
+              "frac_fp16_normal": 0.9766769409179688,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.023317337036132812,
+              "frac_flushed_to_zero": 5.7220458984375e-06
+            },
+            {
+              "k": 22,
+              "loss_scale": 4194304.0,
+              "max_abs_dy": 0.020687546581029892,
+              "fp16_arm": {
+                "rel_l2": 0.001661794607714093,
+                "cosine": 0.9999986192273768,
+                "norm_ratio": 1.0000028768460016
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 3166349.3659545877,
+              "frac_fp16_normal": 0.9882907867431641,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.011707305908203125,
+              "frac_flushed_to_zero": 1.9073486328125e-06
+            },
+            {
+              "k": 23,
+              "loss_scale": 8388608.0,
+              "max_abs_dy": 0.041375093162059784,
+              "fp16_arm": {
+                "rel_l2": 0.001661794733826357,
+                "cosine": 0.9999986192271765,
+                "norm_ratio": 1.0000028775133452
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 1583174.6829772939,
+              "frac_fp16_normal": 0.9940862655639648,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.005911827087402344,
+              "frac_flushed_to_zero": 1.9073486328125e-06
+            },
+            {
+              "k": 24,
+              "loss_scale": 16777216.0,
+              "max_abs_dy": 0.08275018632411957,
+              "fp16_arm": {
+                "rel_l2": 0.0016617949971819848,
+                "cosine": 0.9999986192267356,
+                "norm_ratio": 1.0000028773911454
+              },
+              "bf16_arm_rel_l2": 0.002341116683209332,
+              "headroom_to_fp16_max": 791587.3414886469,
+              "frac_fp16_normal": 0.9970645904541016,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0029344558715820312,
+              "frac_flushed_to_zero": 9.5367431640625e-07
+            }
+          ],
+          "monotonic_non_increasing_tol_1e-3": true,
+          "saturation_k_within_10pct": 14,
+          "saturation_k_within_25pct": 13,
+          "core_window_k0_12_rel_l2": [
+            1.0,
+            1.0,
+            1.0,
+            0.9995932100108292,
+            0.9048314990908725,
+            0.5367465258866264,
+            0.26893147476143436,
+            0.13460819103781985,
+            0.06715914359015068,
+            0.03368738460917696,
+            0.016907078703507106,
+            0.008572536793967876,
+            0.004515105029896869
+          ],
+          "final_rel_l2_at_k_max": 0.0016617949971819848,
+          "overflow_first_k": null
+        },
+        {
+          "dy_scale": 1e-07,
+          "bf16_target_rel_l2": 0.002340932113002065,
+          "rows": [
+            {
+              "k": 0,
+              "loss_scale": 1.0,
+              "max_abs_dy": 4.93229606490786e-07,
+              "fp16_arm": {
+                "rel_l2": 0.17206425897622651,
+                "cosine": 0.9855178863589319,
+                "norm_ratio": 1.0147003048744012
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 132806301848.02924,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.7649650573730469,
+              "frac_flushed_to_zero": 0.23503494262695312
+            },
+            {
+              "k": 1,
+              "loss_scale": 2.0,
+              "max_abs_dy": 9.86459212981572e-07,
+              "fp16_arm": {
+                "rel_l2": 0.08603804600351095,
+                "cosine": 0.9963181416492255,
+                "norm_ratio": 1.0035558719195028
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 66403150924.01462,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.8811511993408203,
+              "frac_flushed_to_zero": 0.11884880065917969
+            },
+            {
+              "k": 2,
+              "loss_scale": 4.0,
+              "max_abs_dy": 1.972918425963144e-06,
+              "fp16_arm": {
+                "rel_l2": 0.04302415090512158,
+                "cosine": 0.999075836383521,
+                "norm_ratio": 1.000974362925249
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 33201575462.00731,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.940373420715332,
+              "frac_flushed_to_zero": 0.05962657928466797
+            },
+            {
+              "k": 3,
+              "loss_scale": 8.0,
+              "max_abs_dy": 3.945836851926288e-06,
+              "fp16_arm": {
+                "rel_l2": 0.02157413163351977,
+                "cosine": 0.9997673934268818,
+                "norm_ratio": 1.000300416725211
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 16600787731.003654,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9700784683227539,
+              "frac_flushed_to_zero": 0.029921531677246094
+            },
+            {
+              "k": 4,
+              "loss_scale": 16.0,
+              "max_abs_dy": 7.891673703852575e-06,
+              "fp16_arm": {
+                "rel_l2": 0.01088855839973273,
+                "cosine": 0.999940726211427,
+                "norm_ratio": 1.0000697244657115
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 8300393865.501827,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9850759506225586,
+              "frac_flushed_to_zero": 0.014924049377441406
+            },
+            {
+              "k": 5,
+              "loss_scale": 32.0,
+              "max_abs_dy": 1.578334740770515e-05,
+              "fp16_arm": {
+                "rel_l2": 0.005630483119789519,
+                "cosine": 0.9999841489915418,
+                "norm_ratio": 1.0000081273315715
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 4150196932.7509136,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9924907684326172,
+              "frac_flushed_to_zero": 0.0075092315673828125
+            },
+            {
+              "k": 6,
+              "loss_scale": 64.0,
+              "max_abs_dy": 3.15666948154103e-05,
+              "fp16_arm": {
+                "rel_l2": 0.003164113933433839,
+                "cosine": 0.9999949942012114,
+                "norm_ratio": 1.0000016871647324
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 2075098466.3754568,
+              "frac_fp16_normal": 0.0,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9962196350097656,
+              "frac_flushed_to_zero": 0.003780364990234375
+            },
+            {
+              "k": 7,
+              "loss_scale": 128.0,
+              "max_abs_dy": 6.31333896308206e-05,
+              "fp16_arm": {
+                "rel_l2": 0.0021266901951970444,
+                "cosine": 0.9999977386098047,
+                "norm_ratio": 1.0000037477403578
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 1037549233.1877284,
+              "frac_fp16_normal": 9.5367431640625e-07,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9981260299682617,
+              "frac_flushed_to_zero": 0.001873016357421875
+            },
+            {
+              "k": 8,
+              "loss_scale": 256.0,
+              "max_abs_dy": 0.0001262667792616412,
+              "fp16_arm": {
+                "rel_l2": 0.0017798137350906898,
+                "cosine": 0.9999984161449087,
+                "norm_ratio": 1.000003839078562
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 518774616.5938642,
+              "frac_fp16_normal": 0.017226219177246094,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.9818515777587891,
+              "frac_flushed_to_zero": 0.0009222030639648438
+            },
+            {
+              "k": 9,
+              "loss_scale": 512.0,
+              "max_abs_dy": 0.0002525335585232824,
+              "fp16_arm": {
+                "rel_l2": 0.001683661997553847,
+                "cosine": 0.999998582651552,
+                "norm_ratio": 1.000003375243262
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 259387308.2969321,
+              "frac_fp16_normal": 0.23298168182373047,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.7665815353393555,
+              "frac_flushed_to_zero": 0.0004367828369140625
+            },
+            {
+              "k": 10,
+              "loss_scale": 1024.0,
+              "max_abs_dy": 0.0005050671170465648,
+              "fp16_arm": {
+                "rel_l2": 0.001664701475668688,
+                "cosine": 0.9999986143929834,
+                "norm_ratio": 1.000002976019664
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 129693654.14846605,
+              "frac_fp16_normal": 0.5509185791015625,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.4488716125488281,
+              "frac_flushed_to_zero": 0.000209808349609375
+            },
+            {
+              "k": 11,
+              "loss_scale": 2048.0,
+              "max_abs_dy": 0.0010101342340931296,
+              "fp16_arm": {
+                "rel_l2": 0.0016617476578011747,
+                "cosine": 0.9999986193048167,
+                "norm_ratio": 1.000002736877294
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 64846827.074233025,
+              "frac_fp16_normal": 0.7650642395019531,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.2348155975341797,
+              "frac_flushed_to_zero": 0.0001201629638671875
+            },
+            {
+              "k": 12,
+              "loss_scale": 4096.0,
+              "max_abs_dy": 0.0020202684681862593,
+              "fp16_arm": {
+                "rel_l2": 0.0016613853440813485,
+                "cosine": 0.9999986199072282,
+                "norm_ratio": 1.0000028336306928
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 32423413.537116513,
+              "frac_fp16_normal": 0.8812007904052734,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.11874198913574219,
+              "frac_flushed_to_zero": 5.7220458984375e-05
+            },
+            {
+              "k": 13,
+              "loss_scale": 8192.0,
+              "max_abs_dy": 0.0040405369363725185,
+              "fp16_arm": {
+                "rel_l2": 0.0016613653015164311,
+                "cosine": 0.9999986199405224,
+                "norm_ratio": 1.0000028337029905
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 16211706.768558256,
+              "frac_fp16_normal": 0.9404020309448242,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.05957317352294922,
+              "frac_flushed_to_zero": 2.47955322265625e-05
+            },
+            {
+              "k": 14,
+              "loss_scale": 16384.0,
+              "max_abs_dy": 0.008081073872745037,
+              "fp16_arm": {
+                "rel_l2": 0.0016613496928786441,
+                "cosine": 0.9999986199664344,
+                "norm_ratio": 1.0000028277657684
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 8105853.384279128,
+              "frac_fp16_normal": 0.9700841903686523,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.029903411865234375,
+              "frac_flushed_to_zero": 1.239776611328125e-05
+            },
+            {
+              "k": 15,
+              "loss_scale": 32768.0,
+              "max_abs_dy": 0.016162147745490074,
+              "fp16_arm": {
+                "rel_l2": 0.0016613494888771253,
+                "cosine": 0.999998619966782,
+                "norm_ratio": 1.0000028293225895
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 4052926.692139564,
+              "frac_fp16_normal": 0.9850826263427734,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.01491546630859375,
+              "frac_flushed_to_zero": 1.9073486328125e-06
+            },
+            {
+              "k": 16,
+              "loss_scale": 65536.0,
+              "max_abs_dy": 0.03232429549098015,
+              "fp16_arm": {
+                "rel_l2": 0.001661348853201881,
+                "cosine": 0.9999986199678393,
+                "norm_ratio": 1.0000028293419607
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 2026463.346069782,
+              "frac_fp16_normal": 0.9924955368041992,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.007502555847167969,
+              "frac_flushed_to_zero": 1.9073486328125e-06
+            },
+            {
+              "k": 17,
+              "loss_scale": 131072.0,
+              "max_abs_dy": 0.0646485909819603,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481016499237,
+                "cosine": 0.9999986199690831,
+                "norm_ratio": 1.0000028291190661
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 1013231.673034891,
+              "frac_fp16_normal": 0.996220588684082,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0037784576416015625,
+              "frac_flushed_to_zero": 9.5367431640625e-07
+            },
+            {
+              "k": 18,
+              "loss_scale": 262144.0,
+              "max_abs_dy": 0.1292971819639206,
+              "fp16_arm": {
+                "rel_l2": 0.001661348191334135,
+                "cosine": 0.9999986199689315,
+                "norm_ratio": 1.0000028290247376
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 506615.8365174455,
+              "frac_fp16_normal": 0.9981279373168945,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0018720626831054688,
+              "frac_flushed_to_zero": 0.0
+            },
+            {
+              "k": 19,
+              "loss_scale": 524288.0,
+              "max_abs_dy": 0.2585943639278412,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481842194325,
+                "cosine": 0.9999986199689422,
+                "norm_ratio": 1.0000028290407323
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 253307.91825872276,
+              "frac_fp16_normal": 0.9990777969360352,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0009222030639648438,
+              "frac_flushed_to_zero": 0.0
+            },
+            {
+              "k": 20,
+              "loss_scale": 1048576.0,
+              "max_abs_dy": 0.5171887278556824,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481732579358,
+                "cosine": 0.9999986199689586,
+                "norm_ratio": 1.0000028290042944
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 126653.95912936138,
+              "frac_fp16_normal": 0.9995632171630859,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0004367828369140625,
+              "frac_flushed_to_zero": 0.0
+            },
+            {
+              "k": 21,
+              "loss_scale": 2097152.0,
+              "max_abs_dy": 1.0343774557113647,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481676088385,
+                "cosine": 0.9999986199689677,
+                "norm_ratio": 1.0000028290154557
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 63326.97956468069,
+              "frac_fp16_normal": 0.9997901916503906,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.000209808349609375,
+              "frac_flushed_to_zero": 0.0
+            },
+            {
+              "k": 22,
+              "loss_scale": 4194304.0,
+              "max_abs_dy": 2.0687549114227295,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481673239399,
+                "cosine": 0.999998619968968,
+                "norm_ratio": 1.0000028290101364
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 31663.489782340344,
+              "frac_fp16_normal": 0.9998798370361328,
+              "overflow": false,
+              "frac_fp16_subnormal": 0.0001201629638671875,
+              "frac_flushed_to_zero": 0.0
+            },
+            {
+              "k": 23,
+              "loss_scale": 8388608.0,
+              "max_abs_dy": 4.137509822845459,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481678261902,
+                "cosine": 0.9999986199689671,
+                "norm_ratio": 1.000002829018352
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 15831.744891170172,
+              "frac_fp16_normal": 0.9999427795410156,
+              "overflow": false,
+              "frac_fp16_subnormal": 5.7220458984375e-05,
+              "frac_flushed_to_zero": 0.0
+            },
+            {
+              "k": 24,
+              "loss_scale": 16777216.0,
+              "max_abs_dy": 8.275019645690918,
+              "fp16_arm": {
+                "rel_l2": 0.0016613481671818653,
+                "cosine": 0.9999986199689683,
+                "norm_ratio": 1.0000028290179432
+              },
+              "bf16_arm_rel_l2": 0.002340932113002065,
+              "headroom_to_fp16_max": 7915.872445585086,
+              "frac_fp16_normal": 0.9999752044677734,
+              "overflow": false,
+              "frac_fp16_subnormal": 2.47955322265625e-05,
+              "frac_flushed_to_zero": 0.0
+            }
+          ],
+          "monotonic_non_increasing_tol_1e-3": true,
+          "saturation_k_within_10pct": 7,
+          "saturation_k_within_25pct": 7,
+          "core_window_k0_12_rel_l2": [
+            0.17206425897622651,
+            0.08603804600351095,
+            0.04302415090512158,
+            0.02157413163351977,
+            0.01088855839973273,
+            0.005630483119789519,
+            0.003164113933433839,
+            0.0021266901951970444,
+            0.0017798137350906898,
+            0.001683661997553847,
+            0.001664701475668688,
+            0.0016617476578011747,
+            0.0016613853440813485
+          ],
+          "final_rel_l2_at_k_max": 0.0016613481671818653,
+          "overflow_first_k": null
+        }
+      ],
+      "D_reduction_sim": {
+        "simulated": true,
+        "rows": [
+          {
+            "dy_scale": 0.01,
+            "fp32_accum_vs_ref": {
+              "rel_l2": 0.00020712652207821925,
+              "cosine": 0.9999999785492658,
+              "norm_ratio": 0.9999997512635345
+            },
+            "fp16_accum_vs_ref": {
+              "rel_l2": 0.0012000900913521182,
+              "cosine": 0.9999992798917797,
+              "norm_ratio": 0.9999998393902646
+            },
+            "fp16_vs_fp32_accum": {
+              "rel_l2": 0.0011816677996200904,
+              "cosine": 0.999999301830613,
+              "norm_ratio": 1.0000000881267521
+            }
+          },
+          {
+            "dy_scale": 0.0001,
+            "fp32_accum_vs_ref": {
+              "rel_l2": 0.00023371421943150933,
+              "cosine": 0.9999999726887745,
+              "norm_ratio": 1.000000040861218
+            },
+            "fp16_accum_vs_ref": {
+              "rel_l2": 0.002214574021140375,
+              "cosine": 0.9999975478283913,
+              "norm_ratio": 0.9999984912772225
+            },
+            "fp16_vs_fp32_accum": {
+              "rel_l2": 0.002202188647800173,
+              "cosine": 0.9999975751799632,
+              "norm_ratio": 0.9999984504160677
+            }
+          }
+        ],
+        "chunk_size": 16,
+        "reduction_dim": 1024,
+        "note": "chunked 累加模拟，不是真机 kernel；只估算 reduced-precision reduction 量级"
+      }
+    }
+  ],
+  "repeat_check": true,
+  "elapsed_s": 16.89
+}
