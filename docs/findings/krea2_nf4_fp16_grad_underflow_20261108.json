@@ -1,0 +1,878 @@
+{
+ "probe": "docs/findings/krea2_nf4_fp16_grad_underflow_20261108.md",
+ "date": "2026-11-08",
+ "revision": 3,
+ "subject": "Krea-2 NF4 fp16 compute backward drift: mechanism (underflow) + fp32-referee precision verdict",
+ "headline": {
+  "mechanism": "UNDERFLOW CONFIRMED (fp16 min normal 2^-14 / min subnormal 2^-24 truncate real grad_output)",
+  "precision_verdict": "fp16+loss-scaling beats bf16 at <=512^2, but the k window CLOSES above 512^2: 768^2/1024^2 need k>=16~18 while fp16 scalar max caps k at 15",
+  "stage6_verdict_revisited": "stage6 rejected on fp16-vs-bf16 comparison, but bf16 itself is 40.66% off fp32 at Step 0",
+  "production_contract_changed": false,
+  "blocking_gap": "RESOLVED by measurement: 1024^2 ran via GQA kv-expansion bypass; result is NEGATIVE (k14 vs k15 = 5.90%, not saturated)"
+ },
+ "environment": {
+  "gpu": "Tesla V100-SXM2-16GB",
+  "capability": [
+   7,
+   0
+  ],
+  "torch": "2.10.0+cu129",
+  "bnb": "0.49.2",
+  "note": "V100 sm70: bf16 matmul is PyTorch fp32-upsample emulation (NOT sm86 cuBLAS bit-exact); fp16 is real tensor core; fp32 arm is true fp32 GEMM with TF32 off"
+ },
+ "stage6_reference_provenance": {
+  "probe_script_archived": false,
+  "reference_arm_in_json": null,
+  "fp32_reference_ever_measured": false,
+  "conclusion": "most likely fp16-vs-bf16 two-arm comparison; no fp32 arm exists in any historical artifact"
+ },
+ "R2_real_gradient_magnitude": {
+  "resolution_256": {
+   "interior_layer_dY_rms_range": [
+    6.5e-09,
+    1.7e-07
+   ],
+   "layers_sampled": 24,
+   "layers_fully_below_fp16_min_normal": 22,
+   "latent_grad_fp16_arm": {
+    "numel": 16384,
+    "l2": 0.00440315177007987,
+    "max_abs": 0.0002651214599609375,
+    "min_abs_nonzero": 5.960464477539063e-08,
+    "frac_lt_fp16_min_normal": 0.93194580078125,
+    "frac_lt_fp16_min_subnormal": 0.00103759765625,
+    "frac_zero": 0.00103759765625,
+    "frac_fp16_subnormal": 0.930908203125,
+    "energy_share_lt_fp16_min_normal": 0.5665423152180409
+   },
+   "latent_grad_fp32_arm": {
+    "numel": 16384,
+    "l2": 0.010696462299375107,
+    "max_abs": 0.000595531368162483,
+    "min_abs_nonzero": 3.7471181713044643e-10,
+    "frac_lt_fp16_min_normal": 0.634765625,
+    "frac_lt_fp16_min_subnormal": 0.00054931640625,
+    "frac_zero": 0.0,
+    "frac_fp16_subnormal": 0.63421630859375,
+    "energy_share_lt_fp16_min_normal": 0.09415246929030995
+   }
+  },
+  "resolution_512": {
+   "interior_layer_dY_rms_range": [
+    5.7e-09,
+    2e-08
+   ],
+   "layers_sampled": 8,
+   "latent_grad_fp16_arm": {
+    "numel": 65536,
+    "l2": 0.0002501163026884733,
+    "max_abs": 2.3543834686279297e-05,
+    "min_abs_nonzero": 5.960464477539063e-08,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.69281005859375,
+    "frac_zero": 0.69281005859375,
+    "frac_fp16_subnormal": 0.30718994140625,
+    "energy_share_lt_fp16_min_normal": 1.0
+   }
+  },
+  "per_layer_256": [
+   {
+    "layer": "first",
+    "shape": [
+     6144,
+     64
+    ],
+    "dY_rms": 4.507234512467401e-06,
+    "dY_max_abs": 0.000502832408528775,
+    "frac_lt_fp16_min_normal": 0.9995091756184896,
+    "frac_lt_fp16_min_subnormal": 0.06486447652180989,
+    "fp16_real_gemm_rel_l2": 0.0016899649209864186,
+    "bf16_emul_rel_l2": 0.0005530941513937918,
+    "reduction_on_vs_off": 0.0014631069314721854
+   },
+   {
+    "layer": "blocks.1.attn.wv",
+    "shape": [
+     1536,
+     6144
+    ],
+    "dY_rms": 6.300092505371107e-07,
+    "dY_max_abs": 7.487709808629006e-05,
+    "frac_lt_fp16_min_normal": 0.9999974568684896,
+    "frac_lt_fp16_min_subnormal": 0.7438769870334201,
+    "fp16_real_gemm_rel_l2": 0.013029793326810342,
+    "bf16_emul_rel_l2": 0.001124611027375471,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.2.mlp.up",
+    "shape": [
+     16384,
+     6144
+    ],
+    "dY_rms": 1.7444543619203332e-07,
+    "dY_max_abs": 6.163286889204755e-05,
+    "frac_lt_fp16_min_normal": 0.9999999205271403,
+    "frac_lt_fp16_min_subnormal": 0.8062671025594076,
+    "fp16_real_gemm_rel_l2": 0.04563020101181844,
+    "bf16_emul_rel_l2": 0.0013137764214508692,
+    "reduction_on_vs_off": 0.020214156243017256
+   },
+   {
+    "layer": "blocks.4.attn.wk",
+    "shape": [
+     1536,
+     6144
+    ],
+    "dY_rms": 2.0345249179563787e-07,
+    "dY_max_abs": 5.532471914193593e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.8385238647460938,
+    "fp16_real_gemm_rel_l2": 0.04011312571656096,
+    "bf16_emul_rel_l2": 0.0012769708472509878,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.5.mlp.gate",
+    "shape": [
+     16384,
+     6144
+    ],
+    "dY_rms": 1.384690205622509e-07,
+    "dY_max_abs": 3.011602530023083e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9052340189615885,
+    "fp16_real_gemm_rel_l2": 0.05742668279890514,
+    "bf16_emul_rel_l2": 0.0014933885676310487,
+    "reduction_on_vs_off": 0.025025654546971792
+   },
+   {
+    "layer": "blocks.7.attn.wq",
+    "shape": [
+     6144,
+     6144
+    ],
+    "dY_rms": 7.806198644499359e-08,
+    "dY_max_abs": 8.233771040977444e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9194526672363281,
+    "fp16_real_gemm_rel_l2": 0.0896607857336154,
+    "bf16_emul_rel_l2": 0.0013069596599886556,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.8.attn.wo",
+    "shape": [
+     6144,
+     6144
+    ],
+    "dY_rms": 4.8280925046755425e-08,
+    "dY_max_abs": 3.1969630072126165e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.8989471859402127,
+    "fp16_real_gemm_rel_l2": 0.1441075299849236,
+    "bf16_emul_rel_l2": 0.001220502138623612,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.9.mlp.down",
+    "shape": [
+     6144,
+     16384
+    ],
+    "dY_rms": 4.658869385874567e-08,
+    "dY_max_abs": 2.8730385110975476e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.8972422281901041,
+    "fp16_real_gemm_rel_l2": 0.16658182236112612,
+    "bf16_emul_rel_l2": 0.0013329797107898983,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.11.attn.wv",
+    "shape": [
+     1536,
+     6144
+    ],
+    "dY_rms": 9.793980556499011e-08,
+    "dY_max_abs": 7.475495294784196e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.8832931518554688,
+    "fp16_real_gemm_rel_l2": 0.09081913943198752,
+    "bf16_emul_rel_l2": 0.0014127581860368214,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.12.mlp.up",
+    "shape": [
+     16384,
+     6144
+    ],
+    "dY_rms": 8.338505244919702e-08,
+    "dY_max_abs": 1.760758095770143e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.8986039161682129,
+    "fp16_real_gemm_rel_l2": 0.11110902103111768,
+    "bf16_emul_rel_l2": 0.0015255929034846166,
+    "reduction_on_vs_off": 0.04308374862950838
+   },
+   {
+    "layer": "blocks.14.attn.wk",
+    "shape": [
+     1536,
+     6144
+    ],
+    "dY_rms": 1.2789119055331508e-07,
+    "dY_max_abs": 8.092350981314667e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.8374320136176215,
+    "fp16_real_gemm_rel_l2": 0.07433925981220274,
+    "bf16_emul_rel_l2": 0.0015659096092331994,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.15.mlp.gate",
+    "shape": [
+     16384,
+     6144
+    ],
+    "dY_rms": 8.758909819005806e-08,
+    "dY_max_abs": 3.0333703762153164e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9200224876403809,
+    "fp16_real_gemm_rel_l2": 0.09530798393081083,
+    "bf16_emul_rel_l2": 0.0015471890438730905,
+    "reduction_on_vs_off": 0.04613003114669697
+   },
+   {
+    "layer": "blocks.17.attn.wq",
+    "shape": [
+     6144,
+     6144
+    ],
+    "dY_rms": 5.079135020192045e-08,
+    "dY_max_abs": 1.1740826266759541e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9281654357910156,
+    "fp16_real_gemm_rel_l2": 0.15972211714617074,
+    "bf16_emul_rel_l2": 0.0014473010729466097,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.18.attn.wo",
+    "shape": [
+     6144,
+     6144
+    ],
+    "dY_rms": 2.3690975988463533e-08,
+    "dY_max_abs": 2.3705354124103906e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9782752990722656,
+    "fp16_real_gemm_rel_l2": 0.27870413313254433,
+    "bf16_emul_rel_l2": 0.001273731199798816,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.19.mlp.down",
+    "shape": [
+     6144,
+     16384
+    ],
+    "dY_rms": 1.3148074694613954e-08,
+    "dY_max_abs": 1.3343513955987873e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9958163367377387,
+    "fp16_real_gemm_rel_l2": 0.45057671632119883,
+    "bf16_emul_rel_l2": 0.0012806446570897648,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.21.attn.gate",
+    "shape": [
+     6144,
+     6144
+    ],
+    "dY_rms": 2.3251677286453174e-08,
+    "dY_max_abs": 6.500843028334202e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9822311401367188,
+    "fp16_real_gemm_rel_l2": 0.2510590152248187,
+    "bf16_emul_rel_l2": 0.0014903204456226604,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.22.mlp.up",
+    "shape": [
+     16384,
+     6144
+    ],
+    "dY_rms": 3.8134088854736286e-08,
+    "dY_max_abs": 1.0988185749738477e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9680284659067789,
+    "fp16_real_gemm_rel_l2": 0.12399817231158017,
+    "bf16_emul_rel_l2": 0.001069940381234512,
+    "reduction_on_vs_off": 0.07511255135399768
+   },
+   {
+    "layer": "blocks.24.attn.wk",
+    "shape": [
+     1536,
+     6144
+    ],
+    "dY_rms": 4.519374302671024e-08,
+    "dY_max_abs": 1.6195928765228018e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9681803385416666,
+    "fp16_real_gemm_rel_l2": 0.19969299487577763,
+    "bf16_emul_rel_l2": 0.0017368289614432813,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "blocks.25.mlp.gate",
+    "shape": [
+     16384,
+     6144
+    ],
+    "dY_rms": 1.95148084917211e-08,
+    "dY_max_abs": 8.799955139693338e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9865289529164633,
+    "fp16_real_gemm_rel_l2": 0.2838352242368269,
+    "bf16_emul_rel_l2": 0.0012357149875284904,
+    "reduction_on_vs_off": 0.2084382436859907
+   },
+   {
+    "layer": "blocks.27.attn.wq",
+    "shape": [
+     6144,
+     6144
+    ],
+    "dY_rms": 6.5445061551899435e-09,
+    "dY_max_abs": 7.969678108565859e-07,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9984815385606554,
+    "fp16_real_gemm_rel_l2": 0.6496599803125502,
+    "bf16_emul_rel_l2": 0.0009396601396808131,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "txtfusion.layerwise_blocks.0.attn.wv",
+    "shape": [
+     2560,
+     2560
+    ],
+    "dY_rms": 9.619462361724447e-09,
+    "dY_max_abs": 5.545562544284621e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9989933649698893,
+    "fp16_real_gemm_rel_l2": 0.11122460524106913,
+    "bf16_emul_rel_l2": 0.0011496759490429184,
+    "reduction_on_vs_off": 0.08240325749084677
+   },
+   {
+    "layer": "txtfusion.layerwise_blocks.1.mlp.gate",
+    "shape": [
+     6912,
+     2560
+    ],
+    "dY_rms": 2.3211216257411944e-08,
+    "dY_max_abs": 7.295920568139991e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9952786528033974,
+    "fp16_real_gemm_rel_l2": 0.08630746543810285,
+    "bf16_emul_rel_l2": 0.0016279548633425544,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "txtfusion.refiner_blocks.1.attn.wq",
+    "shape": [
+     2560,
+     2560
+    ],
+    "dY_rms": 2.9355366010249087e-08,
+    "dY_max_abs": 4.2800770643225405e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9919242858886719,
+    "fp16_real_gemm_rel_l2": 0.04966273124626867,
+    "bf16_emul_rel_l2": 0.0010072981437824805,
+    "reduction_on_vs_off": 0.0
+   },
+   {
+    "layer": "tproj.1",
+    "shape": [
+     36864,
+     6144
+    ],
+    "dY_rms": 0.00020907600826474727,
+    "dY_max_abs": 0.005627637729048729,
+    "frac_lt_fp16_min_normal": 0.449462890625,
+    "frac_lt_fp16_min_subnormal": 0.0009765625,
+    "fp16_real_gemm_rel_l2": 0.0010544834683967298,
+    "bf16_emul_rel_l2": 0.0006333641084956577,
+    "reduction_on_vs_off": 0.0010436760208113124
+   }
+  ]
+ },
+ "fingerprint_localization": {
+  "layer": "blocks.0.attn.wq",
+  "weight_rms": 0.025765636935830116,
+  "target": {
+   "rel_l2": 0.3565,
+   "cos": 0.9434
+  },
+  "best_match": {
+   "dY_rms": 5.6234132519034905e-08,
+   "fp16_rel_l2": 0.3709655520559314,
+   "fp16_cos": 0.937330101516605,
+   "frac_lt_fp16_min_normal": 1.0,
+   "frac_lt_fp16_min_subnormal": 0.7105655670166016,
+   "bf16_rel_l2": 0.001660066983823225
+  },
+  "grid": [
+   {
+    "dY_rms": 1e-08,
+    "dY_max_abs": 5.0923695482651965e-08,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 1.0,
+    "fp16_rel_l2": 1.0021767439923976,
+    "fp16_cos": 0.05011760420969485,
+    "fp16_norm_ratio": 0.13300307007026477,
+    "bf16_rel_l2": 0.0016642961600118952,
+    "bf16_cos": 0.9999986154819911
+   },
+   {
+    "dY_rms": 1.7782794100389228e-08,
+    "dY_max_abs": 9.055656136069956e-08,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9992005228996277,
+    "fp16_rel_l2": 1.0077618936112498,
+    "fp16_cos": 0.5362411259675306,
+    "fp16_norm_ratio": 1.0868213466382857,
+    "bf16_rel_l2": 0.0016457077451025226,
+    "bf16_cos": 0.9999986465898981
+   },
+   {
+    "dY_rms": 3.162277660168379e-08,
+    "dY_max_abs": 1.6103486188967508e-07,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.9405753016471863,
+    "fp16_rel_l2": 0.6532472145082857,
+    "fp16_cos": 0.8344009605143078,
+    "fp16_norm_ratio": 1.18505304758928,
+    "bf16_rel_l2": 0.0016529900994760292,
+    "bf16_cos": 0.9999986338154695
+   },
+   {
+    "dY_rms": 5.6234132519034905e-08,
+    "dY_max_abs": 2.8636497972911457e-07,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.7105655670166016,
+    "fp16_rel_l2": 0.3709655520559314,
+    "fp16_cos": 0.937330101516605,
+    "fp16_norm_ratio": 1.0646217352609,
+    "bf16_rel_l2": 0.001660066983823225,
+    "bf16_cos": 0.9999986220900553
+   },
+   {
+    "dY_rms": 1e-07,
+    "dY_max_abs": 5.092369406156649e-07,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.44890451431274414,
+    "fp16_rel_l2": 0.20923328875339642,
+    "fp16_cos": 0.9788849876466369,
+    "fp16_norm_ratio": 1.0235435608719246,
+    "bf16_rel_l2": 0.0016520387228248226,
+    "bf16_cos": 0.999998635385104
+   },
+   {
+    "dY_rms": 1.7782794100389227e-07,
+    "dY_max_abs": 9.055656278178503e-07,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.26262760162353516,
+    "fp16_rel_l2": 0.11777025036014992,
+    "fp16_cos": 0.9931437970068958,
+    "fp16_norm_ratio": 1.0074418179597018,
+    "bf16_rel_l2": 0.0016256877269171441,
+    "bf16_cos": 0.9999986785691948
+   },
+   {
+    "dY_rms": 3.162277660168379e-07,
+    "dY_max_abs": 1.6103485904750414e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.14943012595176697,
+    "fp16_rel_l2": 0.06600786746136066,
+    "fp16_cos": 0.99782791687842,
+    "fp16_norm_ratio": 1.002021992309771,
+    "bf16_rel_l2": 0.0016289046667901656,
+    "bf16_cos": 0.9999986733704206
+   },
+   {
+    "dY_rms": 5.62341325190349e-07,
+    "dY_max_abs": 2.8636497972911457e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.08447234332561493,
+    "fp16_rel_l2": 0.037011766884111154,
+    "fp16_cos": 0.999316144921715,
+    "fp16_norm_ratio": 1.0009373756523694,
+    "bf16_rel_l2": 0.0016327872259012698,
+    "bf16_cos": 0.9999986675524405
+   },
+   {
+    "dY_rms": 1e-06,
+    "dY_max_abs": 5.092369519843487e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.047484081238508224,
+    "fp16_rel_l2": 0.020743415348824294,
+    "fp16_cos": 0.9997848487002082,
+    "fp16_norm_ratio": 0.9999664274208054,
+    "bf16_rel_l2": 0.0016565731153524283,
+    "bf16_cos": 0.9999986280483056
+   },
+   {
+    "dY_rms": 1.778279410038923e-06,
+    "dY_max_abs": 9.05565593711799e-06,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.026727359741926193,
+    "fp16_rel_l2": 0.011673464102486774,
+    "fp16_cos": 0.9999318836190753,
+    "fp16_norm_ratio": 1.0001359476880332,
+    "bf16_rel_l2": 0.0016533155224334687,
+    "bf16_cos": 0.9999986332952435
+   },
+   {
+    "dY_rms": 3.162277660168379e-06,
+    "dY_max_abs": 1.6103485904750414e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.01501957606524229,
+    "fp16_rel_l2": 0.0065202026718262866,
+    "fp16_cos": 0.9999787439930165,
+    "fp16_norm_ratio": 0.9999402637020076,
+    "bf16_rel_l2": 0.0016309274957326877,
+    "bf16_cos": 0.9999986702976883
+   },
+   {
+    "dY_rms": 5.623413251903491e-06,
+    "dY_max_abs": 2.863649933715351e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.008464178070425987,
+    "fp16_rel_l2": 0.0037094865438744365,
+    "fp16_cos": 0.9999931204830667,
+    "fp16_norm_ratio": 1.0000292297627265,
+    "bf16_rel_l2": 0.001651979498792522,
+    "bf16_cos": 0.9999986355478339
+   },
+   {
+    "dY_rms": 1e-05,
+    "dY_max_abs": 5.0923692469950765e-05,
+    "frac_lt_fp16_min_normal": 1.0,
+    "frac_lt_fp16_min_subnormal": 0.004783153533935547,
+    "fp16_rel_l2": 0.002084384586714003,
+    "fp16_cos": 0.9999978280301816,
+    "fp16_norm_ratio": 1.000024738721412,
+    "bf16_rel_l2": 0.001622479693746312,
+    "bf16_cos": 0.9999986838186791
+   },
+   {
+    "dY_rms": 1.778279410038923e-05,
+    "dY_max_abs": 9.055655391421169e-05,
+    "frac_lt_fp16_min_normal": 0.9994010925292969,
+    "frac_lt_fp16_min_subnormal": 0.0026841163635253906,
+    "fp16_rel_l2": 0.0011779077555077694,
+    "fp16_cos": 0.9999993063239143,
+    "fp16_norm_ratio": 0.999988582966761,
+    "bf16_rel_l2": 0.001649000440373785,
+    "bf16_cos": 0.9999986404643467
+   },
+   {
+    "dY_rms": 3.1622776601683795e-05,
+    "dY_max_abs": 0.00016103486996144056,
+    "frac_lt_fp16_min_normal": 0.9464015960693359,
+    "frac_lt_fp16_min_subnormal": 0.001508871791884303,
+    "fp16_rel_l2": 0.0006796445840834232,
+    "fp16_cos": 0.9999997690502483,
+    "fp16_norm_ratio": 1.0000039296403274,
+    "bf16_rel_l2": 0.0016577757192911852,
+    "bf16_cos": 0.9999986264395407
+   },
+   {
+    "dY_rms": 5.623413251903491e-05,
+    "dY_max_abs": 0.0002863649860955775,
+    "frac_lt_fp16_min_normal": 0.7220220565795898,
+    "frac_lt_fp16_min_subnormal": 0.0008579890127293766,
+    "fp16_rel_l2": 0.0004349996285484563,
+    "fp16_cos": 0.9999999054202586,
+    "fp16_norm_ratio": 0.9999918305862602,
+    "bf16_rel_l2": 0.0016550982701486127,
+    "bf16_cos": 0.9999986303579438
+   },
+   {
+    "dY_rms": 0.0001,
+    "dY_max_abs": 0.0005092369392514229,
+    "frac_lt_fp16_min_normal": 0.4583671987056732,
+    "frac_lt_fp16_min_subnormal": 0.00047985714627429843,
+    "fp16_rel_l2": 0.0003477514611269412,
+    "fp16_cos": 0.9999999395346824,
+    "fp16_norm_ratio": 0.9999992707311248,
+    "bf16_rel_l2": 0.001653181683328531,
+    "bf16_cos": 0.9999986337879792
+   }
+  ]
+ },
+ "R1_loss_scale": {
+  "fp16_scalar_ceiling": {
+   "k_max": 15,
+   "reason": "loss*2^16=65536 > fp16 max 65504 -> seed inf -> NaN",
+   "measured": {
+    "k14_finite": true,
+    "k15_finite": true,
+    "k16": "NaN x16384, inf=0",
+    "k16_with_fp32_loss": "still NaN"
+   },
+   "no_layer_overflows_at_2^16": true,
+   "max_dY_x_2^16": 369.0
+  },
+  "per_layer_monotonic_halving": true,
+  "saturation_by_resolution": {
+   "256": {
+    "k14_vs_k15": "0.123%",
+    "saturated": true
+   },
+   "512": {
+    "k14_vs_k15": "0.994%",
+    "saturated": true
+   },
+   "768": {
+    "k14_vs_k15": "4.090%",
+    "saturated": false
+   },
+   "1024": {
+    "k14_vs_k15": "5.900%",
+    "saturated": false
+   },
+   "note": "direct arm-vs-arm comparison; the earlier 'vs bf16 difference of differences' criterion was WRONG and is retracted"
+  },
+  "self_convergence_direct": {
+   "256": {
+    "k14_vs_k15_grad_rel_l2": 0.0012267836787786571,
+    "cos": 0.9999992509243771,
+    "lora_param_rel": 0.00028625086145156676,
+    "judge_arm": "fp16_scale2^14",
+    "saturated_at_k14": true
+   },
+   "512": {
+    "k14_vs_k15_grad_rel_l2": 0.00994051792071039,
+    "cos": 0.9999506231344668,
+    "lora_param_rel": 0.0007118092954219911,
+    "judge_arm": "fp16_scale2^14",
+    "saturated_at_k14": true
+   },
+   "768": {
+    "k14_vs_k15_grad_rel_l2": 0.04090422101457004,
+    "cos": 0.9991640581127933,
+    "lora_param_rel": 0.0023876788370492783,
+    "judge_arm": "fp16_scale2^14",
+    "saturated_at_k14": false
+   },
+   "1024": {
+    "k14_vs_k15_grad_rel_l2": 0.0590014987494312,
+    "cos": 0.9982647204943919,
+    "lora_param_rel": 0.00677445420138971,
+    "judge_arm": "fp16_scale2^14",
+    "saturated_at_k14": false
+   }
+  }
+ },
+ "R3_reduction_precision": {
+  "flag": "torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction",
+  "ambient_default": true,
+  "layers_identical": 16,
+  "layers_sampled": 24,
+  "max_on_vs_off_rel_l2": 0.2084,
+  "verdict": "second-order: never recovers bf16 1e-3 level"
+ },
+ "fp32_referee": {
+  "step0_256": {
+   "judge": "fp32",
+   "bf16": {
+    "grad_rel_l2": 0.4066345220965081,
+    "grad_cos": 0.9250494324033355,
+    "loss_rel": 0.01920661343810985,
+    "lora_param_rel": 0.03324985186886987,
+    "gate_pass": false
+   },
+   "fp16_k0": {
+    "grad_rel_l2": 1.1479984399134222,
+    "grad_cos": 0.366827997421837,
+    "loss_rel": 0.0019341350939033454,
+    "lora_param_rel": 0.05418420489395244,
+    "gate_pass": false
+   },
+   "fp16_k14": {
+    "grad_rel_l2": 0.045756107827185574,
+    "grad_cos": 0.9989657538375402,
+    "loss_rel": 0.0019341350939033454,
+    "lora_param_rel": 0.0075576446554484695,
+    "gate_pass": false
+   }
+  },
+  "ten_step_256": {
+   "judge": "fp32",
+   "bf16": {
+    "grad_rel_l2": 0.5599599117244974,
+    "grad_cos": 0.8423845838617113,
+    "loss_rel": 0.18703848942045542,
+    "lora_param_rel": 0.17552700515185257,
+    "gate_pass": false
+   },
+   "fp16_k14": {
+    "grad_rel_l2": 0.35418061961658753,
+    "grad_cos": 0.9356339905898279,
+    "loss_rel": 0.01780704582157316,
+    "lora_param_rel": 0.08555278755701767,
+    "gate_pass": false
+   },
+   "loss_judge": [
+    0.027427315711975098,
+    0.02146482840180397,
+    0.012873038649559021,
+    0.01204722560942173,
+    0.006000393535941839,
+    0.006311218254268169,
+    0.0051000090315938,
+    0.004099097102880478,
+    0.0036128724459558725,
+    0.003818036522716284
+   ],
+   "loss_bf16": [
+    0.027980713173747063,
+    0.025479577481746674,
+    0.013509832322597504,
+    0.012883417308330536,
+    0.006022956687957048,
+    0.006577203515917063,
+    0.005239224061369896,
+    0.004105402156710625,
+    0.0037105618976056576,
+    0.0037389439530670643
+   ],
+   "loss_fp16": [
+    0.027369027957320213,
+    0.021551594138145447,
+    0.012907681055366993,
+    0.011832700110971928,
+    0.00603646133095026,
+    0.0062798550352454185,
+    0.005023626610636711,
+    0.004076313693076372,
+    0.0035897614434361458,
+    0.003764864057302475
+   ]
+  },
+  "single_step_512_vs_bf16": {
+   "judge": "bf16",
+   "fp16_k14": {
+    "grad_rel_l2": 0.402162377432754,
+    "grad_cos": 0.9157112558861487,
+    "loss_rel": 0.042223995122362544,
+    "lora_param_rel": 0.01947784376075091,
+    "gate_pass": false
+   },
+   "fp16_k15": {
+    "grad_rel_l2": 0.40216959973483735,
+    "grad_cos": 0.915707478328742,
+    "loss_rel": 0.042223995122362544,
+    "lora_param_rel": 0.019475936619273656,
+    "gate_pass": false
+   }
+  },
+  "single_step_768_vs_bf16": {
+   "judge": "bf16",
+   "blocks_to_swap": 26,
+   "fp16_k14": {
+    "grad_rel_l2": 0.33371915161974847,
+    "grad_cos": 0.9441445058116629,
+    "loss_rel": 0.049951560795220895,
+    "lora_param_rel": 0.021358453946957463,
+    "gate_pass": false
+   },
+   "fp16_k15": {
+    "grad_rel_l2": 0.33427370985969646,
+    "grad_cos": 0.9439630037975116,
+    "loss_rel": 0.049951560795220895,
+    "lora_param_rel": 0.021375081747586126,
+    "gate_pass": false
+   }
+  }
+ },
+ "fp32_loss_requirement": {
+  "change": "mse_loss(velocity.float(), target.float())",
+  "why": "fp16 MSE backward computes 2*(v-t)/N ~ 2e-5 (fp16 subnormal, 0-2 significant bits) before multiplying by scale",
+  "effect": "step0 fp16+k14 vs fp32 improved from 38.97%(fp16-loss path, vs bf16) / see doc"
+ },
+ "1024_oom_analysis": {
+  "attention_score_matrix_gib": 1.6,
+  "single_allocation_gib": 3.8,
+  "attempts": [
+   {
+    "blocks_to_swap": 0,
+    "need_gib": 3.8,
+    "free_gib": 2.35,
+    "result": "OOM"
+   },
+   {
+    "blocks_to_swap": 20,
+    "need_gib": 0.949,
+    "free_gib": 0.693,
+    "result": "OOM"
+   },
+   {
+    "blocks_to_swap": 26,
+    "need_gib": 3.8,
+    "free_gib": 2.19,
+    "result": "OOM"
+   }
+  ],
+  "why_swap_fails": "block swap only moves block weights, not attention intermediates",
+  "alternatives_unavailable": "V100 sm70 lacks FlashAttention and memory-efficient SDPA"
+ },
+ "decision": {
+  "choice": "DO NOT open fp16 NF4. Reason upgraded from 'unverified' to 'measured infeasible at 1024^2'.",
+  "window_closes_at": "512^2",
+  "retained_option": "fp16 at <=512^2 is technically feasible but of unclear engineering value",
+  "production_contract_changed": false
+ },
+ "provenance": {
+  "raw_outputs": "output/tests/krea2_nf4_fp16_grad/ (local, not tracked)",
+  "commands": [
+   "CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py --img 256 --steps 1 --lora-dim 8 --loss-scale-k 0,14 --fp32-reference 1 --tag fp32ref",
+   "CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py --img 256 --steps 10 --lora-dim 8 --loss-scale-k 14 --fp32-reference 1 --tag fp32ref10",
+   "CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py --img 512 --steps 1 --lora-dim 8 --loss-scale-k 14,15 --tag img512",
+   "CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py --img 768 --steps 1 --lora-dim 8 --loss-scale-k 14,15 --blocks-to-swap 26 --tag img768swap"
+  ]
+ },
+ "gqa_expansion_bypass": {
+  "why": "sm70 memory-efficient kernel falls back to MATH when q_heads != kv_heads",
+  "measured_peak": {
+   "gqa_enable_true_mib": 7424,
+   "expanded_mha_mib": 224,
+   "saved_mib": 7200
+  },
+  "equivalence": {
+   "loss_identical": true,
+   "dq_rel_l2": 0.000399,
+   "dk_rel_l2": 0.000271,
+   "dv_rel_l2": 0.000289,
+   "dk_shape_preserved": [
+    1,
+    12,
+    4096,
+    128
+   ],
+   "bit_exact": false,
+   "note": "~3e-4 is normal fp16 kernel difference, not semantic error"
+  },
+  "impl": "monkey-patch F.scaled_dot_product_attention in probe only; production untouched",
+  "purpose": "made 1024^2 measurable so it could be REFUTED, not to enable fp16"
+ }
+}

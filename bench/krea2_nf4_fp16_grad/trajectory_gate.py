@@ -65,6 +65,26 @@ GRAD_COS_MIN = 0.999
 LOSS_REL_MAX = 0.01
 
 
+def install_gqa_expand_patch() -> None:
+    """把 enable_gqa 的 SDPA 调用改写成显式 kv 展开的普通 MHA。
+
+    sm70 的 memory-efficient 内核不支持 GQA（q_heads != kv_heads 时直接回退 MATH，
+    4096 tokens 峰值 7424MiB）；显式 repeat_interleave 展开后走 EFFICIENT，峰值 224MiB。
+    数学等价（反向梯度会正确 sum 回原 kv head 数），实测 rel-L2 ~3e-4 属 fp16 kernel 差异。
+    """
+    orig = torch.nn.functional.scaled_dot_product_attention
+
+    def patched(q, k, v, *args, **kwargs):
+        if kwargs.get("enable_gqa") and q.shape[1] != k.shape[1]:
+            g = q.shape[1] // k.shape[1]
+            k = k.repeat_interleave(g, dim=1)
+            v = v.repeat_interleave(g, dim=1)
+            kwargs["enable_gqa"] = False
+        return orig(q, k, v, *args, **kwargs)
+
+    torch.nn.functional.scaled_dot_product_attention = patched
+
+
 def build_lora(dit: torch.nn.Module, dim: int, alpha: float) -> LoRANetwork:
     kwargs = {**krea2_target_kwargs(), "lora_dim": dim, "alpha": alpha}
     cfg = LoRANetworkCfg.from_kwargs(
@@ -234,6 +254,18 @@ def main() -> int:
         help="1=额外跑 fp32 compute 臂当唯一裁判（显存约翻倍，256² 在 16GB 卡上可能 OOM）",
     )
     ap.add_argument(
+        "--expand-gqa",
+        action="store_true",
+        help="把 enable_gqa 改写成显式 kv 展开的 MHA，绕过 sm70 memory-efficient 内核"
+        "不支持 GQA 的限制（1024² 免 OOM）",
+    )
+    ap.add_argument(
+        "--skip-bf16",
+        action="store_true",
+        help="跳过 bf16 基准臂（bf16 在 sm70 无 memory-efficient 内核，1024² 必 OOM）；"
+        "此时以第一个 fp16 臂当裁判做自收敛对比",
+    )
+    ap.add_argument(
         "--blocks-to-swap",
         type=int,
         default=0,
@@ -243,6 +275,9 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path, default=ROOT / "output" / "tests" / "krea2_nf4_fp16_grad")
     args = ap.parse_args()
 
+    if args.expand_gqa:
+        install_gqa_expand_patch()
+        print("    GQA expand patch 已启用")
     torch.backends.cuda.matmul.allow_tf32 = False
     device = CUDA
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -275,7 +310,8 @@ def main() -> int:
     plan: list[tuple[str, torch.dtype, float]] = []
     if args.fp32_reference:
         plan.append(("fp32", torch.float32, 1.0))
-    plan.append(("bf16", torch.bfloat16, 1.0))
+    if not args.skip_bf16:
+        plan.append(("bf16", torch.bfloat16, 1.0))
     for k in ks:
         name = "fp16" if k == 0 else f"fp16_scale2^{k}"
         plan.append((name, torch.float16, float(2**k)))
@@ -295,7 +331,12 @@ def main() -> int:
         )
         torch.cuda.empty_cache()
 
-    judge = "fp32" if "fp32" in results else "bf16"
+    if "fp32" in results:
+        judge = "fp32"
+    elif "bf16" in results:
+        judge = "bf16"
+    else:
+        judge = next(iter(results))
     base = results[judge]
     verdicts = {
         name: evaluate(base, results[name], label=name)
@@ -303,7 +344,7 @@ def main() -> int:
         if name != judge
     }
     vs_bf16 = {}
-    if judge != "bf16":
+    if judge != "bf16" and "bf16" in results:
         vs_bf16 = {
             name: evaluate(results["bf16"], results[name], label=name)
             for name in results

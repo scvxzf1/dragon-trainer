@@ -16,7 +16,7 @@
 | `synth_underflow.py` | 否 | 纯 CPU 数学仿真：dY 量级扫描、误差归因、loss-scale 扫描、fp16 归约上界**模拟** | `synth_underflow.json`（同目录） |
 | `capture_real.py` | 是（1 张） | 真实 NF4 v2 权重 + 真实 TE/VAE 缓存，bf16/fp16/fp32 三臂单步 forward+backward，逐层抓 dY/dX 量级、`<6.1e-5`/`<6e-8` 占比、算子级拆解、归约两档 | `output/tests/krea2_nf4_fp16_grad/capture_img<N>_<tag>.json` |
 | `layer_repro.py` | 是（1 张） | 用真实 6144×6144 NF4 层扫 dY 量级，定位 stage6 指纹（rel 35.65% / cos 0.9434）对应的量级 | `output/tests/krea2_nf4_fp16_grad/layer_repro.json` |
-| `trajectory_gate.py` | 是（1 张） | 多步 LoRA 训练轨迹门槛：逐 step 比 loss / LoRA 梯度 rel-L2 / cosine。支持 `--loss-scale-k`（GradScaler 语义）、`--fp32-reference`（fp32 裁判臂）、`--blocks-to-swap`（1024² 免 OOM） | `output/tests/krea2_nf4_fp16_grad/trajectory_<N>_<tag>.json` |
+| `trajectory_gate.py` | 是（1 张） | 多步 LoRA 训练轨迹门槛：逐 step 比 loss / LoRA 梯度 rel-L2 / cosine。支持 `--loss-scale-k`（GradScaler 语义）、`--fp32-reference`（fp32 裁判臂）、`--blocks-to-swap`、`--expand-gqa`（绕过 sm70 GQA 内核回退）、`--skip-bf16` | `output/tests/krea2_nf4_fp16_grad/trajectory_<N>_<tag>.json` |
 
 ```bash
 # CPU
@@ -31,6 +31,11 @@ CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gat
 # 带 loss scaling 与 fp32 裁判
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py \
   --img 256 --steps 10 --lora-dim 8 --loss-scale-k 14 --fp32-reference 1 --tag fp32ref10
+# k 自收敛曲线（两臂直接比较，需 --expand-gqa 才能在 1024² 上跑）
+for IMG in 256 512 768 1024; do
+  CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py \
+    --img $IMG --steps 1 --lora-dim 8 --loss-scale-k 14,15 --expand-gqa --skip-bf16 --tag direct$IMG
+done
 ```
 
 ## 结论摘要（详见 findings 文档）
@@ -46,9 +51,12 @@ CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gat
 - **加上 fp32 loss + loss scaling（k=14）后，fp16 在已测维度全面优于 bf16**：单步梯度对
   fp32 是 4.58% vs bf16 的 40.66%；10 步 loss 轨迹偏差 0.8% vs 4.5%；末步 LoRA 参数
   8.56% vs 17.55%。stage6 的否决判据把 bf16 自己的误差算在了 fp16 头上。
-- 512²/768² 实测 **k=14 即饱和**（k14↔k15 差 0.001pp / 0.055pp），所需 scale 不随分辨率上升。
-- **1024² 在 16GB V100 上不可达**：attention 4096²×48 heads 需 3.80GiB，block swap 只能搬
-  权重、搬不动 attention 中间量；V100 sm70 也没有 FlashAttention / memory-efficient SDPA。
+- **k 窗口随分辨率关闭**（两臂直接比较）：256² `0.123%` → 512² `0.994%` → 768² `4.090%`
+  → 1024² `5.900%`，单调上升。k 硬上限是 15（`loss×2^16 = 65536 > 65504`），
+  768²/1024² 需要 k≥16~18 → 溢出。**窗口在 512² 关闭。**
+- **1024² 能跑起来靠 `--expand-gqa`**：sm70 的 memory-efficient 内核在 `q_heads != kv_heads`
+  时回退 MATH（7424MiB）；把 kv `repeat_interleave` 展开后走 EFFICIENT（224MiB），
+  数学等价（rel-L2 ~3e-4），反向梯度正确 sum 回 12 个 kv head。**生产代码未改。**
 - 生产契约维持 `COMPUTE_DTYPE=bfloat16`（本轮未改动 22 处生产代码与 AGENTS.md 不变量）。
 
 ## 边界
