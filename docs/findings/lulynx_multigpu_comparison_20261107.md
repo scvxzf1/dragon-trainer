@@ -3,6 +3,7 @@
 状态：实验 / 源码比较研究（t5 收口版），未改动生产默认值，未运行任何多卡训练
 适用版本：本项目分支 `codex/multi-gpu-training`，基线 `2987186c542b09a55c70a17c3dd523f3b11fb4d5`；
 参考仓库 `/mnt/SD_Dataset/训练器相关/lulynx-trainer`，基线 `92f3c07cb63dc3ebc4aad31f9f2b49fc8883f9dd`
+归档注记（2026-11-08）：本项目分支 `codex/multi-gpu-training` 已归档（本地与远端分支均已删除），全部提交已并入 `dev`（`7a6b13c4`）
 上游计划：[多卡训练实现研究计划][p-plan]
 参考设计入口：[Lulynx 多卡训练方案文档][r-design]
 本地基线记录：[2×V100 NVLink 基线][l-baseline]（本文 §6 对其中两处口径做了纠偏，基线文件本体不改）

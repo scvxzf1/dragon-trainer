@@ -1,7 +1,7 @@
 # Multi-GPU reference experiments
 
 状态：实验
-适用版本：当前 `codex/multi-gpu-training` 工作树
+适用版本：`codex/multi-gpu-training` 工作树；该分支已于 2026-11-08 归档（本地与远端分支均已删除），提交并入 `dev`（`7a6b13c4`），复现在该提交或其后 `dev` 上进行
 入口：`bench/multigpu_reference/experiments.py`（被 `tests/test_multigpu_reference_*.py` 引用的门禁与预算定义）
 
 本目录只放**隔离小模型**实验与真实训练的**入口门禁**，不放生产默认值，也不改动生产准入。

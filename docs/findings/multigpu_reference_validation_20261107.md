@@ -1,6 +1,7 @@
 # 多卡全流程参考点验收：实现、分层证据与逐点裁定（集成报告）
 
 状态：实验 / 研究分支 `codex/multi-gpu-training`，未改任何生产默认值
+归档注记（2026-11-08）：该分支已归档（本地与远端分支均已删除），全部提交已并入 `dev`（`7a6b13c4`）；本文提交 hash 为归档前的历史记录
 适用版本：HEAD `2e7da55e` + 12 条未提交差异（字节清单见 §1）；验收契约冻结在 `80dfdb02…`
 入口命令：见 §10 复现步骤（CPU/Gloo 层可自跑；GPU/真实训练层需要显式门与已批准预算）
 相关代码：`library/training/multigpu/`、`library/training/{loop,checkpoints,train_session}.py`、
