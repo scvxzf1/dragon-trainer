@@ -8,7 +8,7 @@
 
 本目录回答两个问题：**① stage6 记录的「NF4 只把 compute_dtype 从 bf16 换成 fp16，
 输入梯度 rel-L2 就跳到 35.65%」到底是什么造成的；② 把缩放下沉到逐层（dir1）能否既消除
-下溢又拿到 V100 的 fp16 tensor core 吞吐。** 六个脚本，各自独立可跑。
+下溢又拿到 V100 的 fp16 tensor core 吞吐。** 七个脚本，各自独立可跑。
 
 ## 脚本
 
@@ -18,6 +18,7 @@
 | `capture_real.py` | 是（1 张） | 真实 NF4 v2 权重 + 真实 TE/VAE 缓存，bf16/fp16/fp32 三臂单步 forward+backward，逐层抓 dY/dX 量级、`<6.1e-5`/`<6e-8` 占比、算子级拆解、归约两档 | `output/tests/krea2_nf4_fp16_grad/capture_img<N>_<tag>.json` |
 | `layer_repro.py` | 是（1 张） | 用真实 6144×6144 NF4 层扫 dY 量级，定位 stage6 指纹（rel 35.65% / cos 0.9434）对应的量级 | `output/tests/krea2_nf4_fp16_grad/layer_repro.json` |
 | `sim_layer_scaling.py` | 是（1 张，或 CPU 改小维度） | 合成矩阵模拟：单层 6144² 全量级扫描（dY rms 1e-10~1e-2）、28 层串联误差累积、dir1 三个边界（全零 / amax=1e-40 / 负零）。三臂共用同一权重与初始梯度，fp32 为裁判 | 终端表格 |
+| `dir1_bench.py` | 是（1 张） | 算子级基准（`cuda.Event`，K=6144，M=1/256/1024/4096/16384）+ 真实权重 28 层串联精度。**基准必须用真实 token 数 M，M=1 是带宽限制场景，会得出反向结论** | 终端表格 |
 | `dir1_chain.py` | 是（1 张） | **真实 NF4 权重**四臂对比（fp32 / bf16 / 裸 fp16 / dir1），进程内 monkey-patch `MatMul4Bit` 验证逐层 frexp 缩放。生产 `compute_dtype` 保持 bf16，契约不改 | `output/tests/krea2_nf4_fp16_grad/dir1_chain_<N>_<tag>.json` |
 | `trajectory_gate.py` | 是（1 张） | 多步 LoRA 训练轨迹门槛：逐 step 比 loss / LoRA 梯度 rel-L2 / cosine。支持 `--loss-scale-k`（GradScaler 语义）、`--fp32-reference`（fp32 裁判臂）、`--blocks-to-swap`、`--expand-gqa`（绕过 sm70 GQA 内核回退）、`--skip-bf16` | `output/tests/krea2_nf4_fp16_grad/trajectory_<N>_<tag>.json` |
 
@@ -34,6 +35,7 @@ CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gat
 # dir1（逐层缩放）方案：合成模拟 + 真实权重四臂对比
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/sim_layer_scaling.py
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/dir1_chain.py --img 256
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/dir1_bench.py
 
 # 带 loss scaling 与 fp32 裁判
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/trajectory_gate.py \
