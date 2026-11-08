@@ -49,6 +49,190 @@ def _register_reg_infos(
     return registered
 
 
+def _latent_cache_paths(
+    subset, cache_suffix: str, recursive: bool
+) -> Tuple[List[str], List[str], Optional[str]]:
+    """Latent sidecar paths for one subset, split by location.
+
+    Returns ``(next_to_image, under_cache_dir, cache_dir)``.
+
+    The subset may redirect its caches into ``cache_dir`` (the documented layout:
+    ``cache_dir`` mirrors the source tree, ``charA/img1.png`` →
+    ``cache_dir/charA/img1_1024x1024_anima.npz``). Scanning only ``image_dir``
+    therefore found 0/N sidecars for such a dataset and every size had to be read
+    by opening the image again (t13 F-T13-4). The two locations are returned
+    separately because they are matched differently: next-to-image sidecars share
+    a path prefix with their image, cache_dir sidecars share a *stem*.
+    """
+    image_dir = subset.image_dir
+    if recursive:
+        beside = glob.glob(
+            os.path.join(image_dir, "**", "*" + cache_suffix), recursive=True
+        )
+    else:
+        beside = glob.glob(os.path.join(image_dir, "*" + cache_suffix))
+
+    cache_dir = getattr(subset, "cache_dir", None)
+    if not cache_dir:
+        return beside, [], None
+    cache_dir = os.fspath(cache_dir)
+    if not os.path.isdir(cache_dir):
+        logger.warning(
+            "subset cache_dir=%r does not exist; only %d cache file(s) next to the "
+            "images can be used for image sizes",
+            cache_dir,
+            len(beside),
+        )
+        return beside, [], cache_dir
+    # Always recursive: a cache_dir mirrors the source tree, so the sidecars of a
+    # flat image_dir can still sit in subdirectories.
+    pooled = glob.glob(
+        os.path.join(cache_dir, "**", "*" + cache_suffix), recursive=True
+    )
+    return beside, pooled, cache_dir
+
+
+def _cache_stem(npz_path: str, cache_suffix: str) -> str:
+    """Image stem of a latent sidecar (``img1_1024x1024_anima.npz`` → ``img1``)."""
+    base = os.path.basename(npz_path)
+    if base.endswith(cache_suffix):
+        base = base[: -len(cache_suffix)]
+    # ``_1024x1024`` / ``_768x1024`` resolution infix.
+    return base.rsplit("_", 1)[0]
+
+
+def _index_cache_dir_sidecars(
+    pooled: List[str], cache_dir: str, cache_suffix: str
+) -> Tuple[dict, dict]:
+    """``{(mirrored subdir, stem): path}`` and ``{stem: [paths]}`` for cache_dir hits."""
+    by_dir_and_stem: dict = {}
+    by_stem: dict = {}
+    for npz_path in pooled:
+        stem = _cache_stem(npz_path, cache_suffix)
+        relative = os.path.relpath(os.path.dirname(npz_path), cache_dir)
+        if relative == os.curdir:
+            relative = ""
+        by_dir_and_stem.setdefault((relative, stem), npz_path)
+        by_stem.setdefault(stem, []).append(npz_path)
+    return by_dir_and_stem, by_stem
+
+
+def _match_cache_dir_sidecar(
+    img_path: str,
+    image_dir: str,
+    recursive: bool,
+    by_dir_and_stem: dict,
+    by_stem: dict,
+) -> Optional[str]:
+    """The cache_dir sidecar for one image, preferring the mirrored subdirectory."""
+    stem = os.path.splitext(os.path.basename(img_path))[0]
+    relative = ""
+    if recursive:
+        relative = os.path.relpath(os.path.dirname(img_path), image_dir)
+        if relative == os.curdir:
+            relative = ""
+    exact = by_dir_and_stem.get((relative, stem))
+    if exact is not None:
+        return exact
+    options = by_stem.get(stem) or []
+    if len(options) == 1:
+        # A flat cache_dir (written without the source root) is still valid.
+        return options[0]
+    if len(options) > 1:
+        logger.warning(
+            "ambiguous latent cache for %r under cache_dir (%d candidates: %s); "
+            "this image's size will be read from the image",
+            img_path,
+            len(options),
+            ", ".join(os.path.basename(option) for option in options[:3]),
+        )
+    return None
+
+
+def set_image_sizes_from_cache(
+    subset,
+    img_paths: Sequence[str],
+    *,
+    recursive: bool,
+    strategy,
+) -> List[Optional[Tuple[int, int]]]:
+    """Image sizes read from the latent cache file names, without opening images.
+
+    Two locations are consulted: sidecars next to the images (matched by path
+    prefix, the long-standing fast path) and sidecars under ``subset.cache_dir``
+    (matched by stem, because that layout mirrors the source tree instead of
+    sharing a path prefix). Sizes that neither location knows are left ``None``
+    and are later read by opening the image in ``make_buckets``.
+    """
+    logger.info("get image size from name of cache files")
+    sizes: List[Optional[Tuple[int, int]]] = [None] * len(img_paths)
+
+    npz_paths, pooled_paths, cache_dir = _latent_cache_paths(
+        subset, strategy.cache_suffix, recursive
+    )
+    npz_paths.sort(key=lambda item: item.rsplit("_", maxsplit=2)[0])
+    npz_path_index = 0
+
+    beside_count = 0
+    for i, img_path in enumerate(tqdm(img_paths)):
+        stem_len = len(os.path.splitext(img_path)[0])
+        found = False
+        while npz_path_index < len(npz_paths):
+            if npz_paths[npz_path_index][:stem_len] > img_path[:stem_len]:
+                break
+            if npz_paths[npz_path_index][:stem_len] == img_path[:stem_len]:
+                found = True
+                break
+            npz_path_index += 1
+
+        if found:
+            w, h = strategy.get_image_size_from_disk_cache_path(
+                img_path, npz_paths[npz_path_index]
+            )
+        else:
+            w, h = None, None
+
+        if w is not None and h is not None:
+            sizes[i] = (w, h)
+            beside_count += 1
+    logger.info(f"set image size from cache files: {beside_count}/{len(img_paths)}")
+
+    # A subset that redirects its caches into ``cache_dir`` has no sidecar next to
+    # the images at all, so the pass above cannot match anything (t13 F-T13-4).
+    if pooled_paths:
+        by_dir_and_stem, by_stem = _index_cache_dir_sidecars(
+            pooled_paths, cache_dir, strategy.cache_suffix
+        )
+        cache_dir_count = 0
+        for i, img_path in enumerate(img_paths):
+            if sizes[i] is not None:
+                continue
+            npz_path = _match_cache_dir_sidecar(
+                img_path, subset.image_dir, recursive, by_dir_and_stem, by_stem
+            )
+            if npz_path is None:
+                continue
+            w, h = strategy.get_image_size_from_disk_cache_path(img_path, npz_path)
+            if w is not None and h is not None:
+                sizes[i] = (w, h)
+                cache_dir_count += 1
+        logger.info(
+            f"set image size from cache_dir={cache_dir}: "
+            f"{cache_dir_count}/{len(img_paths)}"
+        )
+
+    unknown = sum(1 for size in sizes if size is None)
+    if unknown:
+        # Slow-but-correct path: ``make_buckets`` opens the image for a size that is
+        # still unknown. Logged separately from the cache hits above so a
+        # mislocated cache directory is visible instead of just slow.
+        logger.info(
+            f"image size unknown for {unknown}/{len(img_paths)} image(s); "
+            "those are read by opening the image"
+        )
+    return sizes
+
+
 def read_caption(img_path, caption_extension, enable_wildcard):
     """Read the caption sidecar for ``img_path``.
 
@@ -185,52 +369,8 @@ class DreamBoothDataset(BaseDataset):
 
                 strategy = LatentsCachingStrategy.get_strategy()
                 if strategy is not None:
-                    logger.info("get image size from name of cache files")
-
-                    if recursive:
-                        npz_paths = glob.glob(
-                            os.path.join(
-                                subset.image_dir, "**", "*" + strategy.cache_suffix
-                            ),
-                            recursive=True,
-                        )
-                    else:
-                        npz_paths = glob.glob(
-                            os.path.join(subset.image_dir, "*" + strategy.cache_suffix)
-                        )
-                    npz_paths.sort(key=lambda item: item.rsplit("_", maxsplit=2)[0])
-                    npz_path_index = 0
-
-                    size_set_count = 0
-                    for i, img_path in enumerate(tqdm(img_paths)):
-                        stem_len = len(os.path.splitext(img_path)[0])
-                        found = False
-                        while npz_path_index < len(npz_paths):
-                            if (
-                                npz_paths[npz_path_index][:stem_len]
-                                > img_path[:stem_len]
-                            ):
-                                break
-                            if (
-                                npz_paths[npz_path_index][:stem_len]
-                                == img_path[:stem_len]
-                            ):
-                                found = True
-                                break
-                            npz_path_index += 1
-
-                        if found:
-                            w, h = strategy.get_image_size_from_disk_cache_path(
-                                img_path, npz_paths[npz_path_index]
-                            )
-                        else:
-                            w, h = None, None
-
-                        if w is not None and h is not None:
-                            sizes[i] = (w, h)
-                            size_set_count += 1
-                    logger.info(
-                        f"set image size from cache files: {size_set_count}/{len(img_paths)}"
+                    sizes = set_image_sizes_from_cache(
+                        subset, img_paths, recursive=recursive, strategy=strategy
                     )
 
             if self.validation_split > 0.0 or self.validation_split_num > 0:
