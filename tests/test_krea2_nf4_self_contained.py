@@ -208,3 +208,27 @@ def test_load_krea2_dit_accepts_v2_as_base_path(monkeypatch, nf4_files) -> None:
     assert isinstance(loaded.fc, Linear4bit)
     assert torch.equal(loaded.fc.weight.data.cpu(), nf4_files["reference_code"])
     assert torch.equal(loaded(nf4_files["inputs"]), nf4_files["reference"])
+
+
+def test_load_krea2_dit_rejects_non_bf16_compute_dtype(monkeypatch, nf4_files) -> None:
+    """NF4 compute_dtype 契约锁定在 bf16（见 bench/krea2_nf4_fp16_grad 的溯源）。"""
+    monkeypatch.setattr(weights, "SingleStreamDiT", _TinyModel)
+    monkeypatch.setattr(weights, "init_empty_weights", nullcontext)
+
+    for dtype in (torch.float16, torch.float32):
+        with pytest.raises(ValueError, match="NF4 量化要求 dtype=bfloat16"):
+            weights.load_krea2_dit(
+                nf4_files["v2"],
+                device="cpu",
+                dtype=dtype,
+                config=object(),
+                eval=False,
+                nf4=True,
+            )
+
+
+def test_krea2_nf4_compute_dtype_is_bf16() -> None:
+    """生产量化入口的 compute_dtype 不得被改成 fp16（fp16 会破坏反向传播）。"""
+    from library.models.krea2_raw.quantize import COMPUTE_DTYPE
+
+    assert COMPUTE_DTYPE == torch.bfloat16
