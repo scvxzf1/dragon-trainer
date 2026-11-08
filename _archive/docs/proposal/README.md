@@ -4,6 +4,12 @@
 
 本目录的材料默认不是当前实现说明。实现状态以 `docs/README.md` 指向的 `guidelines/`、`methods/`、`experimental/`、`structure/`、`configuration/`、`features/`、`findings/` 和 `optimizations/` 文档为准。
 
+## 2026-11-09 归档
+
+| 文档 | 原因 |
+| --- | --- |
+| [krea2_nf4_fp16_release_gates.md](krea2_nf4_fp16_release_gates.md) | 提案已被实测否决：fp16+loss-scaling 在 ≤512² 优于 bf16，但 k 自收敛误差随分辨率单调上升（256² 0.123% → 1024² 5.900%），受 fp16 标量上限限制 k≤15，窗口在 >512² 关闭。当前实现仍锁 `COMPUTE_DTYPE=bfloat16` |
+
 ## 2026-10-19 归档（根目录资料清理）
 
 | 文档 | 原因 |

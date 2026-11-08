@@ -183,6 +183,7 @@
 | [krea2_nf4_correction_pg199.md](krea2_nf4_correction_pg199.md) | Krea-2 NF4 激活加权 rank-16 回补实测：层级误差下降但端到端收益不足，暂不生产化 |
 | [krea2_nf4_downstream_correction_90hx.md](krea2_nf4_downstream_correction_90hx.md) | Krea-2 NF4 下游 velocity 目标低秩回补的 90HX 校准与 held-out 验证 |
 | [krea2_nf4_correction_rollout_3080.md](krea2_nf4_correction_rollout_3080.md) | Krea-2 NF4 rank-16 回补的 RTX 3080 完整 rollout 否定结果 |
+| [krea2_nf4_fp16_grad_underflow_20261108.md](krea2_nf4_fp16_grad_underflow_20261108.md) | Krea-2 NF4 fp16 compute 的 35.65% 梯度偏差溯源：真实逐层 dY rms 6.5e-9~1.7e-7 全在 fp16 下溢区、loss-scale 严格逐 k 减半、归约开关仅二阶、多步 LoRA 轨迹门槛 FAIL → 维持 BF16 契约 |
 | [krea2_nf4_h2d_bottleneck_findings.md](krea2_nf4_h2d_bottleneck_findings.md) | Krea-2 方向 B 前置诊断：NF4+swap H2D 搬运占比双口径实测 0% + 理论上界 2% → NOT_WORTH 归档（含口径缺陷诚实记录 + 与消融矩阵矛盾核验） |
 | [krea2_3080_speed_stage_summary.md](krea2_3080_speed_stage_summary.md) | Krea-2 3080/PG199 速度优化 12 阶段汇总：瓶颈定位（硬件大矩阵 3.6x）、compile `-19.1%`、选择性 checkpoint 仅 PG199 可行、FP16/Inductor mode/降 rank 三项否决、mm+attention 占墙钟 89% 的天花板、Flash varlen 显式 opt-in；逐阶段原文已归档 |
 | [krea2_3080_speed_final.md](krea2_3080_speed_final.md) | Krea-2 RTX 3080 速度研究最终审计：根因、生产建议、可选后端、否决路径与证据边界总表 |
