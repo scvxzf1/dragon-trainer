@@ -1,11 +1,26 @@
 # 多卡训练实现研究计划（分支 codex/multi-gpu-training）
 
 状态：实验 / 研究分支计划，未改动任何生产默认值
-适用版本：分支基线 `a615a9e0`（dev）
+适用版本：分支基线 `a615a9e0`（dev）；实施现状见下方“阶段现状”（HEAD `2e7da55e`）
 入口命令：见各阶段小节
 相关代码：`library/training/gradient_sync.py`、`library/runtime/launch.py`、
 `library/models/pipeline_parallel.py::validate_pipeline_parallel_config`、
 `library/training/compat_matrix.py`、`scripts/experiments/anima_parallel/`
+
+> 本文件保留 2026-11-07 的原始研究计划与取舍结论，**不改写原文**。逐参考点的实现、分层证据、
+> 命令退出码与裁定统一登记在[多卡参考点集成验收](../findings/multigpu_reference_validation_20261107.md)，
+> 冻结判据在[验收契约](multigpu_reference_validation_contract.md)（`80dfdb02…`）。
+
+## 阶段现状（2026-11-08 集成阶段登记，不改原文结论）
+
+| 阶段 | 现状 | 依据 |
+| --- | --- | --- |
+| S0 基线与复现 | 已完成首轮 | [2×V100 NVLink 基线](../findings/multigpu_v100_nvlink_baseline_20261107.md) |
+| S1 DDP 等价与验收 | **部分完成，未放行**：P0-0/P0-1/P0-2/P0-3/P0-4/P1-1/P1-3 已在 V-CPU + V-GLOO（+ 小模型 CUDA）验收；真实 Anima 双卡短训 50 次有效更新已执行，但 single-vs-dual 与 10+10 续训的数值门超阈 ⇒ 等价性**未成立** | [集成验收](../findings/multigpu_reference_validation_20261107.md) §3–§6 |
+| S2 DDP 工程缺口收口 | 进行中：选中卡↔进程数双向 fail-closed、启动期探针、运行身份清单、checkpoint 三阶段发布、版本化 resume bundle 均有实现与分层证据；`world_size` 变化语义已显式化（拒绝/降级），但“同 world 精确恢复”待裁定 | 同上 §3 |
+| S3 PP 生产 runtime | 未启动（保持 `pipeline_parallel_runtime_unavailable` 拒绝，回归通过） | 同上 §3.3 |
+| S4 TP 可行性 | 只到隔离实验：TP1 逐位一致、单层通信次数可测，**不可采用**（仅单层、buffer/掩码协议未覆盖） | 同上 §3.3 |
+| S5 组合与取舍 | 未开始；FSDP2/TP 均记 `experimental` 不可采用，DDP 不进默认 | 同上 §6.3 |
 
 ## 目的
 

@@ -469,6 +469,93 @@ same per-update sample multiset: `(local*world + rank)*batch_size + row` gives
   `multigpu_resume_cursor_mismatch` *and*
   `multigpu_resume_rng_evidence_missing`, with both explanations in `message`.
 
+### Per-rank digest at the commit boundary (group R)
+
+A state directory cannot answer "do both ranks hold the same thing?": it carries
+rank 0's `model.safetensors`, one `scaler.pt`, and one optimizer shard per rank — a
+verifier would have to load every shard to compare. So every rank additionally
+writes a small digest of what it really holds when the commit boundary is saved:
+
+| file | owner | contents |
+| --- | --- | --- |
+| `multigpu_rankdigest_rank<r>.json` | rank `<r>` | `adapter` (per-tensor `sha256` over dtype + shape + raw bytes, plus an aggregate over the name-sorted hashes), `scaler` (`present`/`scale`/`growth_tracker`), `optimizer.step`, `scheduler.lrs`, `global_step`, `epoch`, `window` (attempts/replays/discards/consecutive discards + `batches_consumed`/`batches_per_epoch`/`resume_skipped_batches`) |
+
+The comparison is reported as **four axes** — `adapter_equal`, `scaler_equal`,
+`optimizer_equal`, `window_equal` (plus `position_equal` for `global_step`/`epoch`) —
+so a report can say *which* face of group R failed. Window fields are split:
+`window_attempts` / `window_replays` / `window_discards` /
+`window_consecutive_discards` / `batches_consumed` are protocol counters and are
+compared; `window_total_loss`, `window_last_loss`, `window_num_steps` and
+`ema_observation` are **rank-local expectations** (each rank sums its own
+micro-batches) and are recorded for observation only — comparing them would raise a
+mismatch code that means nothing.
+
+`scaler` reads the counter from `_growth_tracker` (then the legacy public
+`growth_tracker`, then `state_dict()["growth_tracker"]`): current torch keeps it in
+the private attribute, so a digest built from the old key reported `None` for a
+scaler that had clearly stepped. `rank_digest.scaler_state()` also accepts a
+**loaded `scaler.pt` mapping**, so R-b can be judged offline from a state directory
+that already exists (`{"scale": 65536.0, ..., "_growth_tracker": 10}` after 10
+committed fp16 steps).
+
+Rank 0 reads them after the publish and summarizes them into the resume bundle as
+`extra.rank_digests` (`schema`, `complete`, `equal`, `codes`, `missing`,
+`differences`, per-rank scalars — the per-tensor map stays in the rank file).
+`rank_digest.compare()` is the third-party entry point: it returns
+`equal` plus the named codes `multigpu_rank_digest_missing` (a rank's file is
+absent/unreadable) and `multigpu_rank_digest_mismatch` (a field disagrees, with the
+offending field and both values).
+
+Properties this is built on:
+
+* **Observation, not training math.** No collective (each rank hashes its own
+  tensors; the comparison is a rank-0 read of files that already landed), and it
+  runs only at the commit boundary — never on the per-step path. Measured on CPU:
+  ~240 adapter tensors / 2 MB ≈ 7 ms; the cost is pure `sha256`, ≈3.4 ms per MB,
+  i.e. a 64 MB adapter ≈ 210 ms per rank **per save**. It scales with the adapter
+  size, not with the number of steps, which is why it belongs at the boundary.
+* **A difference is a WARNING, not a failure.** A run keeps its verdict;
+  `extra.rank_digests.equal` is what a verifier reads. Only a *missing* file and a
+  disagreeing field are reported, and both are named.
+* **Switch:** on by default, disable with `ANIMA_MULTIGPU_RANK_DIGEST=0` (also
+  `false`/`no`/`off`). When off, no digest file is written and nothing is compared.
+
+### Resume verdict in the run identity manifest
+
+A resume also records its own verdict, so a verification ledger can machine-check
+"this run resumed exactly" without replaying it: `library/training/multigpu/identity.record_resume_outcome()`
+merges three top-level fields into the run's existing `multigpu_identity.json`
+(rank 0 only, atomic write, **no collective** — every rank already holds the same
+verdict):
+
+| field | meaning |
+| --- | --- |
+| `resume_exact` | the `guard_resume` verdict for this resume |
+| `resume_codes` | every named code that was reported (`multigpu_resume_cursor_mismatch`, `multigpu_resume_rng_evidence_missing`, ...) |
+| `resume_bundle_version` | the bundle schema version the verdict is based on |
+| `resume.rng_recheck` | `rng_reread_at_resume`, or `save_time_evidence_only` when the caller passed `verify_rng_files=False` |
+
+`ResumeDecision.rng_recheck` makes that distinction visible in the message too: an
+`exact` decision that did **not** re-read the pickles says so instead of borrowing
+the stronger "re-read at resume time" phrasing.
+
+### Where the validation evidence lives
+
+Per-round verification evidence (ledgers, harness outputs, comparison JSONs) lives
+under `output/tests/multigpu_reference_validation/<round>-<date>/` — it is run data,
+not source, and this guideline only points at it. The cross-round capability ledger
+is `t6-faultinj-cuda-20261108/capability_ledger.md`; the `t3-…` edition of that
+ledger is a **historical snapshot** of its round, not the current state of any
+item.
+
+The integrated, human-readable reading of all of it — per-reference-point source
+location, observation level, command plus exit code and the resulting verdict — is
+[多卡参考点集成验收](../findings/multigpu_reference_validation_20261107.md). Read it
+before quoting any number from this section: it also records what is **not**
+verified (the bounded real runs it reports did **not** pass the single-vs-dual and
+10+10-resume numeric gates on V100 fp16, and a skip or a CPU/Gloo pass is never a
+CUDA or real-training result).
+
 ### Sharding experiment entry
 
 `bench/multigpu_reference/sharding.py::run_two_rank` runs a task in real processes
@@ -486,11 +573,71 @@ a skip is not a pass and must not be reported as evidence.
   admission matrix, checkpoint publish agreement (rank-0 atomic publish, rollback
   when a peer fails, class-II transport exit) and versioned resume bundle
   validation (topology/RNG/loader cursor, legacy = not exact).
-- **Not yet verified** (a `skip` here counts as *not executed*, never as a pass):
-  NCCL/CUDA paths, real FP16 overflow behaviour on device,
-  FSDP2 / tensor-parallel adoption, and the bounded real Anima runs. Those are
-  gated behind the experiment entries in `bench/multigpu_reference/` and require
-  an explicit release plus the approved step budget (single GPU 10, dual GPU 20,
-  10+10 resume, at most 50 updates in total).
+- **Verified on small-model CUDA** (`MULTIGPU_REFERENCE_HARDWARE=1`): the real NCCL
+  reduction path, the fp16 overflow branch of the scaler agreement (both ranks drop
+  and back off together), and the FSDP2/TP toy comparisons.
+- **Bounded real Anima runs were executed** (single-GPU batch-2 ×10, dual-GPU ×20,
+  dual-GPU 10+10 resume = at most 50 updates, plus a 20-update determinism
+  experiment): entry, save, resume and the step budget are established, but the
+  single-vs-dual and 10+10-resume numeric gates were **exceeded**, and repeated runs
+  with one frozen configuration are not bit-identical on V100 fp16. Treat the
+  equality of single- and dual-GPU training as **unproven**, not as passed.
+- **Still unverified** (a `skip` here counts as *not executed*, never as a pass):
+  cross-bucket / 4032-family / tail-window behaviour (the real run covered one
+  896×1200 bucket of the 4200 family), per-rank `GradScaler` growth-tracker
+  evidence on real hardware, the fp32 reference path, and FSDP2 / tensor-parallel
+  **adoption** (both remain `experimental` and unusable).
 - This section documents behavior; it does not approve any deployment, packaging
   or cache/preprocessing side effect. Repository-wide rules stay in `AGENTS.md`.
+
+### Pinned data order for cross-world-size comparisons (`ANIMA_MULTIGPU_PINNED_ORDER`)
+
+Three facts, in the order they bite:
+
+1. **The product default is shuffled, and the shuffle depends on the batch layout.**
+   `DatasetBuckets.create_buckets` builds one batch descriptor per batch and
+   `shuffle_buckets()` runs `random.seed(seed + epoch)` + `random.shuffle(buckets_indices)`;
+   the training loader then shuffles the item stream as well. The descriptor list length
+   *is* the batch count (24 images → 12 at `batch_size=2`, 24 at `batch_size=1`), so two
+   layouts consume unrelated permutations. Different world sizes therefore see different
+   sample orders **by design** — each layout trains legally and this is not a defect.
+   Turning the loader shuffle off is *not* enough: the descriptor shuffle is a second,
+   independent permutation.
+2. **Step-wise equivalence across world sizes only holds under the pinned gate.** With
+   `ANIMA_MULTIGPU_PINNED_ORDER=1` the descriptors are sorted into natural order and the
+   item stream is served by an identity sampler, so `world=1, batch=2` item `k` and
+   `world=2, batch=1` items `2k`/`2k+1` hold the same samples, and accelerate's
+   `BatchSamplerShard` hands rank `r` the item `k*W + r`. Only then do slot-by-slot
+   comparisons (noise/σ, per-sample loss, Δθ) compare the same data. Do not state
+   "multi-GPU equals single-GPU" without this qualifier.
+3. **Covered paths.** All three loader construction sites read the same gate through
+   `library/training/adaptive_runtime/pinned_order.py`, so they cannot drift apart:
+   - the primary train loader (`library/training/bootstrap.py`);
+   - the loader rebuilt on a stage switch (`library/training/loop.py`), so
+     `stage_schedule` runs are comparable;
+   - the stateful recovery cursor loader
+     (`library/training/adaptive_runtime/resume_data.py::make_cursor_dataloader`), so
+     `adaptive_oom_retry_resume` runs are comparable; it also re-pins the descriptors after
+     every epoch advance.
+
+   The epoch boundary is covered too, because it is not a corner case: on 2 GPUs with 24
+   samples an epoch is **12 updates**, so a 20-update segment (or the resumed half of a
+   10+10 resume, steps 13-20) already runs in epoch 1. The re-pin lives **inside
+   `DatasetBuckets.shuffle_buckets()`** (`_repin_pinned_order`, same gate, no-op when
+   unset), which is the single place that reseeds with `seed + epoch` and reshuffles the
+   descriptor list at a different length per batch layout. Every caller is therefore
+   covered at once: `create_buckets` (dataset build, including the `make_buckets` path
+   from `library/datasets/feature_sidecars.py`) and `BaseDataset.set_current_epoch`
+   (epoch advance). An earlier revision hooked only `set_current_epoch`, which left the
+   build-time reshuffle uncovered (t39 / V40-F2).
+
+   **Not covered:** (a) validation loaders (they already pass `shuffle=False`); (b) any
+   non-training consumer that builds its own loader (bench harnesses are measured
+   separately and must opt into the same gate). `library/training/auto_block_swap/probe.py`
+   is covered *indirectly*: it bumps the epoch through `DatasetGroup.set_current_epoch`,
+   which reaches the same `shuffle_buckets()` hook — its probe runs single-process CUDA,
+   so it never needed the cross-world alignment in the first place.
+
+The gate is measurement-only. Unset (the default) every builder reproduces the previous
+`DataLoader(..., shuffle=True)` / `RandomSampler` behaviour; the negative-control tests
+compare sampler type and index sequence rather than object identity.
