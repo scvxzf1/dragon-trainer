@@ -89,6 +89,31 @@ class DatasetBuildResult:
     use_dreambooth_method: bool
 
 
+class _PinnedOrderSampler(torch.utils.data.Sampler):
+    """Yield dataset items in natural order (measurement gate only).
+
+    accelerate still shards this sampler across processes with
+    ``BatchSamplerShard(split_batches=False)``, i.e. rank ``r`` takes items
+    ``r, r+W, r+2W, ...``. Combined with the natural descriptor order that makes a
+    batch-2 item ``k`` and the two batch-1 items ``2k``/``2k+1`` hold the same
+    samples, which is what the single-vs-dual gate needs.
+    """
+
+    def __init__(self, item_count: int):
+        self.item_count = int(item_count)
+
+    def __iter__(self):
+        return iter(range(self.item_count))
+
+    def __len__(self) -> int:
+        return self.item_count
+
+    def reset(self) -> None:
+        """Start the next pass at item 0."""
+        self._cursor = 0
+        self.passes += 1
+
+
 @dataclass(frozen=True)
 class NetworkBuildResult:
     network: Any
@@ -942,9 +967,27 @@ class TrainingBootstrap:
                                if k not in {"batch_size", "collate_fn"}},
             )
         else:
-            train_dataloader = torch.utils.data.DataLoader(
-                train_dataset_group, shuffle=True, **dataloader_kwargs,
+            # Measurement gate (F-T31-2/F-T31-3): shuffle is hard-coded here and
+            # there is no CLI switch, so a cross-world-size comparison cannot turn
+            # it off. With ANIMA_MULTIGPU_PINNED_ORDER=1 the descriptors are sorted
+            # into natural order and the loader iterates them in that order; the
+            # default (variable unset) keeps the production path untouched.
+            from library.datasets.buckets import (
+                apply_pinned_order,
+                pinned_order_enabled,
             )
+
+            if pinned_order_enabled():
+                apply_pinned_order(train_dataset_group)
+                train_dataloader = torch.utils.data.DataLoader(
+                    train_dataset_group,
+                    sampler=_PinnedOrderSampler(len(train_dataset_group)),
+                    **dataloader_kwargs,
+                )
+            else:
+                train_dataloader = torch.utils.data.DataLoader(
+                    train_dataset_group, shuffle=True, **dataloader_kwargs,
+                )
 
         val_dataloader = torch.utils.data.DataLoader(
             val_dataset_group if val_dataset_group is not None else [],

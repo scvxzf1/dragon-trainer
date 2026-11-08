@@ -10,7 +10,7 @@ import logging
 import os
 import random
 import math
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 import numpy as np
 import torch
@@ -20,6 +20,18 @@ from tqdm import tqdm
 from library.datasets.buckets import BucketBatchIndex, BucketManager
 
 logger = logging.getLogger(__name__)
+
+
+def _repin_pinned_order(dataset: Any) -> int:
+    """Re-pin the batch descriptor order after any reshuffle (measurement gate).
+
+    Lazily imported so ``library.datasets`` never depends on ``library.training`` at
+    import time. Returns ``0`` — and touches nothing — when the gate is closed.
+    """
+
+    from library.training.adaptive_runtime import pinned_order
+
+    return pinned_order.repin(dataset)
 
 
 class DatasetBucketsMixin:
@@ -278,6 +290,18 @@ class DatasetBucketsMixin:
         return True
 
     def shuffle_buckets(self):
+        """Reshuffle the batch descriptor order, then honour the pinned-order gate.
+
+        ``shuffle_buckets`` has several callers (``create_buckets`` while building,
+        ``BaseDataset.set_current_epoch`` per epoch), and any of them can run after a
+        loader was pinned. The re-pin therefore lives *here*, not in the callers, so a
+        new caller cannot silently reintroduce a batch-size-dependent permutation
+        (t39 / F-T35-1). No-op when ``ANIMA_MULTIGPU_PINNED_ORDER`` is unset.
+        """
+        self._shuffle_buckets_unpinned()
+        _repin_pinned_order(self)
+
+    def _shuffle_buckets_unpinned(self):
         # set random seed for this epoch
         random.seed(self.seed + self.current_epoch)
 

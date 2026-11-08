@@ -8,6 +8,7 @@ import threading
 import numpy as np
 import torch
 
+from . import pinned_order
 from .resume_buckets import capture_buckets, restore_buckets
 
 
@@ -34,7 +35,17 @@ def make_cursor_dataloader(group, *, seed, loader_kwargs=None):
     if forbidden.intersection(options) or options.pop("num_workers", 0) != 0:
         raise ValueError("Recovery loader requires workers=0 and its own sampler/collator")
     data = StatefulDatasetView(group, seed=seed)
-    sampler = RandomSampler(data, generator=torch.Generator().manual_seed(seed + 1))
+    if pinned_order.enabled():
+        # Pinned-order measurement gate (t36): same semantics as the bootstrap and
+        # stage-switch loaders — natural descriptor order plus an identity item
+        # stream, so the cursor hands the same stem to the same slot in a
+        # single-worker and a two-worker run.
+        pinned_order.apply(group)
+        sampler = pinned_order.identity_sampler(len(data))
+    else:
+        sampler = RandomSampler(
+            data, generator=torch.Generator().manual_seed(seed + 1)
+        )
     return torch.utils.data.DataLoader(
         data, batch_sampler=BatchSampler(sampler, 1, False), num_workers=0,
         collate_fn=first_example, generator=torch.Generator().manual_seed(seed + 2), **options)
@@ -137,6 +148,9 @@ class StatefulDatasetView(torch.utils.data.Dataset):
         if epoch != self.epoch:
             with self._data_rng():
                 self.group.set_current_epoch(epoch + 1)
+                # The epoch advance re-shuffles the batch descriptors; re-pin them
+                # so pinned order survives an epoch boundary (no-op when closed).
+                pinned_order.apply(self.group)
             self.epoch = epoch
 
     def __getitem__(self, index):

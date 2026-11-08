@@ -1,6 +1,7 @@
 import math
+import os
 import random
-from typing import NamedTuple, Tuple
+from typing import Any, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -267,6 +268,11 @@ class BucketManager:
         self.buckets[bucket_id].append(image_or_info)
 
     def shuffle(self):
+        if pinned_order_enabled():
+            # Measurement gate (contract §13 V-2.2 / F-T31-2): keep the bucket in
+            # its insertion order so the sample at global position N is the same
+            # image in a one-worker and a two-worker run.
+            return
         for bucket in self.buckets:
             random.shuffle(bucket)
 
@@ -351,6 +357,55 @@ class BucketManager:
         crop_right = crop_left + resized_width
         crop_bottom = crop_top + resized_height
         return crop_left, crop_top, crop_right, crop_bottom
+
+
+#: Opt-in *measurement* gate: pin the data stream so a single-worker and a
+#: multi-worker run consume the same image at the same global sample position.
+#: Default off — with the variable unset every function below is a no-op and the
+#: training path is byte-for-byte what it was.
+PINNED_ORDER_ENV = "ANIMA_MULTIGPU_PINNED_ORDER"
+
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def pinned_order_enabled(env: Optional[dict] = None) -> bool:
+    """Whether the pinned-order measurement gate is open."""
+    values = dict(os.environ if env is None else env)
+    return str(values.get(PINNED_ORDER_ENV, "")).strip().lower() in _TRUE
+
+
+def pinned_buckets_indices(dataset: Any) -> list:
+    """The dataset's batch descriptors in natural ``(bucket, batch)`` order.
+
+    ``DatasetBuckets.create_buckets`` shuffles ``buckets_indices`` with
+    ``random.seed(seed + epoch)``, and the list length depends on the batch size
+    (one descriptor per batch: 12 at batch 2, 24 at batch 1 for 24 images). Two
+    permutations of different lengths cannot agree, so the descriptor order has to
+    be pinned as well — otherwise "disable the DataLoader shuffle" still yields
+    different images per slot (t31 F-T31-2 measured exactly that).
+    """
+    indices = list(getattr(dataset, "buckets_indices", []) or [])
+    return sorted(indices, key=lambda item: (item.bucket_index, item.batch_index))
+
+
+def apply_pinned_order(dataset_group: Any) -> int:
+    """Sort every member's batch descriptors into natural order; 0 when the gate is off.
+
+    Returns the number of descriptors re-ordered so a run can record whether the
+    measurement gate actually took effect.
+    """
+    if not pinned_order_enabled():
+        return 0
+    changed = 0
+    for dataset in getattr(dataset_group, "datasets", []) or []:
+        indices = getattr(dataset, "buckets_indices", None)
+        if not indices:
+            continue
+        ordered = pinned_buckets_indices(dataset)
+        if ordered != list(indices):
+            dataset.buckets_indices = ordered
+            changed += len(ordered)
+    return changed
 
 
 class BucketBatchIndex(NamedTuple):
