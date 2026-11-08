@@ -5,9 +5,9 @@
 执行计划：[`../plans/2026-08-15-dragon-single-frontend-rebuild.md`](../plans/2026-08-15-dragon-single-frontend-rebuild.md)
 
 > 2026-10-04 整理：本文保留迁移阶段的目标、Classic 回退决策和完成门槛。
-> Next 已是唯一生产前端，见[当前前端说明](../../../web/frontend-next/README.md)
-> 和[退役记录](../../../_archive/docs/proposal/legacy_ui_retirement_plan.md)。
-> 本文的历史门禁不替代当前 [验证策略](../../../AGENTS.md#验证策略)，也不证明每项迁移验收均已完成。
+> Next 已是唯一生产前端，见[当前前端说明](../../../../web/frontend-next/README.md)
+> 和[退役记录](../../proposal/legacy_ui_retirement_plan.md)。
+> 本文的历史门禁不替代当前 [验证策略](../../../../AGENTS.md#验证策略)，也不证明每项迁移验收均已完成。
 
 ## 1. 目标
 

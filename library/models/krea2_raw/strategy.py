@@ -84,6 +84,46 @@ _warned_legacy_variants_cache = False
 _IN_MEMORY_VARIANTS_KEY = "__krea2_caption_variants__"
 
 
+def _observe_cache_cast(name: str, source: torch.Tensor, stored: torch.Tensor) -> None:
+    """Count non-finite Krea-2 cache tensors without touching the values.
+
+    Krea-2 stores Qwen3-VL hidden states after a cast to ``KREA2_CACHE_DTYPE``; a value
+    that is finite before the cast but overflows the narrower dtype is a *cast overflow*
+    and must be distinguishable from a NaN/Inf the encoder already produced. Observation
+    only: the cast, the dtype and the cache bytes are unchanged.
+    """
+    from library.training import numerical_observation
+
+    stored_summary = numerical_observation.summarise(stored)
+    if not stored_summary["nonfinite"]:
+        return
+    source_summary = numerical_observation.summarise(source)
+    common = {
+        "elements": stored_summary["elements"],
+        "before_dtype": source.dtype,
+        "after_dtype": KREA2_CACHE_DTYPE,
+        "shape": tuple(stored.shape),
+        "identity": f"krea2_te.{name}",
+    }
+    site = f"krea2_raw.strategy.{name}"
+    if source_summary["nan"]:
+        numerical_observation.record(
+            site, numerical_observation.KIND_SOURCE_NAN,
+            nonfinite=source_summary["nan"], **common,
+        )
+    if source_summary["inf"]:
+        numerical_observation.record(
+            site, numerical_observation.KIND_SOURCE_INF,
+            nonfinite=source_summary["inf"], **common,
+        )
+    introduced = stored_summary["nonfinite"] - source_summary["nonfinite"]
+    if introduced > 0:
+        numerical_observation.record(
+            site, numerical_observation.KIND_CAST_OVERFLOW,
+            nonfinite=introduced, detail="finite before the storage cast", **common,
+        )
+
+
 class Krea2TokenizeStrategy(TokenizeStrategy):
     """Qwen3-VL ChatML tokenize (prompt pad 到 541 + cat suffix, 不裁剪)."""
 
@@ -459,7 +499,9 @@ class Krea2TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 hiddens, mask = text_encoding_strategy.encode_tokens(
                     tokenize_strategy, models, tokenize_strategy.tokenize(group),
                 )
-                return (hiddens.detach().to(dtype=KREA2_CACHE_DTYPE, device="cpu"),
+                stored_hiddens = hiddens.detach().to(dtype=KREA2_CACHE_DTYPE, device="cpu")
+                _observe_cache_cast("hiddens", hiddens.detach(), stored_hiddens)
+                return (stored_hiddens,
                         mask.detach().to(dtype=torch.bool, device="cpu"))
 
             return self._preprocess_batcher.encode_all(captions, encode)
@@ -473,9 +515,9 @@ class Krea2TextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 models,
                 tokenize_strategy.tokenize(caption_batch),
             )
-            hidden_chunks.append(
-                hiddens.detach().to(dtype=KREA2_CACHE_DTYPE, device="cpu")
-            )
+            stored_hiddens = hiddens.detach().to(dtype=KREA2_CACHE_DTYPE, device="cpu")
+            _observe_cache_cast("hiddens", hiddens.detach(), stored_hiddens)
+            hidden_chunks.append(stored_hiddens)
             mask_chunks.append(mask.detach().to(dtype=torch.bool, device="cpu"))
         return torch.cat(hidden_chunks, dim=0), torch.cat(mask_chunks, dim=0)
 

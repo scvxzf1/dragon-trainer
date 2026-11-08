@@ -190,7 +190,7 @@
 - `library/models/family_registry.py`：模型族名称、别名、cache、adapter、推理和 attention
   能力的单一事实源；operation handler 必须覆盖全部已注册 family。
 - `library/models/krea2_raw/`：Krea-2-Raw 第二生产模型族（迁移过程见
-  `docs/proposal/krea2_raw_migration.md`）。`dit.py` 提供 single-stream MMDiT、block swap、
+  `_archive/docs/proposal/krea2_raw_migration.md`）。`dit.py` 提供 single-stream MMDiT、block swap、
   checkpoint 和 fixed resident compile；`weights.py` / `quantize.py` 负责 strict BF16/NF4
   加载；`strategy.py`、`family.py`、`sampling.py`、`inference_runner.py` 分别承载 Qwen3-VL
   cache、训练 forward、Euler flow sampling 和独立推理 dispatch。当前开放网络变体选择，但不代表

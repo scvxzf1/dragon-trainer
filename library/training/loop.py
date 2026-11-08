@@ -30,7 +30,7 @@ import torch
 from accelerate import Accelerator
 from tqdm import tqdm
 
-from library.training import multigpu, window_accounting
+from library.training import multigpu, window_accounting, window_coordination
 from library.training.adaptive_runtime import pinned_order
 from library.training.finite_checks import (
     check_loss_finite,
@@ -264,9 +264,24 @@ class LoopState:
     update_skipped: Optional[bool] = None
     #: Steps whose optimizer update was dropped because no GradScaler existed to
     #: absorb a non-finite gradient (see ``library/training/scaler_ownership.py``).
-    #: Known limitation: only warned and counted for now — it is not published into
-    #: ``precision_report.json``, so it is not yet a first-class metric.
+    #: Published per cause through ``window_coordination`` (see the ``step_*``
+    #: counters below); this field keeps the guard's own running total.
     nonfinite_grad_skips: int = 0
+    #: Per-step-attempt accounting (``library/training/window_coordination.py``):
+    #: every optimizer boundary attempt is counted once, whether it applied the
+    #: update or was rejected by a scaler skip / guard drop / window consensus.
+    step_attempts: int = 0
+    step_updates_applied: int = 0
+    step_updates_skipped_by_scaler: int = 0
+    step_updates_dropped: int = 0
+    #: Per-cause breakdown of ``step_attempts`` (observability only).
+    step_drop_causes: Optional[dict] = None
+    #: Per-reason breakdown of ``window_discards`` (observability only; the fuse
+    #: still uses the single consecutive budget).
+    window_discard_causes: Optional[dict] = None
+    #: Committed windows (== committed optimizer boundaries); ``window_discards``
+    #: counts the dropped ones.
+    window_commits: int = 0
     #: E3 accumulation-window accounting. ``window_attempts`` / ``window_replays``
     #: / ``window_discards`` are cumulative; the three ledger fields describe the
     #: last *committed* window and are left untouched by a replay/discard
@@ -280,6 +295,11 @@ class LoopState:
     window_total_loss: float = 0.0
     window_num_steps: int = 0
     window_last_loss: Optional[float] = None
+    #: Whether the boundary handled by the current epoch-loop iteration committed a
+    #: *new* step. A discarded window sets it to ``False`` so step-level progress /
+    #: validation ticks cannot fire twice for the same step index (E3 window
+    #: transaction: a discarded window produces no step at all).
+    window_boundary_committed: bool = True
     #: This repo has no model EMA; the slot is written on the commit path only so
     #: the E3 spec can prove a discarded window touches no ledger at all.
     ema_observation: Optional[dict] = None
@@ -885,25 +905,25 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             )
             _profiler_step_end(state)
             state.batches_consumed += 1
-            window.add(batch, loss)
+            window.add(batch, loss, epoch=epoch, step=step)
 
             keys_scaled, mean_norm, maximum_norm, max_mean_logs = _maybe_scale_norm(state)
 
             if accelerator.sync_gradients:
-                # E3: the window boundary decides commit vs replay vs discard.
+                # E3: the window boundary decides commit vs replay vs discard. The
+                # verdict is agreed world-wide so every rank takes the same branch.
                 window.record_attempt()
-                reason = window.failure_reason(
-                    update_skipped=bool(getattr(state, "update_skipped", False))
-                )
+                local_reason = window_coordination.local_window_reason(state, window)
+                reason = window_coordination.agree_failure_reason(state, local_reason)
                 while (
                     reason is not None
                     and window.replays < window_accounting.WINDOW_MAX_REPLAYS
                 ):
+                    window_coordination.note_window_decision(state, "replay")
                     replay_losses, loss = _replay_window(trainer, state, window.batches)
                     window.record_attempt(replay_losses)
-                    reason = window.failure_reason(
-                        update_skipped=bool(getattr(state, "update_skipped", False))
-                    )
+                    local_reason = window_coordination.local_window_reason(state, window)
+                    reason = window_coordination.agree_failure_reason(state, local_reason)
 
                 # The outcome of a replay is rank-local again. Agree it, so a peer
                 # that must discard cannot let this rank commit – committing here
@@ -915,6 +935,10 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                 if reason is None:
                     # Ledger first, then the boundary side effects (E3 contract E).
                     window_accounting.commit_window(state, window)
+                    # This boundary produced a *new* step, so the step-level
+                    # progress / validation ticks below are allowed to fire.
+                    state.window_boundary_committed = True
+                    window_coordination.note_window_decision(state, "commit")
                     _commit_step_boundary(trainer, state, loss)
                     state.progress_bar.update(1)
                     state.global_step += 1
@@ -934,7 +958,16 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                     state.optimizer_train_fn()
                     adaptive_notify(trainer, "commit", state)
                 else:
-                    dropped = window_accounting.discard_window(state, window, reason)
+                    dropped = window_accounting.discard_window(
+                        state, window, reason, local_reason=local_reason
+                    )
+                    window_coordination.note_window_decision(
+                        state, "discard", propagated=local_reason is None
+                    )
+                    # No new step was produced: the step-level progress /
+                    # validation ticks below must not fire again for the previous
+                    # committed step index.
+                    state.window_boundary_committed = False
                     state.optimizer.zero_grad(set_to_none=True)
                     budget = window_accounting.discard_budget(args)
                     logger.warning(
@@ -968,6 +1001,9 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                             f"{budget}; reason={reason}, "
                             f"effective_steps={state.global_step})"
                         )
+                # Publish the authoritative per-attempt / per-window counters
+                # (replayed and discarded windows included, with cause breakdown).
+                precision_observe("transaction_accounting", state)
                 window.reset()
 
             _log_step(
@@ -1075,8 +1111,20 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
 
     Kept as the single-batch entry for direct callers and tests; the epoch loop
     drives :func:`_run_microbatch` itself so a failed window can be replayed.
+
+    This is the real entry of the AUTO block-swap probe
+    (``library/training/auto_block_swap/probe.py``), so it keeps working exactly as
+    before: same optimizer call, same probe hooks, same tolerance for lightweight
+    hand-built states. It drives one micro-batch directly and therefore has no
+    ``WindowBuffer``: no window ledger, no replay/discard decision and no whole-window
+    ``LossRecorder`` publication on this route (contract R9.4). Window transaction
+    guarantees belong to :func:`_run_epoch_steps`; the per-boundary accounting and
+    observability added there still apply here because both routes share
+    :func:`_run_microbatch`.
     """
-    loss = _run_microbatch(trainer, state, batch)
+    loss = _run_microbatch(
+        trainer, state, batch, route=window_coordination.ROUTE_DIRECT
+    )
     # Transaction semantics (E3): a boundary whose update was dropped (scaler skip
     # or D2 guard drop) commits nothing — no scheduler, no adaptive event, no
     # precision counter — exactly like the window loop's failed attempt.
@@ -1092,6 +1140,7 @@ def _run_microbatch(
     *,
     force_skip: bool = False,
     manage_accumulate: bool = True,
+    route: str = window_coordination.ROUTE_WINDOW,
 ) -> torch.Tensor:
     """The accumulate-scope body: on_step_start hooks, cudagraph mark, forward,
     backward gating, manual adapter sync, grad capture/clip, optimizer step +
@@ -1323,6 +1372,11 @@ def _run_microbatch(
                 drop_update = state.multigpu_step_agreement.drop_update
             else:
                 drop_update = skip_update or force_skip or not loss_is_finite
+            # Merge note: ``window_coordination`` 的 per-attempt 账本复用同一个结论。
+            # 共识已由 ``multigpu.agree_step`` 完成（它同时协商 loss / grad / force
+            # 三类原因并留痕），此处不再额外发起一次父级 MAX 归约，避免同一边界上
+            # 出现两组用途重叠的集体调用。
+            agreed_drop = drop_update
             if drop_update:
                 state.update_skipped = True
                 # Nothing applied: clear the (possibly poisoned) gradients here so a
@@ -1364,6 +1418,20 @@ def _run_microbatch(
                 # on every rank, so a bypass of the agreement above fails loudly
                 # on all ranks instead of drifting silently (contract §6 W-3.6).
                 multigpu.assert_scaler_symmetry(accelerator, where="optimizer_boundary")
+                # Per-step-attempt accounting: one attempt per optimizer boundary,
+                # classified by why the transaction accepted or rejected it. The
+                # evidence flags matter: ``step_attempted`` is what legitimises a
+                # scaler-overflow attribution, and ``world_only_drop`` keeps a
+                # drop that another rank forced from being reported as this rank's
+                # own cause.
+                window_coordination.note_attempt(
+                    state,
+                    route=route,
+                    skip_update=skip_update,
+                    force_skip=force_skip,
+                    loss_is_finite=loss_is_finite,
+                    step_attempted=not agreed_drop,
+                )
             if accelerator.sync_gradients and gradient_flow_probe is not None:
                 try:
                     gradient_flow_probe.capture_after_optimizer(state.global_step + 1)
@@ -1584,24 +1652,28 @@ def _log_step(
     # answer for every micro-batch in an accumulation cycle, producing bursts
     # of N back-to-back tracker writes followed by N silent ones (exactly the
     # "sometimes honored, sometimes ignored" pattern).
-    should_log_step = state.accelerator.sync_gradients and (
-        (state.global_step % log_every == 0)
-        or (state.global_step >= args.max_train_steps)
+    should_log_step = (
+        state.accelerator.sync_gradients
+        # E3: a discarded window produces no new step, so step-level progress and
+        # validation ticks must not fire a second time for the previous step index.
+        and bool(getattr(state, "window_boundary_committed", True))
+        and (
+            (state.global_step % log_every == 0)
+            or (state.global_step >= args.max_train_steps)
+        )
     )
 
     current_loss = loss.detach().item()
-    # E3: a non-finite micro-batch loss belongs to an invalidated window (replayed
-    # or discarded), so it must never enter the training-loss ledger — otherwise a
-    # single NaN poisons the epoch average for the rest of the epoch.
-    loss_is_finite = window_accounting.losses_are_finite([current_loss])
+    # E3: the training ``LossRecorder`` is written by
+    # ``window_accounting.commit_window()`` once the whole window is known to be
+    # committed — the committed window publishes all of its micro-batch losses, a
+    # replayed one publishes the replay's values, and a discarded window publishes
+    # nothing. Nothing is recorded per micro-batch here, so the finite prefix of a
+    # failed attempt can no longer leak into the epoch average.
     if should_log_step:
         from library.training.auto_block_swap.monitor import observe_training
 
         observe_training(args, state.accelerator.device, state.global_step)
-    if loss_is_finite:
-        window_accounting.record_loss(
-            state.loss_recorder, epoch=epoch, step=step, loss=current_loss
-        )
     avr_loss: float = state.loss_recorder.moving_average
     memory_logs = _cuda_memory_logs(state.accelerator.device) if should_log_step else {}
     recent_step_seconds = _recent_step_seconds(state)
@@ -1677,6 +1749,9 @@ def _maybe_run_step_validation(trainer, state: LoopState, epoch: int) -> None:
     )
     if (
         state.accelerator.sync_gradients
+        # E3: a discarded window yields no new step, so re-dispatching step
+        # validation for the same ``global_step`` is pure duplicate work.
+        and bool(getattr(state, "window_boundary_committed", True))
         and state.validation_steps > 0
         and should_validate_step
     ):

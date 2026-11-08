@@ -14,6 +14,14 @@
 | [画风完整报告](anima_weight_analysis_20261001/style/report.md) | 10 文件的有效 ΔW、模块分布与层热点 |
 | [人物完整报告](anima_weight_analysis_20261001/character/report.md) | 5 文件的逐模型差异、集中度及人物与画风对照 |
 
+## 数据集、存储与传输
+
+| 文档 | 说明 |
+| --- | --- |
+| [image_compression_bandwidth_audit_20261102.md](image_compression_bandwidth_audit_20261102.md) | 2026-11-02：Lepton / LatentStore / JXL-Chrome155 / GACT / INSTANT / dreaMLearning 6 篇材料核验（2 个 arXiv 编号指错论文、1 篇查无此文、2 篇指标转述失真）+ 本机实测压缩率到有效带宽换算（传统 JPEG q95/q92 重压缩 2.2~2.9×、JXL 有损 5.0×、降分辨率 13~20×），含等画质交叉、4:2:0 隐性降质、1-5/5-10/10-15MB 分档的 SSIM+PSNR+ΔE76 与编解码 CPU/内存占用+ JXL 钩子在当前代码中失效的证据 |
+| [image_compression_bench_data_20261102.md](image_compression_bench_data_20261102.md) | 2026-11-02：上述基准的纯数据记录（分档汇总、逐图像素指标与编解码耗时、CPU%/峰值 RSS），原始 JSONL 与采集脚本归档在 `image_compression_bench_data_20261102/raw/` |
+| [image_storage_pipeline_recommendation_20261102.md](image_storage_pipeline_recommendation_20261102.md) | 2026-11-02：在 128 核 / 6 GB/s 盘 / 500 GB/s 内存假设下的容量模型与决策建议（单图 CPU 秒成本、转码 vs 传输总时间矩阵、latent 缓存后的磁盘占用、内存带宽核算、盈亏平衡链路速度） |
+
 ## 维护和整理
 
 | 文档 | 说明 |
@@ -23,9 +31,6 @@
 | [test_script_audit_20260809.md](test_script_audit_20260809.md) | 2026-08-09 测试脚本审计、精简结果与 probe 保护边界 |
 | [documentation_consolidation_20260706.md](documentation_consolidation_20260706.md) | 2026-07-06 文档库合并整理报告 |
 | [project_cleanup_checkpoint_20260705.md](project_cleanup_checkpoint_20260705.md) | 项目清理检查点 |
-| [project_cleanup_long_running_goal_20260705.md](project_cleanup_long_running_goal_20260705.md) | 跨系统长期清理目标 |
-| [project_cleanup_next_stage_goal_20260705.md](project_cleanup_next_stage_goal_20260705.md) | 下一阶段清理目标 |
-| [project_cleanup_sustained_goal_20260705.md](project_cleanup_sustained_goal_20260705.md) | 持续清理目标记录 |
 | [project_cleanup_sustained_goal_20260706.md](project_cleanup_sustained_goal_20260706.md) | 持续清理目标最新记录 |
 
 ## WebUI 和配置
@@ -62,6 +67,7 @@
 
 ## Runtime 和能力边界
 
+- [fp16/E3 窗口事务实施记录](fp16_transaction_implementation_20261107.md)：统计事务、多卡一致性与可观测性的实现边界（含未验项）。
 - [Qwen-Image 2.1 上的 Block Swap 与自动水位（CMP 50HX 第 12 轮）](block_swap_qwen_image_21_hot_50hx_20261019.md)：第四族、也是四族收口的一轮。固定 `swap=30` 每步 60 任务、24.38 GiB，自动晋升 `30 → 14`（free=7.00 GiB、margin=0.39 GiB、block=416.0 MiB，可晋升 16 块但受 `current-2` 契约限制）后降到每步 28 任务、11.38 GiB（−53.3%），步跨度 7848 → 3877 ms（−50.6%）；每块 416.0 MiB 与头部推算逐字节一致。**修正 P0' 结论**：`exposed_wait` 小不等于搬运不构成瓶颈——baseline 的 DMA 忙时间（8362 ms）甚至超过步跨度（7848 ms），步时约一半由搬运量间接决定。另修正第 9 轮的 qwen 载荷数字，并把 `duplicate_restores` 判定为跨相位误报。含 tokenizer 定位、`timestep_sampling` 漏配、错误 checkpoint 三个实测坑。
 - [Z-Image 上的 Block Swap 与自动水位（CMP 50HX 第 11 轮）](block_swap_zimage_hot_50hx_20261019.md)：给探针加 `--family` 族预设（各族 TE 缓存入口、缓存后缀、运行时键；目录型组件原地引用），并在第三族真机验收。日志 `10.11 GiB across 30 blocks` 与头部推算一致；固定 swap=28 每步 56 任务、20260 MB（预测 20262）、3.117 GB/s（天花板 99.3%）、DMA 占步时约 93%。**非 Anima 族的正向晋升首次实测**：`28 → 13`（free=6.15 GiB、margin=0.78 GiB、block=345.0 MiB，可晋升 15 块），步时 7.69/8.12 → 5.30/5.38 s（−30%），每步少搬 10853 MB，一次性晋升约 1.6 s 且一步回本。含三个实测坑与未验证边界。
 - [Krea-2-Raw 上的 Block Swap 与自动水位（CMP 50HX 第 10 轮）](block_swap_krea2_hot_50hx_20261019.md)：第二个模型族的真机验收。日志 `22.64 GiB across 28 blocks` 与只读头部推算的 22.64 GiB/28 块/828.1 MiB 相差 0.011%；每步 52 任务（=2S）、45147 MB（预测 45153，−0.013%）、有效带宽 3.114 GB/s（天花板 99.2%）、DMA 占步时约 96%。无余量时调优器正确保持 `blocks_to_swap=26`（free=0.67 GiB 小于 1.17 GiB 余量），且单块 828 MiB > 空闲 686 MiB 说明该卡上 Krea-2 的晋升结构性不可行。含原生分辨率 OOM、缓存 identity、`image_dir` glob、`save_every_n_steps=0` 零除四个实测坑与未验证边界。
@@ -81,7 +87,8 @@
 - [MOSS-Image「等显存预算」A/B 对比（三口径定稿）](moss_equal_vram_comparison_20261020.md)：**近等显存** 2.453/2.440 GiB 但**工作量未对齐**，全文只是吞吐对照、不能隔离实现效率（模型拆分仅为算术推导，不作因果）。**B/A 步时比 = 1.0986×**：A 步时少 8.98%（1−A/B）、A 步均吞吐高 9.86%（B/A−1）。B 的 21/60 是 `finite_loss_steps` 统计量，非完整权重验证。
 - [历史 MOSS 测试文档实测回审（2026-10-20）](moss_historical_measurements_audit_20261020.md)：用 2026-10-20 实测回审 6 篇 findings + 1 篇配置文档的 8 条断言，**2 已推翻 / 5 需加注 / 1 成立**，历史正文一字未改。**推翻一**：11.3386 s/步 与今日数据是**同一张卡**（`GPU-bfda6d91`，同 UUID），3.87× 全来自链路宽度 ×4→×16——今日同卡 ×4 下得 11.3443 s（与原值差 0.06%），且幅面不同（今日 512 幅面、基线 256×256）、精度不同（今日 fp16、基线 bf16）而步时相同，正好同时排除「换卡」与「算力差异」（swap20 每步固定搬 9.06 GB，步时由搬运决定）；A/B 汇总 §7-4 的「另一块物理卡」归因作废。**推翻二**：「3.14 GB/s 就是这块卡的实际上限」不成立——链路宽度是协商结果不是卡的常量，同机实测 ×4 0.755 / ×8 1.476 / ×16 2.90 GiB/s（每档 ×1.96），且该文全文无链路标签、3.14 本身无落盘（可查值 2.796–2.908，`h2d.json`）。**需加注 5 条**：fp16 NaN 是 `GPU-46c7d0db` 单卡病理（五事件逐条落卡、fp32 臂同样 NaN），不得推广为「sm75 上 fp16 不稳」——据此 P-C1 从「最高优先阻塞」降为「待硬件样本前不阻塞」；int8 1.222× 与十二行矩阵均为 ×16+swap20 协议内数，不与 ×8 并排；preflight 与 README 索引给出逐行改法（本任务未落）。**成立 1 条**：面积收益次线性（固定项+线性）与「文本长度是显存主变量」被今日 swap 扫描独立复现（0.1300+0.28564·swap，四点残差 ≤0.12%），只有系数限于 ×16。P1 据此重排：`P-C3`（×8→×16）升为仅次于 P0 的性能首项，`P-C4` 视为已完成一轮（最小可行 swap=8、20 贵 2.42×）。
 - [MOSS-Image A/B 块交换标度律：216 MiB/块 · 0.4530 GB/块·步](moss_block_swap_law_20261021.md)：把 A 的 `blocks_to_swap` 与 B 的 `STREAM_RESIDENT` 放在同一坐标上，**两侧显存律斜率逐字节一致**——A 216.012695 MiB/块（四段差分全同）、B 216.000000（四点全同），每块每步流量同为 2×216 MiB = 0.4530 GB（A 0.453010 / B 0.452985）。**全部差异落在截距**：非块常驻足迹 A 1647.7368 MiB 对 B 2660.4000 MiB，差 **1012.66 MiB ≈ 4.69 个块**——这解释了「同显存下 B 必须多流 5 个块」（A swap=8 流 8 块 / B ring=29 流 13 块，alloc 相差仅 67.8 MiB）。步时双侧线性拟合 R² 均为 0.9999992（A `t = 0.138346 + bytes/1.591300`，5 点；B `t = 1.354351 + bytes/1.771613`，4 点）。**修正既有文档两处**：①`moss_equal_vram_comparison_20261020.md` §6.1 的 `1.5724 GB/s` 是 `reference_gbs` 外部假设值而非 B 的反推带宽，故「A 等效带宽比 B 高 1.2%」不成立——B 四点实测边际带宽 **高 11.33%**，方向相反；②B 已不是「单点无法拟合」，§6.2(b) 同字节归因由「固定项差 +0.3699（80.6%）/带宽差 +0.0889」改为「**+1.2160（+262.7%）/ −0.7533（−162.7%）**」，即 B 固定开销更大但搬运更高效、两项部分抵消。含等显存差距顺序分解（多流 5 块 +1.4232 s / 带宽 −0.3766 s / 固定项 +1.2160 s = 2.2625 s 对实测 2.2631 s）与 10 条未测边界（逐档主机内存两侧均无数据）。
-- [fp16 保护与 NaN 后处理：静态等效判定与待热测（2026-10-21）](fp16_nan_static_equivalence_20261021.md)：把「数学等效」拆成 E1–E5 可判定判据（L0 位级 / L1 语义 / L2 计数），24 个 CPU 用例（22 passed + 2 xfailed，真 `GradScaler("cpu")`）与 10 条改坏验证 M1–M10；记录缺陷 D1（debug 梯度检查早于 unscale/clip，本分支未修复）、D2（默认路径无有限性检查）、D3（adaptive 把跳步当致命）及 E3 六条接缝。**2026-11-06 补记**：在 2× V100 上以生产 `_run_step` 复现 E2 跳步语义与 E5/D1，并归因「调换检查顺序修不好 D1、缺的是 scaler 所有权判定」；H1/H2/H8 合成探针通过（`bench/fp16_precision/run_cuda_probe.py`），实测 torch 2.10.0+cu129（`pyproject` 要求 ≥2.12），H3–H7 仍待热测。
+- [跨项目 fp16 / NaN 保护对照（2026-11-07）](fp16_nan_cross_project_comparison_20261107.md)：以 lulynx-trainer 的 `guide/fp16_nan_protection_design_2026-11-06.md` 十节口径为纲，做**代码级**双向对照（41 条差异：A 缺失 9 / B 语义一致 15 / C 冲突 3 / D 仅命名 10 / E 反向优势 4），每条带双方 `file:line` 与五级证据强度。**关键前提**：参照实现 5 条非标准路由与其 fp16 缓存量程拒收**零 pytest 覆盖**，故「抄来即用」项数为 0，移植须自建验收。**最重要的三条**：①A1 我方非有限 loss **仍执行 backward**（`loop.py:1109` 只算布尔、`:1126` 无条件反传），白跑反传且 NaN 梯度灌进累积器；②A9 `batch_step.py:101` 清洗判据只 `torch.isnan`，**±inf 不触发清洗**，与 A8 构成「fp16 TE 缓存写 Inf → 嵌入 Inf → 不清洗 → 下游 NaN」因果链；③A6 若照搬「不计入」而不做连续复位，会比参照实现**更松**，故须「区分成因 + 复位 `consecutive_discards` + `scaler_backoff` 窗口总量上限」三件套。**明确不移植**：9 路由/7 seam 框架、SafeGuard 恢复层、手动缩放纪律全量（会引入第二个 scale authority，违反 D1）、interval 扫描与地址表 kernel。另顺带发现我方文档债 F1–F5（F5 已修）。证据附录收录 captain 实测「13 文件 223 passed / 0 xfailed」的精确清单与命令，并注明 CUDA/DDP/真实训练三条证据链**不得并入冒充同一份输出**。
+- [fp16 保护与 NaN 后处理：静态等效判定与待热测（2026-10-21）](fp16_nan_static_equivalence_20261021.md)：把「数学等效」拆成 E1–E5 可判定判据（L0 位级 / L1 语义 / L2 计数），24 个 CPU 用例（2026-11-07 起 24 passed / 0 xfailed，真 `GradScaler("cpu")`；E3/E5 规格已转正）与 10 条改坏验证 M1–M10；记录缺陷 D1（debug 梯度检查早于 unscale/clip，本分支未修复）、D2（默认路径无有限性检查）、D3（adaptive 把跳步当致命）及 E3 六条接缝。**2026-11-06 补记**：在 2× V100 上以生产 `_run_step` 复现 E2 跳步语义与 E5/D1，并归因「调换检查顺序修不好 D1、缺的是 scaler 所有权判定」；H1/H2/H8 合成探针通过（`bench/fp16_precision/run_cuda_probe.py`），实测 torch 2.10.0+cu129（`pyproject` 要求 ≥2.12），H3–H7 仍待热测。
 - [公开训练器 DDP / TP / PP 实现调研](multigpu_trainers_ddp_tp_pp_survey_20261004.md)：sd-scripts/Musubi/OneTrainer 数据并行、diffusion-pipe 真实 DP+PP、TorchTitan LoRA TP 与 Megatron 调度；固定源码版本与全模型接入建议。
 - [Anima 混合 NF4 autocast 与激活显存](anima_mixed_nf4_autocast_90hx_20261003.md)：修复 NF4 输出意外回升 FP32、LoRA 与 checkpoint 激活膨胀；保持配置和量化策略不变。
 - [扩散混合量化基座与后训练线上调研](diffusion_mixed_quant_post_training_survey_20261002.md)：训练器静态混合、EfficientDM/BitsFusion量化后训练、MixDQ/ViDiT-Q敏感度搜索、Nunchaku训练边界及sm86 INT8候选。
@@ -152,6 +159,8 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [anima_1mp_speed_50hx_20261022.md](anima_1mp_speed_50hx_20261022.md) | Anima 1MP（1024×1024）/ bs1 / 完整检查点在 CMP 50HX 的速度基线：swap=0 两轮复测 **2.363 / 2.400 s/步**（差 1.6%，SM 1850~1905 MHz、显存峰值 6074 MiB、49% 利用率、≈56 W），swap=4 观测 21.07 s/步但夹着外部算力解锁动作，不算干净 A/B；附 fp16 tensor 85 TFLOPS（理论 99.38）的算力锁判定、gen1×8 链路与 120 W 功耗墙 |
+| [anima_1mp_speed_v100_20261025.md](anima_1mp_speed_v100_20261025.md) | 与 50HX 同口径（1MP/bs1/完整检查点/20 步）的 V100 跨卡对照：swap=0 **1.961 s/步**（复现 1.972，差 0.56%），比 50HX 最好档快 16%、默认档快 22%；两卡 MFU 近同（28.4% vs 27.9%）⇒ 差异来自带宽/时间占比而非算力；块交换在 V100（Gen3×16）只多 2%（50HX 同配置 21.07 s/步）；fp16 96.39 TFLOPS 无算力锁；300 W + SM 1530 MHz 锁定步时仅 +2.8% 但功耗 −22%、J/图 −20%、峰值温度 65→56 ℃，解除时钟锁只买回 0.8% ⇒ 瓶颈是功耗墙而非锁 |
 | [anima_dual_gpu_parallel_probe_20260904.md](anima_dual_gpu_parallel_probe_20260904.md) | Anima 异构双卡 PP2、TP2、TP2 INT8 通信的 BS=1 性能、显存、数值与同参数图片对比 |
 | [multigpu_v100_nvlink_baseline_20261107.md](multigpu_v100_nvlink_baseline_20261107.md) | 2×V100-SXM2-16GB NVLink 的 NCCL 集合通信/P2P/H2D 实测与 FP16/BF16 算力对照；BF16 在 SM70 上为仿真路径 |
 | [lulynx_multigpu_comparison_20261107.md](lulynx_multigpu_comparison_20261107.md) | Lulynx 多卡设计与本项目的源码对照：机制差异与正确性条件、P0-0 窗口/scaler 一致性优先项、控制面 P0 清单、FSDP2/TP 实验候选、基线口径纠偏与许可证边界 |
@@ -165,10 +174,7 @@
 | [loha_hot_test_20260725.md](loha_hot_test_20260725.md) | LoHa 在 RTX 3080 10GB 上的 12-step 热测与检查点验证 |
 | [training_profiling_hot_test_20260629.md](training_profiling_hot_test_20260629.md) | 训练 profiling 热测记录 |
 | [anima_lokr_blockswap_oom_report.md](anima_lokr_blockswap_oom_report.md) | LoKr 16G block swap OOM 报告 |
-| [anima_lokr_16g_next_goal.md](anima_lokr_16g_next_goal.md) | LoKr 16G 下一步目标 |
 | [lokr_anima_shaojianV1_run_report.md](lokr_anima_shaojianV1_run_report.md) | lokr-anima-shaojianV1 运行报告 |
-| [anima_balanced_16g_blockswap_ablation_plan.md](anima_balanced_16g_blockswap_ablation_plan.md) | Balanced 16G block swap 消融 |
-| [anima_fp8_blockswap_transfer_ablation_plan.md](anima_fp8_blockswap_transfer_ablation_plan.md) | FP8 block swap transfer 消融计划 |
 | [anima_fp8_blockswap_transfer_report.md](anima_fp8_blockswap_transfer_report.md) | FP8 block swap transfer 最终报告 |
 | [blockswap_baseline_20260806.md](blockswap_baseline_20260806.md) | 块交换优化基线测量（计算 vs 传输，RTX 3080 / CMP 90HX，标准参考） |
 | [krea2_90hx_nsight_tiles.md](krea2_90hx_nsight_tiles.md) | Krea-2 CMP 90HX Nsight tile/cache 验证：尾 tile 主因 REJECT、CUTLASS/cuDNN/FA2 实际 tile、NCU 权限边界 |
@@ -178,18 +184,7 @@
 | [krea2_nf4_downstream_correction_90hx.md](krea2_nf4_downstream_correction_90hx.md) | Krea-2 NF4 下游 velocity 目标低秩回补的 90HX 校准与 held-out 验证 |
 | [krea2_nf4_correction_rollout_3080.md](krea2_nf4_correction_rollout_3080.md) | Krea-2 NF4 rank-16 回补的 RTX 3080 完整 rollout 否定结果 |
 | [krea2_nf4_h2d_bottleneck_findings.md](krea2_nf4_h2d_bottleneck_findings.md) | Krea-2 方向 B 前置诊断：NF4+swap H2D 搬运占比双口径实测 0% + 理论上界 2% → NOT_WORTH 归档（含口径缺陷诚实记录 + 与消融矩阵矛盾核验） |
-| [krea2_3080_speed_stage1.md](krea2_3080_speed_stage1.md) | Krea-2 RTX 3080 12s/it 阶段 1：同机双卡 Linear/attention 消融、满功耗核验、prepare 口径修正、padding 尾裁剪 NOT_WORTH |
-| [krea2_3080_speed_stage2.md](krea2_3080_speed_stage2.md) | Krea-2 速度阶段 2：PG199 every-other checkpoint 快 13.9%；RTX 3080 放开单 block 仍 OOM，NOT_FEASIBLE |
-| [krea2_3080_speed_stage3.md](krea2_3080_speed_stage3.md) | Krea-2 速度阶段 3：per-block compile 在 PG199 快 19.1%；RTX 3080 的 3.3% 仅为冷态短窗口，后由阶段 5 修正 |
-| [krea2_3080_speed_stage4.md](krea2_3080_speed_stage4.md) | Krea-2 速度阶段 4：PG199 compile+16/28 checkpoint 20 步稳态 2.408s/it（-28.5%），但 31.55GB 仅实验用 |
-| [krea2_3080_speed_stage5.md](krea2_3080_speed_stage5.md) | Krea-2 速度阶段 5：RTX 3080 compile 20 步 12.06→12.65s 热漂移；纯 GEMM 84°C 复现，compile 主价值修正为显存余量 |
-| [krea2_3080_speed_stage6.md](krea2_3080_speed_stage6.md) | Krea-2 速度阶段 6：FP16 NF4 backward 虽快，但输入梯度 rel-L2 35.6%，REJECT，保留 BF16 强制契约 |
-| [krea2_3080_speed_stage7.md](krea2_3080_speed_stage7.md) | Krea-2 速度阶段 7：reduce-overhead CUDA Graph 与 checkpoint recompute 冲突，限制为 default Inductor mode |
-| [krea2_3080_speed_stage8.md](krea2_3080_speed_stage8.md) | Krea-2 速度阶段 8：rank16→8 可训参数减半但步时持平、仅省 145MB，不作为速度建议 |
-| [krea2_3080_speed_stage9.md](krea2_3080_speed_stage9.md) | Krea-2 速度阶段 9：24 buckets 折叠为 4608/4864 两张可复用 compile 图，默认开启 fixed resident compile |
-| [krea2_3080_speed_stage10.md](krea2_3080_speed_stage10.md) | Krea-2 速度阶段 10：compile 与 LoRA+optimizer checkpoint round-trip delta=0，reload 后 2.73s 无重编译续训 |
-| [krea2_3080_speed_stage11.md](krea2_3080_speed_stage11.md) | Krea-2 速度阶段 11：compile 融合 mul/copy/add 并减少 dequant；GEMM+attention 不变且占 compiled 约 89% |
-| [krea2_3080_speed_stage12.md](krea2_3080_speed_stage12.md) | Krea-2 速度阶段 12：packed varlen FlashAttention 在 PG199 快 11-13%，3080 长稳态快 4%；现为显式 opt-in 生产后端 |
+| [krea2_3080_speed_stage_summary.md](krea2_3080_speed_stage_summary.md) | Krea-2 3080/PG199 速度优化 12 阶段汇总：瓶颈定位（硬件大矩阵 3.6x）、compile `-19.1%`、选择性 checkpoint 仅 PG199 可行、FP16/Inductor mode/降 rank 三项否决、mm+attention 占墙钟 89% 的天花板、Flash varlen 显式 opt-in；逐阶段原文已归档 |
 | [krea2_3080_speed_final.md](krea2_3080_speed_final.md) | Krea-2 RTX 3080 速度研究最终审计：根因、生产建议、可选后端、否决路径与证据边界总表 |
 | [krea2_3080_speed_comparison_extended.md](krea2_3080_speed_comparison_extended.md) | Krea-2 PG199/RTX 3080 扩展速度矩阵：step、it/min、显存、冷/热稳态、swap、checkpoint、compile 与 Flash 对比 |
 | [anima_perband_dynamic_seq_20260830.md](anima_perband_dynamic_seq_20260830.md) | Anima per-band dynamic-seq 移植、64GB CMP 170HX 60-step union/per-band A/B 与默认关闭结论 |
@@ -203,7 +198,6 @@
 | [channel_stats_content_independence.md](channel_stats_content_independence.md) | channel stats 与 content independence 分析 |
 | [asymflow_parameterization.md](asymflow_parameterization.md) | Anima velocity / sigma 参数化记录 |
 | [l2p_pixel_transfer.md](l2p_pixel_transfer.md) | L2P pixel transfer 调研 |
-| [fasterdit_signal_densification_plan.md](fasterdit_signal_densification_plan.md) | FasterDiT signal densification 计划 |
 | [krea2_raw_migration_stage0_findings.md](krea2_raw_migration_stage0_findings.md) | Krea-2-Raw 迁移阶段 0：R1/R2/R4/R8 定论 + VAE 互逆基准 + DiT key 清单 |
 | [krea2_raw_migration_stage1_findings.md](krea2_raw_migration_stage1_findings.md) | Krea-2-Raw 迁移阶段 1：Qwen3-VL 文本链路 + 12 层 MFA + R1 padding 契约 (mask 屏蔽非 zero-sink) |
 | [krea2_raw_migration_stage2_findings.md](krea2_raw_migration_stage2_findings.md) | Krea-2-Raw 迁移阶段 2：DiT 本体移植 + 加载器 + 单 latent forward 基准 |
@@ -211,6 +205,7 @@
 | [krea2_raw_migration_stage4_findings.md](krea2_raw_migration_stage4_findings.md) | Krea-2-Raw 迁移阶段 4：训练串通 + forward_for_loss 承重接口 + 单 prompt 过拟合 loss 下降 |
 | [krea2_raw_migration_stage5_findings.md](krea2_raw_migration_stage5_findings.md) | Krea-2-Raw 迁移阶段 5：推理串通 + flow-matching Euler ODE + mu shift + CFG 采样 + VAE decode 出图 |
 | [krea2_raw_migration_stage6_findings.md](krea2_raw_migration_stage6_findings.md) | Krea-2-Raw 迁移阶段 6：块交换 (ModelOffloader 复用) + 检查点 save/load round-trip + 256×256 净负发现 |
+| [gsq_rco_quant_research_20261026.md](gsq_rco_quant_research_20261026.md) | 静态研究记录：arXiv 2411.17525 实为 Linearity Theorem/HIGGS 而非 "GSQ-RCO"（GSQ=2604.18556、RCO=2605.00649 另属两篇，本仓零实现）、可迁移组件拆解、量化×CNS×交互项 2×2 归因框架与 CNS 归因矩阵、Q0–Q5 判定（Q0/Q3/Q5 后半不成立，Q1/Q2 部分成立，Q4/Q5 前半无实测路径）、引用禁用口径清单与最小实测计划（未执行） |
 
 ## Agent Audit 2026-06-22
 

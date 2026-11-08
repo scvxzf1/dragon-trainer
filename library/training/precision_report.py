@@ -206,12 +206,90 @@ class PrecisionReport:
             # ``skipped`` lets the no-scaler gradient guard report a dropped update
             # the same way a GradScaler skip is reported. Known limitation: this
             # bucket merges both causes (scaler overflow vs guard skip), so the
-            # report cannot tell them apart yet.
+            # report cannot tell them apart. Use ``update_accounting`` below for the
+            # authoritative per-attempt view.
             if skipped is None:
                 skipped = bool(state.accelerator.optimizer_step_was_skipped)
             updates["skipped" if skipped else "effective"] += 1
         else:
             updates["attempted"] += 1
+
+    def transaction_accounting(self, state):
+        """Publish the window-transaction counters (R5) next to the legacy counters.
+
+        Legacy keys are **kept exactly as the baseline produced them** (contract C3):
+        ``attempted`` / ``effective`` / ``skipped`` still count the *commit* path only,
+        so on the epoch-loop route ``attempted == effective == windows.committed`` and
+        ``skipped`` is structurally 0 (a rejected update never reaches the commit path).
+        New keys (``step_attempts`` and the attribution layers) carry the authoritative
+        per-boundary view; the ``scope`` string says which is which.
+
+        Scopes (contract R5.4 / C8.2): these counters are **local** to this process, the
+        artifact is written by the **main rank** only, ``step_attempts`` / ``windows.*``
+        cover the **window route** only (``_run_step`` direct callers are counted in
+        ``direct_route_boundaries``), and the verdict / apply-drop decisions are
+        **world-wide** only while the rank consensus is active.
+        """
+        from library.training import numerical_observation, window_coordination
+
+        self.state = state
+        snapshot = window_coordination.snapshot(state)
+        updates = self.data["updates"]
+        updates["scope"] = (
+            "local process counters; LEGACY attempted/effective/skipped count the commit "
+            "path only (epoch-loop route: attempted == effective == windows.committed, "
+            "skipped structurally 0); see step_attempts and attribution.* for every "
+            "optimizer boundary attempt including replays and discarded windows"
+        )
+        updates["legacy_keys_note"] = (
+            "attempted/effective/skipped keep baseline semantics (commit path only); "
+            "they must not be read as the attempt total"
+        )
+        updates["step_attempts"] = snapshot["step_attempts"]
+        updates["dropped_by_scaler_or_guard"] = snapshot["updates_skipped"]
+        updates["skipped_by_scaler"] = snapshot["updates_skipped_by_scaler"]
+        updates["dropped_without_scaler"] = snapshot["updates_dropped_without_scaler"]
+        updates["dropped_with_scaler"] = snapshot["updates_dropped_with_scaler"]
+        updates["direct_route_boundaries"] = snapshot["direct_route_boundaries"]
+        updates["windows"] = {
+            "committed": snapshot["windows_committed"],
+            "replayed": snapshot["window_replays"],
+            "discarded": snapshot["windows_discarded"],
+            "consecutive_discards": snapshot["window_consecutive_discards"],
+            "attempts": snapshot["window_attempts"],
+        }
+        updates["discard_causes"] = snapshot["window_discard_causes"]
+        # Three attribution layers, kept apart on purpose (contract C4): an originating
+        # cause is never inferred from the reduced world label, and a propagated drop is
+        # never folded into an originating bucket.
+        updates["attribution"] = {
+            "L1_originating_causes": snapshot["originating_causes"],
+            "L2_propagated_drops": snapshot["propagated_drops"],
+            "L2_propagated_window_discards": snapshot["window_discard_propagated"],
+            "L3_boundary_decisions": snapshot["world_decisions"],
+            "L3_window_decisions": snapshot["window_world_decisions"],
+            "note": "wire codes used for the reduction are a format convention, not a "
+                    "severity ranking; L1 is built from local evidence only",
+        }
+        updates["scope_detail"] = {
+            "counters": "local (per process)",
+            "artifact": "main rank only",
+            "window_counters": "window route only; _run_step direct callers counted in "
+                               "direct_route_boundaries",
+            "world_decision": "world-wide while the multi-rank consensus is active; local "
+                              "for a single process",
+            # Only genuinely uncovered paths stay here. "async bad window" and "native DDP
+            # reducer" moved to the covered side: both are exercised on real devices by
+            # tests/test_fp16_transaction_cuda.py (M18 bad-window 档, M17 accelerate DDP).
+            # The two-rank combination gate (M19-R2 ⑥) is asserted there as well, but only
+            # under the CUDA opt-in — a default CPU run still cannot claim it.
+            "unverified_paths": ">2 ranks, mid-window zero_grad world consistency, "
+                                "two-rank combination gate (M19-R2 ⑥) outside the CUDA "
+                                "opt-in run",
+            "write_cadence": "published on transaction boundaries only; no per-step "
+                             "artifact writes",
+        }
+        self.data["nonfinite_observations"] = numerical_observation.snapshot()
 
     def finish(self, status, exc=None):
         self.data.update(status=status, end_time=_now())

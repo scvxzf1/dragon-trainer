@@ -3,7 +3,11 @@
 日期：2026-10-21（CPU 静态面）；2026-11-06 补记 CUDA 热测（见「CUDA 热测补记」）。状态：CPU 静态回归完成，E2 与 E5/D1 已在真实 CUDA 复现；H3–H7 仍待热测。
 范围：CPU 可判定面（真 `torch.amp.GradScaler("cpu")`）加 2026-11-06 两张 V100 的合成张量热测；不含真实 trainer / 模型族 / 数据链路、跨 rank 归约与长程收敛。
 基线：`codex/fp16-nan-guards` @ 69fed4a0（CPU 静态面）、@ dfae1a4d（2026-11-06 CUDA 补记）；`library/`、`networks/` 相对 11b7bef5 无 diff，本文所有 library 行号沿用 t1 在 11b7bef5 的冻结值。
-证据：`tests/test_fp16_nan_static_equivalence.py`（1086 行、24 用例、22 passed + 2 xfailed）；数字来源已落盘为 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；P1–P9 对照表见 `bench/fp16_precision/README.md`），P1–P9 编号对应其输出；CUDA 合成探针为 `bench/fp16_precision/run_cuda_probe.py`（H1/H2/H8，需真 CUDA），E2 与 E5/D1 的生产接缝复现见「CUDA 热测补记」；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。
+**当前基线（2026-11-07，`a615a9e0` = `origin/dev`）**：13 个相关测试文件 **223 passed / 0 xfailed**，
+E3 窗口记账与 E5 所有权判定的规格用例均已转正。本文中其它测试数字是**各日期的历史快照**
+（按写作当天 HEAD 记录），以本节与文末「strict xfail 已清零」为准；引用时请用 223/0。
+
+证据：`tests/test_fp16_nan_static_equivalence.py`（1161 行、24 用例、24 passed / 0 xfailed，2026-11-07 实测）；数字来源已落盘为 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；P1–P9 对照表见 `bench/fp16_precision/README.md`），P1–P9 编号对应其输出；CUDA 合成探针为 `bench/fp16_precision/run_cuda_probe.py`（H1/H2/H8，需真 CUDA），E2 与 E5/D1 的生产接缝复现见「CUDA 热测补记」；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。
 相关代码：`library/training/loop.py`、`library/training/finite_checks.py`、`library/runtime/accelerator.py`、`library/training/precision_report.py`。
 
 ## 结论
@@ -83,14 +87,14 @@
   「游标 `global_step == completed_steps + 1`」两者之一；③ online 跳步消息保留了
   `requires finite, completed optimizer updates` 短语，既有正则断言不再失配；
   ④ 进入优化器块前清空 `state.update_skipped`，异常路径不会读到陈旧值。
-  当前相关套件合计 **190 passed + 1 xfailed**（唯一 xfail 仍为 E3 规格）。
+  当时（2026-11-06）相关套件合计 190 passed + 1 xfailed（当时唯一 xfail 是 E3 规格；E3 已于 2026-11-07 实现并转正，见文末「E3 窗口记账：已实现」）。
 - **probe 采样器限制**：AUTO probe 用固定采样器，被容忍的跳步不会延长采样长度，因此
   「预算 > 0」在该探针里只能推迟报错、不能真正补采有效样本；这一点在预算语义里已注明。
 - **R2/R3 收尾（2026-11-06）**：`commit()` 在测量计数与游标一致时自检
   `attempted == effective + skipped == global_step`，避免写出恢复阶段会被
   `resume_checkpoint._counters` 拒绝的快照；新增 loop 级端到端用例（预算 2、真实
   `_run_epoch_steps`）确认「跳步被容忍 → scheduler 与游标照常推进 → 照常 commit →
-  `finish()` 因有效步数不足报 `nonfinite_skip`」。相关套件 191 passed + 1 xfailed。
+  `finish()` 因有效步数不足报 `nonfinite_skip`」。当时相关套件 191 passed + 1 xfailed。
 - **已知残留（low，未改）**：`training_state.save_training_state` 保存失败后残留
   `.state-XXXXXXXX.partial`，同一步重试会抛 `FileExistsError` 掩盖真实原因（先于本批
   变更存在，落盘失败本就终止 trial）。
@@ -153,10 +157,11 @@ P9 实测（CPU 探针）：
 ```bash
 CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
   tests/test_fp16_nan_static_equivalence.py -q
-# 22 passed, 2 xfailed in 11.7s（exit 0；两次运行 11.42s / 11.68s）
+# 2026-10-21 历史快照：22 passed, 2 xfailed in 11.7s（exit 0；两次运行 11.42s / 11.68s）
+# 2026-11-07 当前：24 passed, 0 xfailed in 8.5s
 ```
 
-### 用例清单（24 用例：22 passed + 2 xfailed）
+### 用例清单（24 用例；2026-10-21 快照为 22 passed + 2 xfailed，E3/E5 规格转正后为 24 passed）
 
 | 类 / 用例组 | 数量 | 覆盖 | 结果 |
 |---|---|---|---|
@@ -164,7 +169,7 @@ CUDA_VISIBLE_DEVICES='' timeout 120 .venv/bin/python -m pytest \
 | `TestE1ComparatorMeta` | 2 | 比较器元测试：`torch.equal` 漏判 -0.0/+0.0、NaN payload 区分 | passed |
 | `TestE1BitwiseInvariance` | 4 | 无 scaler 位级直通、scaled 精确 ×scale 负控制、unscale 后与参考逐位相同、已知范数 2.0 vs 16.0 | passed |
 | `TestE2SkipSemanticSplit` | 4 | executed≠applied、溢出步 clip 返回 inf、A 侧仅计数语义、attempted/effective/skipped 三计数 | passed |
-| `TestE5ScalerOwnershipGap` | 4 | 缺口钉（全仓 0 处 scaler_owned）、所有权成对断言（有/无 scaler）、D1 复现 | 3 passed + **1 xfailed（规格未实现）** |
+| `TestE5ScalerOwnershipGap` | 4 | 缺口钉、所有权成对断言（有/无 scaler）、D1 复现 | **4 passed（规格已转正）** |
 | `TestE3WindowAccountingGap` | 5 | debug 钩子仍 fail-fast、窗口层无条件 loss 检查、窗口账本能力断言、E2/E3 边界、**8 观测点完整规格（真实驱动最小 loop）** | **5 passed（规格已转正）** |
 | `TestAccelerateInternalContract` | 1 | accelerate 1.13.0 canary（版本/属性/unscale 门双向语义） | passed |
 | 模块级 `test_patch_accelerator_for_fp16_training_allows_fp16_unscale` | 1 | A 的 `_unscale_grads_` 补丁使 fp16 参数档可 unscale | passed |
@@ -377,7 +382,7 @@ A 侧仍无命名双语义：`optimizer_step_executed` / `optimizer_update_appli
 - **CPU 与 CUDA 两个面必须分开引用**：正文 P1–P9 与 24 用例均为 CPU 可判定面；2026-11-06 的 CUDA 结论（E2 复现、E5/D1 复现、H1/H2/H8 探针）只覆盖合成张量，**不含**真实 trainer / 模型族 / 数据链路、跨 rank 归约与长程收敛，见 H3–H7。
 - **实测 torch 版本为 2.10.0+cu129**：`pyproject` 要求 `torch>=2.12.0,<2.13`，CPU 面原记录 2.12.0+cu130。接缝依赖的 accelerate 内部面（1.13.0）一致，但严格对齐需在 2.12 环境复跑 `bench/fp16_precision/run_cuda_probe.py` 与静态套件。
 - **数字来源**：P1–P9 来自 `bench/fp16_precision/run_probe.py`（CPU-only，可离线重跑；对照表见 `bench/fp16_precision/README.md`），是 CPU 探针而非真机；`/tmp/t9_fp16_static/probe_output.txt` 仅本轮临时产物，不可长期引用。P4 是依赖 `scale=65536` 的比值，P8 是权重增量，两者不混用。不要把 CPU 探针数字外推到其它卡或其它 scale。
-- **探针不参与测试套件**：`bench/fp16_precision/run_probe.py` 只再生 P1–P9 读数，不是门禁；契约回归仍在 `tests/test_fp16_nan_static_equivalence.py`（24 用例，22 passed + 2 xfailed）。
+- **探针不参与测试套件**：`bench/fp16_precision/run_probe.py` 只再生 P1–P9 读数，不是门禁；契约回归仍在 `tests/test_fp16_nan_static_equivalence.py`（24 用例，24 passed / 0 xfailed）。
 - **E1 子谓词 (d) 未完全断言**：只覆盖「不创建 scaler」与 loss 的对象/存储身份；`requires_grad`/`grad` 集合与 `stride`/`dtype`/`device` 不变**未断言**，不得计入已验证面。
 - **测试绑定 accelerate 1.13.0**：依赖三个内部面（`native_amp`、`AcceleratorState._mixed_precision`、`step_was_skipped`）；升级 accelerate 时 canary 会失败，必须重新核对内部面后再采信。
 - **夹具与生产的差异**：真实 `Accelerator` + 真实 `GradScaler("cpu")`，手工置 `native_amp=True`；模型不进 `prepare`；进程级单例保存-恢复。差异只有「设备是 CPU」与「标志位需手工置位」，但仍是差异。

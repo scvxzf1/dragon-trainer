@@ -36,7 +36,7 @@ WebUI 入口也已同步：
 - `web/static/js/config/catalog/form-layout.js`
 - `web/static/js/config/catalog/defaults.js`
 
-本报告已合并原 `anima_fp8_blockswap_transfer_ablation_plan.md` 的实验目标、固定条件和验收口径；旧计划文件可作为完成态阶段记录清理。
+本报告已合并原 `anima_fp8_blockswap_transfer_ablation_plan.md` 的实验目标、固定条件和验收口径；旧计划文件已归档到 `_archive/docs/findings/`。
 
 ## 已实现的实验开关
 

@@ -87,7 +87,7 @@ Requirements:
 
 ## Tier 3 — new model-family support
 
-The [family registry](library/models/family_registry.py) defines the registered model families and capability boundaries. Adding a new model family is Tier 3 and requires maintainer agreement in an Issue before implementation. The existing Krea-2 path does not imply that every adapter or runtime feature is portable; see [`docs/multi_model_support.md`](docs/multi_model_support.md) for current support boundaries and [`docs/proposal/krea2_raw_migration.md`](docs/proposal/krea2_raw_migration.md) for migration background.
+The [family registry](library/models/family_registry.py) defines the registered model families and capability boundaries. Adding a new model family is Tier 3 and requires maintainer agreement in an Issue before implementation. The existing Krea-2 path does not imply that every adapter or runtime feature is portable; see [`docs/multi_model_support.md`](docs/multi_model_support.md) for current support boundaries and [`_archive/docs/proposal/krea2_raw_migration.md`](_archive/docs/proposal/krea2_raw_migration.md) for migration background.
 
 Fixes and documented capability extensions for an existing family use Tier 1, 1.5, or 2 according to their actual behavioral and numerical impact. A new family proposal must define its training and inference boundary, cache and checkpoint compatibility, adapter support matrix, configuration/WebUI surface, reproducible validation, and explicit refusals for unsupported features.
 

@@ -7,7 +7,7 @@
 - `bash scripts/krea2/run_nf4_ablation.sh`（NF4 × {完整检查点, 块交换} 5 格消融矩阵，已过；`SMOKE=1` 冒烟）
 - `.venv/bin/python scripts/krea2/probe_nf4_ablation_1024.py`（3080 1024 swap 维度步进曲线测绘，已过；OOM 自动 +4 逼近临界、过点 +2 细扫）
 相关代码：`library/runtime/offloading.py`、`library/runtime/block_swap_masters.py`、`library/models/krea2_raw/quantize.py`、`library/models/krea2_raw/weights.py`、`library/training/compat_matrix.py`、`library/training/model_loading.py`、`library/training/cli_args.py`、`scripts/krea2/probe_nf4_ablation.py`、`scripts/krea2/probe_nf4_ablation_1024.py`、`scripts/krea2/run_nf4_ablation.sh`
-相关 findings：[krea2_nf4_ablation_findings.md](../findings/krea2_nf4_ablation_findings.md)（5 格六维消融矩阵：显存/内存/速度/loss/数学实现/数学偏移）
+相关 findings：[krea2_nf4_ablation_findings.md](../../../docs/findings/krea2_nf4_ablation_findings.md)（5 格六维消融矩阵：显存/内存/速度/loss/数学实现/数学偏移）
 
 # NF4 × block swap 落地方案
 
@@ -200,7 +200,7 @@ swap=24 兼顾安全余量与速度。
 > 噪声级），H2D 完全藏在 NF4 反量化窗口；理论上界 4 块 ~1.4GB ÷ 20GB/s ≈ 70ms =
 > 整步 2%。方向 B 重叠收益上界 2%，不值得其实现风险。落地前提 2「H2D 串行占
 > 显著比例」**不成立**。详见
-> [krea2_nf4_h2d_bottleneck_findings.md](../findings/krea2_nf4_h2d_bottleneck_findings.md)。
+> [krea2_nf4_h2d_bottleneck_findings.md](../../../docs/findings/krea2_nf4_h2d_bottleneck_findings.md)。
 > 8 字段清单 + bnb 契约保留在此段，供未来大分辨率（>1024）或带宽受限场景复用。
 
 ### 数学模型
@@ -267,7 +267,7 @@ B 的 per-slot stream 能把 H2D（0.96GB/步 ÷ 20GB/s ≈ 48ms）藏在反量�
 `scripts/krea2/probe_nf4_ablation.py` + `run_nf4_ablation.sh` 跑 5 格消融矩阵
 （PG199 32GB, 1024×1024, 30 步, LoRA dim=16），六维指标全记录到
 `docs/findings/krea2_nf4_ablation.jsonl`。完整矩阵表 + 判断见
-[krea2_nf4_ablation_findings.md](../findings/krea2_nf4_ablation_findings.md)。
+[krea2_nf4_ablation_findings.md](../../../docs/findings/krea2_nf4_ablation_findings.md)。
 
 核心结论：
 

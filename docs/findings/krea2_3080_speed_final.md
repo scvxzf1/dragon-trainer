@@ -1,6 +1,6 @@
 状态：长期速度研究完成审计
 日期：2026-08-09
-覆盖：`krea2_3080_speed_stage1.md` 至 `stage12.md`
+覆盖：阶段 1-12 汇总见 [krea2_3080_speed_stage_summary.md](krea2_3080_speed_stage_summary.md)，逐阶段原文已归档到 `_archive/docs/findings/`
 扩展矩阵：[krea2_3080_speed_comparison_extended.md](krea2_3080_speed_comparison_extended.md)
 
 # Krea-2 RTX 3080 约 12s/it 最终结论

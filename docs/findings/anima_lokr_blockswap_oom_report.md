@@ -481,7 +481,7 @@ FP8 量化统计：`fp8_relative_l2_by_block` 最大约 `0.083`，未见 saturat
 
 ## 2026-06-05 next-goal 收口
 
-原 `anima_lokr_16g_next_goal.md` 的活跃目标已经由上述 allocator / blocks / FP8 追加消融收口。该目标的约束保持不变：
+原 `anima_lokr_16g_next_goal.md`（已归档到 `_archive/docs/findings/`）的活跃目标已经由上述 allocator / blocks / FP8 追加消融收口。该目标的约束保持不变：
 
 - `torch_compile = true`
 - 不修改 attention backend，继续使用 `attn_mode = "flash"`

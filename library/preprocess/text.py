@@ -23,6 +23,7 @@ from library.preprocess.captions import CaptionSource, read_caption_source
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 from library.preprocess.adaptive_batch import AutoBatcher, batch_size_arg, iter_batches
+from library.training import numerical_observation
 from library.training.prior_preservation import build_diff_output_prior_caption
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,101 @@ def _caption_variants_for_cache(
     return generate_caption_variants(caption, num_variants, tag_dropout_rate)
 
 
+def _nonfinite_summary(tensor: torch.Tensor) -> dict[str, int]:
+    """``{nan, inf, nonfinite, elements}`` of ``tensor`` in one host sync."""
+    nan, inf = torch.stack(
+        [torch.count_nonzero(torch.isnan(tensor)), torch.count_nonzero(torch.isinf(tensor))]
+    ).tolist()
+    return {
+        "nan": int(nan),
+        "inf": int(inf),
+        "nonfinite": int(nan) + int(inf),
+        "elements": int(tensor.numel()),
+    }
+
+
+def _report_cast_numeric(name: str, source: torch.Tensor, stored: torch.Tensor, dtype) -> None:
+    """Count a text-cache tensor's non-finite values, split by cause.
+
+    Two layers that used to be indistinguishable from the outside: values that were
+    already non-finite *before* the storage cast (upstream encoder result: NaN or
+    ±Inf) and values the cast itself turned non-finite (narrowing overflow — a finite
+    source that does not fit the storage dtype). Observation only: the sidecar is
+    still written exactly as before (a rejection policy is a separate user decision,
+    not implemented here).
+    """
+    stored_summary = _nonfinite_summary(stored)
+    if not stored_summary["nonfinite"]:
+        return
+    source_summary = _nonfinite_summary(source)
+    site = f"preprocess.text.{name}"
+    common = {
+        "elements": stored_summary["elements"],
+        "before_dtype": source.dtype,
+        "after_dtype": dtype,
+        "shape": tuple(stored.shape),
+        "identity": name,
+    }
+    if source_summary["nan"]:
+        numerical_observation.record(
+            site,
+            numerical_observation.KIND_SOURCE_NAN,
+            nonfinite=source_summary["nan"],
+            **common,
+        )
+    if source_summary["inf"]:
+        numerical_observation.record(
+            site,
+            numerical_observation.KIND_SOURCE_INF,
+            nonfinite=source_summary["inf"],
+            **common,
+        )
+    introduced = stored_summary["nonfinite"] - source_summary["nonfinite"]
+    if introduced > 0:
+        numerical_observation.record(
+            site,
+            numerical_observation.KIND_CAST_OVERFLOW,
+            nonfinite=introduced,
+            detail="finite before the storage cast",
+            **common,
+        )
+
+
+def _note_sidecar_numeric(cache_path: Path, payload: dict) -> None:
+    """Count non-finite float tensors in one cache payload, with sidecar identity.
+
+    Identity (the sidecar path) is what the earlier "no message at all" gap left out:
+    without it a corrupt sidecar cannot be traced back to an image. Nothing is
+    rejected or rewritten here — the established write policy is unchanged.
+    """
+    problems: dict[str, str] = {}
+    for name, value in payload.items():
+        if not (isinstance(value, torch.Tensor) and value.is_floating_point()):
+            continue
+        summary = _nonfinite_summary(value)
+        if not summary["nonfinite"]:
+            continue
+        problems[name] = f"{summary['nonfinite']}/{summary['elements']}"
+        site = f"preprocess.text.sidecar.{name}"
+        common = {
+            "elements": summary["elements"],
+            "before_dtype": value.dtype,
+            "after_dtype": value.dtype,
+            "shape": tuple(value.shape),
+            "identity": str(cache_path),
+        }
+        if summary["nan"]:
+            numerical_observation.record(
+                site, numerical_observation.KIND_SOURCE_NAN, nonfinite=summary["nan"], **common
+            )
+        if summary["inf"]:
+            numerical_observation.record(
+                site, numerical_observation.KIND_SOURCE_INF, nonfinite=summary["inf"], **common
+            )
+    if problems:
+        logger.debug("text cache sidecar %s carries non-finite tensors %s", cache_path, problems)
+
+
 def _encode_batch(
     captions: list[str],
     tokenize_strategy,
@@ -115,10 +211,16 @@ def _encode_batch(
                 source_attention_mask=attn_mask,
             )
             crossattn_emb[~t5_attn_mask.to(device).bool()] = 0
-            crossattn_emb = crossattn_emb.to(dtype=cache_dtype).cpu()
+            crossattn_stored = crossattn_emb.to(dtype=cache_dtype)
+            _report_cast_numeric(
+                "crossattn_emb", crossattn_emb, crossattn_stored, cache_dtype
+            )
+            crossattn_emb = crossattn_stored.cpu()
 
+    prompt_stored = prompt_embeds.to(dtype=cache_dtype)
+    _report_cast_numeric("prompt_embeds", prompt_embeds, prompt_stored, cache_dtype)
     return (
-        prompt_embeds.to(dtype=cache_dtype).cpu(),
+        prompt_stored.cpu(),
         attn_mask.to(dtype=torch.int32).cpu(),
         t5_input_ids.to(dtype=torch.long).cpu(),
         t5_attn_mask.to(dtype=torch.int32).cpu(),
@@ -342,6 +444,7 @@ def cache_text_embeddings(
                     save_dict["crossattn_emb"] = crossattn_emb[i]
                 if prior_crossattn_emb is not None:
                     save_dict["prior_crossattn_emb"] = prior_crossattn_emb[i]
+                _note_sidecar_numeric(cache_path, save_dict)
                 save_file(save_dict, str(cache_path), metadata=cache_metadata)
                 stats.written += 1
                 if progress is not None:
@@ -390,6 +493,7 @@ def cache_text_embeddings(
                         save_dict[f"crossattn_emb_v{vi}"] = crossattn_emb[flat_idx]
                     if prior_crossattn_emb is not None:
                         save_dict[f"prior_crossattn_emb_v{vi}"] = prior_crossattn_emb[flat_idx]
+                _note_sidecar_numeric(cache_path, save_dict)
                 save_file(save_dict, str(cache_path), metadata=cache_metadata)
                 offset += variant_count
                 stats.written += 1

@@ -7,9 +7,9 @@
 - 核对基线：`dev`，HEAD `2e96bd0ce3a7c2803d542e5b0b7dfeac77369d8b`，含大量未提交改动，不是线上纯净快照
 
 > 2026-10-04 文档状态说明：Next 已成为唯一前端入口，Classic / Dragon 旧 UI 的
-> P0–P5 退役和生产只读验收已于 2026-09-30 完成，见 [退役记录](../../_archive/docs/proposal/legacy_ui_retirement_plan.md)。
+> P0–P5 退役和生产只读验收已于 2026-09-30 完成，见 [退役记录](legacy_ui_retirement_plan.md)。
 > 本文中的“默认切换待批准”和保留旧入口属于原重建阶段的决策快照；
-> 当前开发、部署与恢复入口以 [前端 README](../../web/frontend-next/README.md) 为准。
+> 当前开发、部署与恢复入口以 [前端 README](../../../web/frontend-next/README.md) 为准。
 
 ## 1. 决策摘要
 
@@ -31,7 +31,7 @@
 
 “从头构建”指新交互和新组件体系，不指删除已经验证的业务规则、配置字段或用户文件。
 本文保留设计决策与门禁；实施状态见第 8.3 节及
-[实施与验收记录](../features/dragon-next-implementation.md)。构建前端不等于批准启动真实训练或切换默认入口。
+[实施与验收记录](../../../docs/features/dragon-next-implementation.md)。构建前端不等于批准启动真实训练或切换默认入口。
 
 ## 2. 目标与非目标
 
@@ -55,7 +55,7 @@
 
 ## 3. 当前工程事实与处理方式
 
-以 [功能图谱](../features/dragon-ui-functional-map.md) 为业务清单起点，再以实时源码核对。
+以 [功能图谱](../../../docs/features/dragon-ui-functional-map.md) 为业务清单起点，再以实时源码核对。
 图谱采集于 2026-09-08，旧专题文档与当前实现可能存在差异，不能将旧描述直接当作新版本规格。
 
 | 已核对的事实 | 本计划处理方式 |
@@ -219,7 +219,7 @@ Query key 至少区分资源类型、资源标识、配置上下文和运行覆�
 
 四阶段保留为 `输入准备 -> 方法配置 -> 训练计划 -> 资源与预检`，它们是导航定位而不是强制下一步向导。
 不重新引入“新人/专家等级”决定能力；当前字段全集由实时目录生成，不硬编码 215、218 或其他历史数量。
-参考 [渐进披露提案](dragon_config_progressive_disclosure.md) 的数据保留约束，遇到能力陈述冲突以实时后端与定向测试为准。
+参考 [渐进披露提案](../../../docs/proposal/dragon_config_progressive_disclosure.md) 的数据保留约束，遇到能力陈述冲突以实时后端与定向测试为准。
 
 ### 6.3 有副作用动作
 
@@ -463,16 +463,16 @@ timeout 60 .venv/bin/python -m pytest tests/test_documentation_integrity.py -q
 
 | 主题 | 文件与符号 |
 | --- | --- |
-| 功能清单 | [Dragon UI 功能图谱](../features/dragon-ui-functional-map.md) |
-| 旧界面与回退（历史） | [Dragon UI 指南](../features/dragon-ui.md)、旧 `ui-bootstrap.js`（已退役源码定位，仅供历史对照） |
+| 功能清单 | [Dragon UI 功能图谱](../../../docs/features/dragon-ui-functional-map.md) |
+| 旧界面与回退（历史） | [Dragon UI 指南](../../../docs/features/dragon-ui.md)、旧 `ui-bootstrap.js`（已退役源码定位，仅供历史对照） |
 | 现有 React 工程 | [package.json](../../web/frontend-next/package.json)、[vite.config.ts](../../web/frontend-next/vite.config.ts)、[router.tsx](../../web/frontend-next/src/app/router.tsx) |
 | 静态入口与认证 | [server.py](../../web/server.py)，`next_index_handler`、`static_handler` |
 | 配置/数据接口 | [config.py](../../web/routes/config.py)，raw、dataset-presets、apply、file-groups |
 | 训练与实时接口 | [training.py](../../web/routes/training.py)、[useWebSocket.ts](../../web/frontend-next/src/app/useWebSocket.ts) |
 | 打标接口 | [tagging.py](../../web/routes/tagging.py)，canonical `/api/captioning` 与兼容 alias |
-| 字段披露与保留 | [渐进披露提案](dragon_config_progressive_disclosure.md) |
-| 多模型边界 | [多模型说明](../multi_model_support.md)、[family_registry.py](../../library/models/family_registry.py) |
-| 维护质量 | [前端健康度评分卡](../features/frontend-health-scorecard.md)、[文档完整性测试](../../tests/test_documentation_integrity.py) |
+| 字段披露与保留 | [渐进披露提案](../../../docs/proposal/dragon_config_progressive_disclosure.md) |
+| 多模型边界 | [多模型说明](../../../docs/multi_model_support.md)、[family_registry.py](../../library/models/family_registry.py) |
+| 维护质量 | [前端健康度评分卡](../../../docs/features/frontend-health-scorecard.md)、[文档完整性测试](../../tests/test_documentation_integrity.py) |
 
 实施记录使用独立阶段日志，包含日期、基线、已完成功能、未完成缺口、测试与截图位置。
 本计划只维护决策和阶段状态，不持续堆积运行日志；阶段完成时同步功能说明和相应索引。

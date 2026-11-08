@@ -21,7 +21,7 @@
 | 查阅新前端实施记录 | [Dragon Next 实施记录](features/dragon-next-implementation.md) |
 | 为数据集手动绘制训练蒙版 | [手动蒙版编辑器](features/manual-mask-editor.md) |
 | 查阅 Next 视觉与工作流修复的阶段记录 | [Next UI/UX 实施记录](features/dragon-next-uiux-progress.md) |
-| 审计并推进 WebUI 后端整改 | [后端审计后续计划](superpowers/plans/2026-09-13-webui-backend-audit-followup.md) |
+| 审计并推进 WebUI 后端整改 | [后端审计后续计划（已归档）](../_archive/docs/superpowers/plans/2026-09-13-webui-backend-audit-followup.md) |
 | 参考前端审阅方法和历史评分 | [前端健康度评分卡](features/frontend-health-scorecard.md) |
 | 查稳定方法 | [方法索引](methods/README.md) |
 | 查可运行实验 | [实验索引](experimental/README.md) |
@@ -32,7 +32,7 @@
 | 查实验结论、失败路径和审计 | [研究结论索引](findings/README.md) |
 | 复查 MOSS 热测试与作废尝试 | [CMP 50HX 热测试复盘（含尸体记录）](findings/moss_image_tier_hot_50hx_20261018.md) |
 | 准备 MOSS-Image 真实训练 | [MOSS 训练前置清单](configuration/moss-image-training-preflight.md)、[MOSS 配置说明](configuration/moss-image.md) |
-| 评估活跃提案或维护计划 | [提案索引](proposal/README.md)、[施工区索引](superpowers/README.md) |
+| 评估活跃提案或维护计划 | [提案索引](proposal/README.md)、[施工区归档索引](../_archive/docs/superpowers/README.md) |
 | 准备贡献或认领待办 | [PR 规范](../CONTRIBUTING.md)、[贡献优先事项](contribution-priorities.md) |
 | 查归档材料 | [归档索引](archive-index.md) |
 
@@ -49,7 +49,7 @@
 | [findings/](findings/README.md) | 实验结果、失败路径、审计和运行报告 |
 | [optimizations/](optimizations/README.md) | compile、kernel、显存和性能优化 |
 | [proposal/](proposal/README.md) | 活跃或半活跃提案 |
-| [superpowers/](superpowers/README.md) | 维护用 spec、plan、执行日志和明确标记的历史快照 |
+| [superpowers/（已归档）](../_archive/docs/superpowers/README.md) | 2026-07~09 维护期 spec、plan、执行日志和迭代协议；已整体归档 |
 
 每个分区的 `README.md` 负责列出该分区文档；本页只链接分区入口。
 
@@ -72,7 +72,7 @@
 - 可运行但边界未稳定的能力放在 `experimental/`，并在前 25 行标明状态和限制。
 - 实验结果、失败结论和审计证据保留在 `findings/`；它们不因结论过时而删除，但必须与当前说明区分。
 - 活跃设计放在 `proposal/`；完成、失效或只服务历史合并的材料通过 [归档索引](archive-index.md) 进入 `_archive/docs/`。
-- `superpowers/` 是维护施工区，不是用户主路径；完成后应链接到正式说明、findings 或归档材料。
+- `superpowers/` 的 2026-07~09 维护期材料已整体归档到 `_archive/docs/superpowers/`；新增维护施工材料如需复活该分区，应同时更新本页与 [归档索引](archive-index.md)。
 - 新增、移动或归档 Markdown 时，必须更新本页或对应分区索引，保证从本页可达。
 - 根 `README.md` 只保留项目介绍、部署快照和最高频入口；深入内容进入本树。
 

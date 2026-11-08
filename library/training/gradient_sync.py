@@ -59,6 +59,13 @@ class AsyncGradientSynchronizer:
         self._prior_grads: dict[int, torch.Tensor] = {}
         self._next_launch = 0
         self._comm_streams: dict[torch.device, torch.cuda.Stream] = {}
+        # Async lifecycle observability (M18): the baseline only ever counted the
+        # "finish" side, so an unmatched ``begin_step`` (early return / exception
+        # between the two) was invisible. Both sides are counted and the pending
+        # depth is exposed, which is what makes the pairing auditable.
+        self.begin_calls = 0
+        self.finish_calls = 0
+        self.steps_pending = 0
         self._register_hooks()
 
     def _make_buckets(self, bucket_bytes: int) -> list[list[torch.nn.Parameter]]:
@@ -100,7 +107,42 @@ class AsyncGradientSynchronizer:
             self._comm_streams[device] = stream
         return stream
 
+    @property
+    def lifecycle(self) -> dict[str, int]:
+        """Read-only async begin/finish accounting (pairing readability, not leak detection).
+
+        Wiring semantics (``loop.py::_run_microbatch`` / the sync boundary):
+
+        * ``begin_step()`` runs once per **micro-batch** → ``begin_calls`` +1;
+        * ``finish_step()`` runs once per **optimizer boundary** → ``finish_calls`` +1;
+        * ``steps_pending`` therefore settles at ``windows × (micro_batches − 1)`` when a run
+          finishes, e.g. 2 accumulation windows with 4 micro-batches each leave 6 pending.
+
+        It is ``0`` only when every window holds a single micro-batch (``grad_accum == 1``,
+        such as a one-shot window). A non-zero value here is **expected** for accumulation,
+        not a leak: the counter exists so the pairing between the two sides is readable
+        instead of being inferred from ``finish_calls`` alone (REPORT v2 F4). Use
+        :meth:`expected_pending` for the derived value rather than hard-coding it.
+        """
+        return {
+            "begin_calls": self.begin_calls,
+            "finish_calls": self.finish_calls,
+            "steps_pending": self.steps_pending,
+        }
+
+    @staticmethod
+    def expected_pending(windows: int, micro_batches: int) -> int:
+        """Read-only helper: the settled ``steps_pending`` for that many windows/micro-batches.
+
+        ``windows × (micro_batches − 1)`` under the production wiring (``begin_step`` per
+        micro-batch, ``finish_step`` per boundary). Purely derived — it changes no state and
+        is not used by the training path.
+        """
+        return max(0, int(windows)) * max(0, int(micro_batches) - 1)
+
     def begin_step(self) -> None:
+        self.begin_calls += 1
+        self.steps_pending += 1
         if int(getattr(self.accelerator, "num_processes", 1)) <= 1:
             self._active = None
             return
@@ -183,6 +225,8 @@ class AsyncGradientSynchronizer:
             self._next_launch += 1
 
     def finish_step(self) -> GradientSyncResult:
+        self.finish_calls += 1
+        self.steps_pending = max(0, self.steps_pending - 1)
         active = self._active
         if active is None:
             return GradientSyncResult()

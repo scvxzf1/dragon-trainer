@@ -3,8 +3,8 @@
 > **2026-08-31 当前状态说明：** 训练、标准单提示词推理、Web 模型配置、NF4、
 > compile/Flash 和 checkpoint 主链已经落地；本文保留迁移阶段的原始计划与历史状态，
 > 其中“推理 dispatch 待续”等阶段性描述不再代表当前代码。当前兼容边界、风险和测试缺口
-> 以 [`../multi_model_support.md`](../multi_model_support.md) 和
-> [`../findings/backend_multi_model_audit_20260810.md`](../findings/backend_multi_model_audit_20260810.md)
+> 以 [`../multi_model_support.md`](../../../docs/multi_model_support.md) 和
+> [`../findings/backend_multi_model_audit_20260810.md`](../../../docs/findings/backend_multi_model_audit_20260810.md)
 > 的后续加固记录为准。
 
 状态：历史迁移计划 / 核心阶段 0-6 已落地 / 待归档
@@ -16,18 +16,18 @@
 
 - 迁移目标 DiT：`library/anima/models.py`、`library/anima/weights.py`、`library/anima/strategy.py`
 - 训练前向路径（迁移最大阻塞点）：`library/training/noise_target.py`、`library/training/model_loading.py`、`library/training/trainer_network_mixin.py`
-- 梯度检查点（阶段 4 子设计）：`library/anima/models.py::UnslothOffloadedGradientCheckpointer`、`library/runtime/offloading.py`、`tests/test_compile_checkpoint_block_swap_hot.py`，落地背景见 [已归档设计](../../_archive/docs/proposal/krea2_raw_gradient_checkpointing.md)
+- 梯度检查点（阶段 4 子设计）：`library/anima/models.py::UnslothOffloadedGradientCheckpointer`、`library/runtime/offloading.py`、`tests/test_compile_checkpoint_block_swap_hot.py`，落地背景见 [已归档设计](krea2_raw_gradient_checkpointing.md)
 - 推理路径：`library/inference/generation.py`、`library/inference/models.py`、`library/inference/text.py`
 - LoRA 挂载与配置：`networks/lora_anima/network.py`、`networks/lora_anima/config.py`、`networks/attn_fuse.py`、`library/runtime/token_counts.py`、`library/io/cache.py`
 - 配置与下载：`configs/base.toml`、`scripts/tasks/downloads.py`、`scripts/tasks/_common.py`
 
 相关文档：
 
-- 当前多模型实现边界：[`../multi_model_support.md`](../multi_model_support.md)（本提案是
+- 当前多模型实现边界：[`../multi_model_support.md`](../../../docs/multi_model_support.md)（本提案是
   Krea-2-Raw 迁移的历史设计来源；最终实现采用静态 registry + 完整 handler dispatch，
   没有照搬本文拟议的动态 `ModelFamily` Protocol）
 - 提案索引：[`README.md`](README.md)
-- Anima 架构基线：[`../structure/anima.md`](../structure/anima.md)
+- Anima 架构基线：[`../structure/anima.md`](../../../docs/structure/anima.md)
 
 > **一句话：** Krea-2-Raw 与 Anima 在底层几何上同源（同一个 Qwen-Image VAE、16ch latent、5D 布局、patch=2），VAE/latent/cache/训练框架这大半套基建可平移；工程量集中在 **Qwen3-VL 文本编码器链路** 和 **single-stream MMDiT 架构本体 + 加载器** 两块。
 > 本提案不写死 anima 替换，而是沿 `ModelFamily` 边界让 Krea-2-Raw 成为可切换的第二个 family。**首日只支持 LoRA 家族**，编辑类 adapter（IP-Adapter / EasyControl / DirectEdit）在 Krea-2 上首日不支持。
@@ -87,7 +87,7 @@
 
 以下是 2026-08-08 的拟议边界。Krea-2-Raw 后来成为多模型实现的首个第二 family，但当前
 代码采用 `ModelFamilySpec` registry 和显式 handler 表；实际目录与协议以
-[`../multi_model_support.md`](../multi_model_support.md) 为准。
+[`../multi_model_support.md`](../../../docs/multi_model_support.md) 为准。
 
 ### 3.1 命名空间与目录
 
@@ -130,7 +130,7 @@ class ModelFamily(Protocol):
     def forward_for_loss(self, dit, latents, text_emb, t, **kw) -> Tensor: ...  # 承重接口
 ```
 
-`forward_for_loss` 是 [`../multi_model_support.md`](../multi_model_support.md) 标注的承重接口——Anima 的实现伸手进 `unet.llm_adapter` / `_mod_guidance_*` / fused-projection 假设 / cross-attn LSE 不变量（`library/training/noise_target.py`），Krea-2-Raw 的实现必须重写，回答 single-stream MMDiT 的 forward 怎么调。
+`forward_for_loss` 是 [`../multi_model_support.md`](../../../docs/multi_model_support.md) 标注的承重接口——Anima 的实现伸手进 `unet.llm_adapter` / `_mod_guidance_*` / fused-projection 假设 / cross-attn LSE 不变量（`library/training/noise_target.py`），Krea-2-Raw 的实现必须重写，回答 single-stream MMDiT 的 forward 怎么调。
 
 ### 3.3 配置面
 
@@ -153,11 +153,11 @@ model_family = "anima"   # 默认；切到 "krea2_raw" 走 Krea-2 路径
 
 - Krea-2 用 `_krea2.npz` / `_krea2_te.safetensors`，与 anima 缓存在 `post_image_dataset/` 共存不冲突。
 - Anima 旧缓存保持原后缀，向后兼容；当前 cache 隔离契约见
-  [`../multi_model_support.md`](../multi_model_support.md)。
+  [`../multi_model_support.md`](../../../docs/multi_model_support.md)。
 
 ## 4. 迁移路径：按子系统分层
 
-按 [`../multi_model_support.md`](../multi_model_support.md) 的耦合地图自上而下推进。每层标注迁移工作量。
+按 [`../multi_model_support.md`](../../../docs/multi_model_support.md) 的耦合地图自上而下推进。每层标注迁移工作量。
 
 ### 4.1 大改（替换 / 重写）
 
@@ -203,13 +203,13 @@ model_family = "anima"   # 默认；切到 "krea2_raw" 走 Krea-2 路径
 
 | 阶段 | 目标 | 退出条件 | 依赖 |
 |---|---|---|---|
-| **0 可行性确认** | 跑通官方推理 + dump key + 验证 VAE encode 互逆 | transformer state_dict key 清单到手；`AutoencoderKLQwenImage` encode→decode 互逆无损 | HF license + ~33GB 下载 ✅ 完成（[stage0 findings](../findings/krea2_raw_migration_stage0_findings.md)）|
-| **1 文本链路** | `library/models/krea2_raw/strategy.py` 跑通 Qwen3-VL tokenize + MFA + caching | 单 prompt encode 出 context，padding 行为确认（[R1](krea2_raw_migration_notes.md)） | 阶段 0 ✅ 完成（[stage1 findings](../findings/krea2_raw_migration_stage1_findings.md)）|
-| **2 DiT 本体 + 加载器** | `library/models/krea2_raw/dit.py` + `weights.py`（路径 B 裸移植 mmdit.py，非 diffusers；见 [R8](krea2_raw_migration_notes.md)） | 单 latent forward 通过，shape 对齐 | 阶段 0 ✅ 完成（[stage2 findings](../findings/krea2_raw_migration_stage2_findings.md)）|
-| **3 LoRA 注入** | `library/models/krea2_raw/lora_targets.py`，注入点按 single-stream 重做 | 单 block LoRA attach + forward 正常 | 阶段 2 ✅ 完成（[stage3 findings](../findings/krea2_raw_migration_stage3_findings.md)）|
-| **4 训练串通** | `family.forward_for_loss` + `noise_target.py` 改造 + 训练循环（含 grad-ckpt，落地背景见 [已归档设计](../../_archive/docs/proposal/krea2_raw_gradient_checkpointing.md)） | 单 prompt 过拟合 loss 下降；小数据集 sweep | 阶段 1+2+3 ✅ 完成（[stage4 findings](../findings/krea2_raw_migration_stage4_findings.md)）|
-| **5 推理串通** | `generation.py` + flow-matching sampler + mu shift | `python tasks.py test` 出图 | 阶段 2+3 ✅ 完成（[stage5 findings](../findings/krea2_raw_migration_stage5_findings.md)）|
-| **6 配置/WebUI/下载/命名收口** | `model_family` 键 + 下载命令 + sidecar 命名 + WebUI 表单 + 测试 + docs | `model_family="krea2_raw"` 全链路可用，anima 路径回归通过 | ✅ 核心收口完成：块交换、检查点、`forward_for_loss`、1024 grad-ckpt、metadata/WebUI 与独立 inference runner 已落地；原始阶段快照见 [stage6 findings](../findings/krea2_raw_migration_stage6_findings.md) |
+| **0 可行性确认** | 跑通官方推理 + dump key + 验证 VAE encode 互逆 | transformer state_dict key 清单到手；`AutoencoderKLQwenImage` encode→decode 互逆无损 | HF license + ~33GB 下载 ✅ 完成（[stage0 findings](../../../docs/findings/krea2_raw_migration_stage0_findings.md)）|
+| **1 文本链路** | `library/models/krea2_raw/strategy.py` 跑通 Qwen3-VL tokenize + MFA + caching | 单 prompt encode 出 context，padding 行为确认（[R1](krea2_raw_migration_notes.md)） | 阶段 0 ✅ 完成（[stage1 findings](../../../docs/findings/krea2_raw_migration_stage1_findings.md)）|
+| **2 DiT 本体 + 加载器** | `library/models/krea2_raw/dit.py` + `weights.py`（路径 B 裸移植 mmdit.py，非 diffusers；见 [R8](krea2_raw_migration_notes.md)） | 单 latent forward 通过，shape 对齐 | 阶段 0 ✅ 完成（[stage2 findings](../../../docs/findings/krea2_raw_migration_stage2_findings.md)）|
+| **3 LoRA 注入** | `library/models/krea2_raw/lora_targets.py`，注入点按 single-stream 重做 | 单 block LoRA attach + forward 正常 | 阶段 2 ✅ 完成（[stage3 findings](../../../docs/findings/krea2_raw_migration_stage3_findings.md)）|
+| **4 训练串通** | `family.forward_for_loss` + `noise_target.py` 改造 + 训练循环（含 grad-ckpt，落地背景见 [已归档设计](krea2_raw_gradient_checkpointing.md)） | 单 prompt 过拟合 loss 下降；小数据集 sweep | 阶段 1+2+3 ✅ 完成（[stage4 findings](../../../docs/findings/krea2_raw_migration_stage4_findings.md)）|
+| **5 推理串通** | `generation.py` + flow-matching sampler + mu shift | `python tasks.py test` 出图 | 阶段 2+3 ✅ 完成（[stage5 findings](../../../docs/findings/krea2_raw_migration_stage5_findings.md)）|
+| **6 配置/WebUI/下载/命名收口** | `model_family` 键 + 下载命令 + sidecar 命名 + WebUI 表单 + 测试 + docs | `model_family="krea2_raw"` 全链路可用，anima 路径回归通过 | ✅ 核心收口完成：块交换、检查点、`forward_for_loss`、1024 grad-ckpt、metadata/WebUI 与独立 inference runner 已落地；原始阶段快照见 [stage6 findings](../../../docs/findings/krea2_raw_migration_stage6_findings.md) |
 
 ## 6. 验证计划
 
@@ -262,11 +262,11 @@ Krea-2 钉死 `transformers==4.57.1`、`torch>=2.9`、Python>=3.12。Anima 训�
 
 ## 9. 与其他提案的关系
 
-- **[`../multi_model_support.md`](../multi_model_support.md)**：当前实现事实入口。本提案是历史
+- **[`../multi_model_support.md`](../../../docs/multi_model_support.md)**：当前实现事实入口。本提案是历史
   设计来源；`model_family`、cache 隔离和 family-specific forward 已落地，但最终形态是
   `ModelFamilySpec` registry + 显式 handler，不是本文草拟的动态 Protocol/factory 目录树。
-- **[`convrot_w8a_optimization_roadmap.md`](convrot_w8a_optimization_roadmap.md)** / **[`convrot_w8a_training_plan.md`](convrot_w8a_training_plan.md)**：ConvRot 优化绑 Anima cross-attn / AdaLN 假设，Krea-2 首日不做 ConvRot，互不阻塞。
-- **[`turbo_anima_dmd_lora.md`](turbo_anima_dmd_lora.md)**：Turbo 蒸馏绑 Anima，Krea-2 首日不做，互不阻塞。Krea-2 自家有 Turbo 变体（`krea/Krea-2-Turbo`），官方工作流是"LoRA 在 Raw 上训练，直接在 Turbo 上推理"，但本提案首日只支持 Raw。
+- **[`convrot_w8a_optimization_roadmap.md`](../../../docs/proposal/convrot_w8a_optimization_roadmap.md)** / **[`convrot_w8a_training_plan.md`](../../../docs/proposal/convrot_w8a_training_plan.md)**：ConvRot 优化绑 Anima cross-attn / AdaLN 假设，Krea-2 首日不做 ConvRot，互不阻塞。
+- **[`turbo_anima_dmd_lora.md`](../../../docs/proposal/turbo_anima_dmd_lora.md)**：Turbo 蒸馏绑 Anima，Krea-2 首日不做，互不阻塞。Krea-2 自家有 Turbo 变体（`krea/Krea-2-Turbo`），官方工作流是"LoRA 在 Raw 上训练，直接在 Turbo 上推理"，但本提案首日只支持 Raw。
 
 ## 10. 不在本提案范围
 

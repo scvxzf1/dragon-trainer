@@ -19,7 +19,7 @@
 - `web/frontend-next/src/styles/**`
 - `web/frontend-next/e2e/**`
 - `web/frontend-next/src/**/*.test.*`
-- `docs/superpowers/specs/2026-07-11-five-round-auto-iteration-protocol.md`
+- `_archive/docs/superpowers/specs/2026-07-11-five-round-auto-iteration-protocol.md`
 
 ---
 
@@ -264,9 +264,9 @@ find web/frontend-next/src/styles -maxdepth 1 -type f | sort
 ## 6. 五轮自动迭代历史说明
 
 - 以下链接记录 2026-07-11 的历史迭代，不是当前分支的活动门禁：
-- 迭代日志：`docs/superpowers/plans/2026-07-11-fullstack-auto-iteration-log.md`
-- 执行任务：`docs/superpowers/plans/2026-07-11-frontend-config-optimization.md`
-- 协议正文：`docs/superpowers/specs/2026-07-11-five-round-auto-iteration-protocol.md`
+- 迭代日志：`_archive/docs/superpowers/plans/2026-07-11-fullstack-auto-iteration-log.md`
+- 执行任务：`_archive/docs/superpowers/plans/2026-07-11-frontend-config-optimization.md`
+- 协议正文：`_archive/docs/superpowers/specs/2026-07-11-five-round-auto-iteration-protocol.md`
 
 ---
 

@@ -3,7 +3,7 @@
 - **状态：** 审计快照已整理；整改尚未开始
 - **推进窗口：** 5 小时
 - **审计范围：** `web/routes/`、`web/services/`、相关运行时契约与测试
-- **上一份后端全景基线：** [2026-08-15 WebUI 后端审计](../../findings/webui_backend_audit_20260815.md)
+- **上一份后端全景基线：** [2026-08-15 WebUI 后端审计](../../../../docs/findings/webui_backend_audit_20260815.md)
 
 ## 本轮约束
 

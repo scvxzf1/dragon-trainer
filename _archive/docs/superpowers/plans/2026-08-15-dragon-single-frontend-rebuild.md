@@ -4,8 +4,8 @@
 规格：[`../specs/2026-08-15-dragon-single-frontend-rebuild-spec.md`](../specs/2026-08-15-dragon-single-frontend-rebuild-spec.md)
 
 > 2026-10-04 整理：Next 已成为唯一生产前端，当前入口见
-> [Next README](../../../web/frontend-next/README.md)，退役过程见
-> [退役记录](../../../_archive/docs/proposal/legacy_ui_retirement_plan.md)。
+> [Next README](../../../../web/frontend-next/README.md)，退役过程见
+> [退役记录](../../proposal/legacy_ui_retirement_plan.md)。
 > 下文阶段勾选和门禁保留当时的执行状态，不用作当前待办或完成率；入口切换不代表所有原验收项已补齐。
 
 ## 阶段 0：规格与证据基线

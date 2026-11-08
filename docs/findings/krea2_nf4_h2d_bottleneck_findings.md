@@ -2,7 +2,7 @@
 适用版本：当前 krea2-migration 分支
 入口命令：`CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/krea2/probe_nf4_h2d_bottleneck.py`
 相关代码：`scripts/krea2/probe_nf4_h2d_bottleneck.py`、`library/runtime/offloading.py`、`docs/findings/krea2_nf4_h2d_bottleneck.json`（原始数据）
-相关提案：[krea2_nf4_blockswap.md](../proposal/krea2_nf4_blockswap.md)（方向 B 段，落地前提 2 由本探针回答）
+相关提案：[krea2_nf4_blockswap.md](../../_archive/docs/proposal/krea2_nf4_blockswap.md)（方向 B 段，落地前提 2 由本探针回答）
 
 # 方向 B 前置诊断：NF4+blockswap H2D 搬运占比
 
