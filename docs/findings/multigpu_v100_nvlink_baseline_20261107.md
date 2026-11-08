@@ -2,6 +2,7 @@
 
 状态：实验 / 单次合成探针，不是生产能力或训练质量结论
 适用版本：分支 `codex/multi-gpu-training`，基线提交 `a615a9e0`（dev）
+归档注记（2026-11-08）：该分支已归档（本地与远端分支均已删除），全部提交已并入 `dev`（`7a6b13c4`）
 测量时间：2026-11-07 12:00 前后，机器空闲（GPU0/GPU1 利用率 0%）
 相关代码：`scripts/experiments/anima_parallel/transport_bench.py`
 

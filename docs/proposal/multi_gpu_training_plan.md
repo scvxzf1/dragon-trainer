@@ -2,6 +2,7 @@
 
 状态：实验 / 研究分支计划，未改动任何生产默认值
 适用版本：分支基线 `a615a9e0`（dev）；实施现状见下方“阶段现状”（HEAD `2e7da55e`）
+归档注记（2026-11-08）：分支 `codex/multi-gpu-training` 已归档（本地与远端分支均已删除），全部提交已并入 `dev`（`7a6b13c4`）
 入口命令：见各阶段小节
 相关代码：`library/training/gradient_sync.py`、`library/runtime/launch.py`、
 `library/models/pipeline_parallel.py::validate_pipeline_parallel_config`、

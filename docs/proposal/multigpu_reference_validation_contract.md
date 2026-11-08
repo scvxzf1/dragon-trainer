@@ -2,6 +2,7 @@
 
 状态：实验 / 验收契约（冻结版 v1），本阶段**不实现代码、不跑训练、不改依赖**
 适用版本：分支 `codex/multi-gpu-training`，基线 `2987186c542b09a55c70a17c3dd523f3b11fb4d5`
+归档注记（2026-11-08）：分支已归档（本地与远端分支均已删除），全部提交已并入 `dev`（`7a6b13c4`）；复现请在该提交或其后 `dev` 上进行
 入口命令：见 §15；相关代码：`library/training/loop.py`、`library/training/window_accounting.py`、
 `library/training/gradient_sync.py`、`library/training/scaler_ownership.py`、
 `library/training/checkpoints.py`、`library/runtime/launch.py`、`library/runtime/accelerator.py`、
