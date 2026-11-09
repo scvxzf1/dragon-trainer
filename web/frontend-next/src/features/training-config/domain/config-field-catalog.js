@@ -325,6 +325,8 @@ const FIELD_GROUPS = Object.freeze([
         'convrot_largest_in_features_only',
         'convrot_large_layer_mode',
         'convrot_large_min_in_features',
+        'nf4_dir1',
+        'krea2_attn_fp16',
     ]),
     group('resources', 'activation', [
         'gradient_checkpointing',

@@ -182,6 +182,14 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "en": "V100 Flash diagnostic mode. off keeps full Flash; hybrid routes cross-attention through Torch SDPA; safe enables fail-fast finite checks. Flash remains diagnostic-only until strict validation passes.",
         "ko": "V100 Flash 진단 모드. off는 전체 Flash, hybrid는 크로스 어텐션을 Torch SDPA로 라우팅, safe는 유한성 검사를 즉시 수행합니다.",
     },
+    "nf4_dir1": {
+        "en": "[Experimental] Run the NF4 Linear inner GEMM in fp16 with per-layer frexp/ldexp rescaling. Only meaningful with base_compute=nf4, and only beneficial on GPUs without native bf16 tensor cores (sm70/sm75); enabling it on sm80+ raises. compute_dtype stays bfloat16.",
+        "ko": "[실험적] NF4 Linear 내부 GEMM을 fp16으로 실행하고 레이어별 frexp/ldexp 스케일링을 적용합니다. base_compute=nf4에서만 의미가 있고, bf16 텐서 코어가 없는 GPU(sm70/sm75)에서만 이득이 있습니다. sm80+에서 켜면 오류가 발생합니다. compute_dtype은 bfloat16으로 유지됩니다.",
+    },
+    "krea2_attn_fp16": {
+        "en": "[Experimental] Krea-2 attention fp16 inner path: expand GQA to MHA so fp16 takes the EFFICIENT SDPA kernel, plus frexp/ldexp rescaling of the backward dO. Only meaningful on sm<80; enabling it on sm80+ raises. compute_dtype stays bfloat16.",
+        "ko": "[실험적] Krea-2 어텐션 fp16 내부 경로입니다. GQA를 MHA로 확장해 fp16이 EFFICIENT SDPA 커널을 사용하도록 하고, 역방향 dO에 frexp/ldexp 스케일링을 적용합니다. sm<80에서만 의미가 있으며 sm80+에서 켜면 오류가 발생합니다. compute_dtype은 bfloat16으로 유지됩니다.",
+    },
     "debug_finite_checks": {
         "en": "Abort when attention tensors, residuals, loss, or gradients contain NaN/Inf. Diagnostic only; invalid values are never replaced or hidden.",
         "ko": "어텐션 텐서, 잔차, 손실 또는 그라디언트에 NaN/Inf가 있으면 즉시 중단합니다. 진단 전용으로 값을 숨기지 않습니다.",
@@ -449,6 +457,8 @@ FORM_GROUPS = {
         "convrot_largest_in_features_only",
         "convrot_large_layer_mode",
         "convrot_large_min_in_features",
+        "nf4_dir1",
+        "krea2_attn_fp16",
         "torch_compile",
         "cache_llm_adapter_outputs",
         "masked_loss",
