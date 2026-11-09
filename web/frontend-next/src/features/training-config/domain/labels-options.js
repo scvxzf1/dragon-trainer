@@ -54,6 +54,8 @@ export const FIELD_LABEL_ZH = {
     convrot_largest_in_features_only: '仅最大 in_features',
     convrot_large_layer_mode: '大层 ConvRot 模式',
     convrot_large_min_in_features: '大层 in_features 阈值',
+    nf4_dir1: 'NF4 内层 FP16 GEMM（实验，sm<80）',
+    krea2_attn_fp16: 'Krea-2 注意力 FP16 内层（实验，sm<80）',
     use_vae_cache: '使用 VAE 缓存',
     cache_llm_adapter_outputs: '缓存 LLM 适配器输出',
     use_text_cache: '使用文本缓存',
