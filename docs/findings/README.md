@@ -102,6 +102,7 @@
 - [Anima 原生 FP16 启动 OOM 静态验收](anima_native_fp16_startup_oom_static_20261002.md)：冻结精度与源身份、新进程递增 swap、首次 optimizer 开始后停止；限 CPU 验证。
 - [Anima 原生 FP16 正式入口](anima_native_fp16_product_entry_90hx_20261002.md)：配置、自动路由、轻量报告，以及生产保存/续训到 step5 的 scale 和真实 AdamW 验证。
 - [Anima FP16/BF16 200步配对热训](anima_fp16_bf16_ab200_90hx_20261002.md)：两路各200有效更新、零跳步，100/200步共16张采样图、240次共同BF16固定验证；未观察到FP16明显劣化，单seed弱改善信号和FP16外部监控汇总缺失如实记录。
+- [Krea-2 NF4 fp16 内层路径：autocast 静默截胡的两次实例](krea2_nf4_fp16_inner_path_20261109.md)：`torch.autocast(dtype=bfloat16)` 会把 fp16 内层计算的输入静默转回 bf16，使 attention 的 EFFICIENT 与 dir1 的 `F.linear` 同时失效且不报错。V100 实测 44.8 → 11.06 s/step（4.05×）、峰值 6.89 GiB；含 memory snapshot 定位法、profiler 按 dtype×shape 聚合、以及 `blocks_to_swap` 对显存单调、对速度几乎无影响的实测口径澄清。
 - [Krea-2 native FP16 CMP 90HX 三步 smoke](krea2_native_fp16_smoke_90hx_20261002.md)：官方非量化 plain-LoRA 配置，BF16/FP16 各 3 次有效更新、零跳步、588 个初始 LoRA hash 匹配并保存 state；非质量或长期稳定性认证。
 - [Anima旧FP16集中验收](anima_native_fp16_acceptance_90hx_20261001.md)：12格finite且有效更新，独立FP64证据审核通过；严格0/12通过，梯度漂移明显。质量标准已预登记，质量未运行，结束05/04与scale扩张。
 - [Anima旧FP16 AMP补充对照](anima_legacy_fp16_comparison_90hx_20261001.md)：旧路径scale1024五步有效、零跳步，2.694s/步、GPU峰3524MiB；其后严格矩阵见上项，长期质量和Turing未验收。

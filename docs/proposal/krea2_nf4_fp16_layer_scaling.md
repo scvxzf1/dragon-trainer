@@ -211,7 +211,7 @@ dir1 在**全部量级**上恒定在 `0.235%~0.240%`，与 bf16 持平；裸 fp1
 fp16 直接溢出成 NaN。真实模型里 Linear 之后有 LayerNorm 类归一化，所以脚本必须补上，
 否则模拟的不是真实反向链。
 
-## 4. 实现陷阱（四个都踩过）
+## 4. 实现陷阱（五个都踩过）
 
 **① `torch.ldexp` 第二个参数必须是 Tensor**
 
@@ -259,6 +259,37 @@ torch.Size([6144,6144]) == [6144,6144]              # False  <-- 这里炸
 实测传 `Size` / `tuple` / `list` 三种形式**全部失败**（分发层统一转 list），
 所以改 `qs.shape` 绕不过去。**不要用 `out=`**，用下面的 `qs.dtype` 浅拷贝方案。
 
+**⑤ `torch.autocast(dtype=bfloat16)` 会把 fp16 门控计算静默转回 bf16（最隐蔽）**
+
+这是唯一一个「不报错、不降速、但让整个优化失效」的坑。训练跑在
+`torch.autocast(dtype=torch.bfloat16)` 里，而 `F.linear` 是 autocast 白名单算子：
+**手工转好的 fp16 输入会被强制转回 bf16**，GEMM 于是落到 sm70 的 MAGMA 软件路径。
+
+探针打在算子两侧，看到的是输入正确、输出被改回：
+
+```
+[DIR1MM] A=bf16->fp16  w=fp16  autocast=True acdtype=bf16
+[DIR1MM] out=bf16      expect=fp16
+```
+
+修复是把纯 fp16 的内层计算移出 autocast 作用域：
+
+```python
+with torch.autocast(device_type="cuda", enabled=False):
+    output = torch.nn.functional.linear(
+        A.to(torch.float16), w.t(),
+        None if bias is None else bias.to(torch.float16),
+    )
+```
+
+同一个坑在同一次改造里还咬了 attention 路径一次（`F.scaled_dot_product_attention`
+在 autocast(bf16) 下让 EFFICIENT 内核报 `No available kernel` 并静默回退 MATH）。
+两处的完整定位过程见
+[Krea-2 NF4 fp16 内层路径](../findings/krea2_nf4_fp16_inner_path_20261109.md)。
+
+**识别信号**：开关显示已启用、日志正常、调用计数正确，但 profiler 里目标 dtype
+的算子耗时占比极低。
+
 ## 5. 精度：与 bf16 持平，用 fp16-dequant 可反超
 
 **输出侧不提升精度。** dir1 的输出仍是 bf16，所以激活流的精度上限是 bf16 的 7 位尾数；
@@ -290,6 +321,8 @@ bf16 的 1.316% 降到 **0.988%**。
 | GradScaler | ✅ **不需要**（外层 bf16 保动态范围，逐层缩放替代全局 k） |
 | 改动面 | `library/quantization/nf4.py` 一个文件，约 60~90 行 |
 | 运行开销 | 每层多一次 `abs().max()` 规约 + 两次 `ldexp`；改用 `qs.dtype=fp16` 后每层 dequant 反而省 0.272 ms |
+| **真实训练（V100 4864 tokens, NF4, swap 20, 20 步）** | ✅ **44.8 → 11.06 s/step（4.05×）**，峰值 6.89 GiB，loss 0.205 正常下降 |
+| **仅算子探针 vs 真实训练** | ⚠️ 探针报 3.33~6.6×，真实训练只有 4.05×——差值来自 autocast 截胡（当时 dir1 实际未生效），修复后一致 |
 | sm80+ 显卡 | ⚠️ 收益消失——那些卡有原生 bf16 tensor core，bf16 已经够快 |
 
 **注意最后一行**：dir1 只在**没有原生 bf16 tensor core**的卡上有价值（V100 / 2080Ti /
