@@ -51,7 +51,14 @@ class _PreFp16SDPA(torch.autograd.Function):
     def forward(ctx, q, k, v, state):
         ctx.state = state
         ctx.dtype = q.dtype
-        return q.to(torch.float16), k.to(torch.float16), v.to(torch.float16)
+        # sm70 的 memory-efficient 内核对非连续输入直接 "No available kernel"
+        # 并静默回退 MATH（O(N²) 显存）。RMSNorm/rearrange 之后 v 常常是非连续的，
+        # 这里统一转连续，成本只有一次 O(n) 拷贝。
+        return (
+            q.to(torch.float16).contiguous(),
+            k.to(torch.float16).contiguous(),
+            v.to(torch.float16).contiguous(),
+        )
 
     @staticmethod
     def backward(ctx, dq16, dk16, dv16):
