@@ -1158,6 +1158,20 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         ),
     )
     parser.add_argument(
+        "--krea2_attn_fp16",
+        action="store_true",
+        default=False,
+        help=(
+            "[EXPERIMENTAL] Krea-2 attention 的 fp16 内层 + GQA 展开（仅 sm<80）。"
+            "sm70 上 bf16 没有任何可用的 SDPA 内核，只剩 MATH（O(N²)，4864 tokens "
+            "单层 10 GiB）；fp16 在 GQA 形状下也回退 MATH。把 kv 展开成与 q 同 head "
+            "数后 fp16 可走 EFFICIENT，4096 tokens 峰值 7424 MiB -> 224 MiB。反向用 "
+            "frexp/ldexp 把 dO 平移进 fp16 正规区（深层 dO 是 1e-8 量级，裸转 fp16 "
+            "会归零）。compute_dtype 保持 bfloat16。证据见 "
+            "bench/krea2_nf4_fp16_grad/attn_fp16_probe.py。"
+        ),
+    )
+    parser.add_argument(
         "--convrot_group_size",
         type=int,
         default=256,

@@ -319,6 +319,27 @@ class TrainingBootstrap:
         return True
 
     @staticmethod
+    def maybe_enable_krea2_attn_fp16(args) -> bool:
+        """Enable Krea-2 attention fp16 inner path + GQA expansion.
+
+        Only meaningful on sm<80: sm70 has no usable bf16 SDPA kernel at all, and
+        fp16 falls back to MATH under the production GQA shape. Expanding kv to
+        match q turns it into MHA, which lets fp16 take the EFFICIENT kernel
+        (4096 tokens: 7424 MiB -> 224 MiB). The backward rescales dO with
+        frexp/ldexp because deep-layer dO is ~1e-8 and would underflow fp16.
+        """
+        if not getattr(args, "krea2_attn_fp16", False):
+            return False
+        from library.models.krea2_raw.attention_backend import set_krea2_attn_fp16
+
+        set_krea2_attn_fp16(True)
+        logger.info(
+            "Krea-2 attention fp16 enabled: GQA expanded to MHA, inner SDPA runs "
+            "fp16 with frexp/ldexp backward rescaling; compute_dtype stays bfloat16."
+        )
+        return True
+
+    @staticmethod
     def maybe_apply_convrot_base(args, network, *, unet=None) -> bool:
         """Optionally patch LoRA org_forward with ConvRot W8A* base path.
 
@@ -731,6 +752,10 @@ class TrainingBootstrap:
         # dynamo traces the dir1 branch, and before the first forward so the
         # flag is final. compute_dtype stays bfloat16.
         self.maybe_enable_nf4_dir1(args)
+
+        # Optional Krea-2 attention fp16 + GQA expansion (sm<80 only). Same
+        # ordering constraint: the flag must be final before any forward.
+        self.maybe_enable_krea2_attn_fp16(args)
 
         from library.models.qwen_image_2_1.training_blocks import install_training_block_projections
 
