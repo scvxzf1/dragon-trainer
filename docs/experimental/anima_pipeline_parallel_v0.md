@@ -1,9 +1,10 @@
 # Anima 流水线并行 v0（PP v0）
 
 状态：实验
-适用版本：分支 `codex/anima-pp-validation`（torch 2.10）
+适用版本：当前 dev（torch 2.10）
 入口命令：训练入口不变；PP 配置在训练入口会以具名错误 fail-closed，运行时由
-`library/training/pp` 驱动
+`library/training/pp` 驱动。真机测量与 microbatch 扫描用
+`scripts/experiments/anima_parallel/pp_v0_bench.py`（见「真机验证结果」节）
 相关代码：`library/training/pp/`、`library/training/pp/gate.py`、
 `library/models/family_registry.py`、`library/training/compat_matrix.py`
 

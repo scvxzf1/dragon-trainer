@@ -2,7 +2,7 @@
 
 状态：实验
 适用版本：当前 dev（2026-11-09；测量基线 `7476f3a0`）
-入口命令：见 §6 复现；测量脚本为本地临时脚本，**不在仓库内**
+入口命令：见 §6 复现（`scripts/experiments/anima_parallel/pp_v0_bench.py`）
 相关代码：`library/training/pp/runtime.py`、`library/training/pp/schedule.py`、`library/training/pp/contract.py`
 
 ## 1. 结论
@@ -82,23 +82,28 @@ M=32 只用 6.57 GB（reserved 6.76），16 GB 卡还剩一半以上。
 
 ## 6. 复现
 
-测量脚本是本地临时脚本（`/tmp/ppv0_t8/ppv0_bench.py` 及其按 `LATENT` batch 改写的副本），
-**不在仓库内**。关键参数：
+测量脚本已纳入版本控制：[`scripts/experiments/anima_parallel/pp_v0_bench.py`](../../scripts/experiments/anima_parallel/pp_v0_bench.py)。
 
-```text
---mode pp
---dit-path <Anima-2.9B-preview-v1.safetensors>
---latent-path <*_anima.npz，需为 150x112 的 4200 族>
---text-path <*_anima_te.safetensors>
---microbatches <4|8|16|32>      # 与脚本里的 LATENT batch 维度保持一致
---steps 2 --warmup-steps 1
+PP v0 要求恰好两个 rank，每 rank 一个进程：
+
+```bash
+for R in 0 1; do
+  CUDA_VISIBLE_DEVICES=0,1 RANK=$R LOCAL_RANK=$R WORLD_SIZE=2 \
+  MASTER_ADDR=127.0.0.1 MASTER_PORT=29561 \
+  .venv/bin/python -m scripts.experiments.anima_parallel.pp_v0_bench \
+    --mode pp --output-dir <输出目录> \
+    --microbatches 16 --steps 2 --warmup-steps 1 \
+    --dit-path <Anima-2.9B-preview-v1.safetensors> \
+    --latent-path <*_anima.npz，需为 150x112 的 4200 族> \
+    --text-path <*_anima_te.safetensors> &
+done
+wait
 ```
 
-两 rank 分别以 `RANK/LOCAL_RANK/WORLD_SIZE=2` 环境变量启动，
-`CUDA_VISIBLE_DEVICES=0,1`（**不是** nvidia-smi 序号 `1,2`，本机两者不一致）。
+`--microbatches` 同时决定 wire buffer 的 batch 维度（脚本内 `batch_shapes()` 推导），
+**不需要再手改常量**；microbatch_size 恒为 1，因此 M 即 Global Batch。
 
-脚本里 `LATENT` 常量是硬编码的 batch 维度，改 M 时必须同步改它，
-否则会被 `pp_token_bucket_mismatch` 拦下（batch 不能被 microbatches 整除）。
+`CUDA_VISIBLE_DEVICES=0,1`（**不是** nvidia-smi 序号 `1,2`，本机两者不一致）。
 
 ## 7. 边界与未验证
 
@@ -112,5 +117,6 @@ M=32 只用 6.57 GB（reserved 6.76），16 GB 卡还剩一半以上。
   测量的基准。
 - 未测 M>32；未测 3 stage 及以上；未测非 4200 token 桶。
 - 未做 fp16 数值等价复测（M 改变会改变累加顺序，`track ②` 的同切分参考需要重新取证）。
-- 测量期间曾与另一 agent 的 `train.py` 训练在 GPU `04:00.0` 上重叠过一次，该次（M=16 首轮）
-  已作废；本文四档数据均在 GPU 空闲窗口内取得（M=8 完成时间早于对方启动 36 秒）。
+- 采集期间曾出现一次外部并发进程与本次测量争抢同一物理 GPU 的显存与算力
+  （resource contention）；该轮采集已整体作废并从基准数据中剔除，本文四档均在
+  GPU 独占窗口内取得。
