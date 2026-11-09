@@ -207,7 +207,6 @@
 | [krea2_raw_migration_stage4_findings.md](krea2_raw_migration_stage4_findings.md) | Krea-2-Raw 迁移阶段 4：训练串通 + forward_for_loss 承重接口 + 单 prompt 过拟合 loss 下降 |
 | [krea2_raw_migration_stage5_findings.md](krea2_raw_migration_stage5_findings.md) | Krea-2-Raw 迁移阶段 5：推理串通 + flow-matching Euler ODE + mu shift + CFG 采样 + VAE decode 出图 |
 | [krea2_raw_migration_stage6_findings.md](krea2_raw_migration_stage6_findings.md) | Krea-2-Raw 迁移阶段 6：块交换 (ModelOffloader 复用) + 检查点 save/load round-trip + 256×256 净负发现 |
-| [krea2_v100_autocast_fp16_trap_20261109.md](krea2_v100_autocast_fp16_trap_20261109.md) | Krea-2 在 V100 上的 autocast(bf16) 双重截胡：attention 与 dir1 的 fp16 内层被静默转回 bf16，44.8s → 11.06s/step |
 | [gsq_rco_quant_research_20261026.md](gsq_rco_quant_research_20261026.md) | 静态研究记录：arXiv 2411.17525 实为 Linearity Theorem/HIGGS 而非 "GSQ-RCO"（GSQ=2604.18556、RCO=2605.00649 另属两篇，本仓零实现）、可迁移组件拆解、量化×CNS×交互项 2×2 归因框架与 CNS 归因矩阵、Q0–Q5 判定（Q0/Q3/Q5 后半不成立，Q1/Q2 部分成立，Q4/Q5 前半无实测路径）、引用禁用口径清单与最小实测计划（未执行） |
 
 ## Agent Audit 2026-06-22

@@ -197,6 +197,42 @@ class TestDir1MatMul4Bit:
         assert qs.dtype == before_dtype
 
 
+
+    def test_runs_fp16_under_bf16_autocast(self):
+        """autocast(bf16) 不得把 dir1 的 fp16 GEMM 静默转回 bf16。
+
+        回归 bb8c5b63：``_Dir1MatMul4Bit.forward`` 里若没有
+        ``torch.autocast(enabled=False)`` 包裹，外层 bf16 autocast 会在进内核前把
+        已经手转的 fp16 输入再转回 bf16，264 个主干 GEMM 全部落回 sm70 的 MAGMA
+        软件路径（实测 27.3s/步，占单步 78%）。
+        """
+        from unittest import mock
+
+        packed, qs, _, _ = self._make()
+        g = torch.randn(8, 256, device="cuda", dtype=torch.bfloat16) * 1e-3
+        seen: list[tuple[torch.dtype, torch.dtype, torch.dtype]] = []
+        real_linear = torch.nn.functional.linear
+
+        def spy(a, b, bias=None):
+            out = real_linear(a, b, bias)
+            # 记录返回值 dtype：autocast 的强转发生在 aten::linear 的 C++ 分发层，
+            # 只检查入参看不出问题，必须看内核实际吐出的类型。
+            seen.append((a.dtype, b.dtype, out.dtype))
+            return out
+
+        with mock.patch.object(
+            torch.nn.functional, "linear", spy
+        ), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _Dir1MatMul4Bit.apply(g, packed.t(), None, None, qs)
+
+        assert seen, "F.linear 未被调用，dir1 路径没生效"
+        act_dtype, w_dtype, out_dtype = seen[0]
+        assert act_dtype == torch.float16, f"激活 dtype {act_dtype}，应是 fp16"
+        assert w_dtype == torch.float16, f"权重 dtype {w_dtype}，应是 fp16"
+        assert out_dtype == torch.float16, (
+            f"GEMM 输出被 autocast(bf16) 转成了 {out_dtype}；"
+            "dir1 的 F.linear 必须包在 torch.autocast(device_type='cuda', enabled=False) 里"
+        )
 # === CLI / 配置接线 ===
 
 
