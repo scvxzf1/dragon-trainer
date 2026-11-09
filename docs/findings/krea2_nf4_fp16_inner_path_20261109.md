@@ -235,6 +235,7 @@ blocker 走普通 `error`（无 `overridable`），`preflight ok=False` 会真�
 | 非 NF4 开 `nf4_dir1` | warning | `nf4_dir1_ignored` |
 | 非 Krea-2 开 `krea2_attn_fp16` | warning | `krea2_attn_fp16_ignored` |
 | sm70/75 + Krea-2 + NF4 单开其一 | info | `nf4_fp16_inner_pairing` |
+| sm70/75 + Krea-2 + NF4 + bf16 双关 | info | `nf4_fp16_inner_available` |
 | flash / 非 bf16 下开 `krea2_attn_fp16` | warning | `krea2_attn_fp16_requires_torch_attention` |
 
 第 5 类是实测挖出的真缺陷：`_ATTN_FP16_ENABLED` 唯一消费点是
@@ -244,6 +245,16 @@ compat 还在建议用户双开去拿「完整内层 fp16」。判定前先按�
 （`sdpa` / `cudnn` / `cudnn_sdpa` → `torch`），未设置 `attn_mode` 不判定。
 
 pairing info 只在**单开**时给（`nf4_dir1 != attn_fp16`）；双开本来就不需要建议。
+
+第 6 类（`nf4_fp16_inner_available`）补的是反方向的盲区：用户在 V100 上
+用默认 bf16、两个开关都不开时，训练能跑、不报错，但每个 bf16 GEMM 都落到
+MAGMA 软件模拟（44.8 vs 11.06 s/step），用户只会觉得卡慢而不知道根因。
+只做 info 不做 warning——bf16 是 `base.toml` 的生产默认，标成「配置有问题」
+会让所有 bf16 用户收到噪音。触发范围收窄到 `krea2_raw` + `nf4` + bf16 +
+双关：其它组合仍在函数入口早退，不为一条提示让全部训练都付 `nvidia-smi`
+探测成本。文案同时明确**禁止**改用 `mixed_precision=fp16`——那条路已被
+[梯度下溢否决](krea2_nf4_fp16_grad_underflow_20261108.md) 挡掉，不写清楚
+等于把一个坑换成另一个坑。
 
 ### 9.3 硬件探针必须按任务真实设备
 
