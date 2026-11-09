@@ -1,0 +1,62 @@
+# Krea-2-Raw + NF4 的 fp16 内层路径模板（Pre-Ampere: V100 / 2080Ti / sm70-sm75）。
+#
+# 适用场景
+#   sm<80 的卡没有原生 BF16 Tensor Core，bf16 GEMM 会落到 MAGMA 软件模拟
+#   （magma_sgemmEx_kernel）。V100 实测 44.8 s/step；开启本模板的两个内层
+#   fp16 开关后 11.06 s/step（4.05×），峰值 6.89 GiB。
+#   有原生 bf16 tensor core 的卡（sm80+）不需要本模板，用 krea2_lora.toml 即可。
+#
+# 本文件只写「这个组合特有」的键；数据集、优化器、保存策略、日志等全部继承
+#   configs/base.toml 与 configs/presets.toml。需要改训练超参或数据集时，在
+#   WebUI 表单里改，或复制本文件到 configs/imported/ 后按需覆盖。
+#
+# ── 三条硬约束，改之前务必读 ──────────────────────────────────────────────
+#
+# 1. attn_mode 必须是 torch / sdpa / cudnn / cudnn_sdpa，不能是 flash。
+#    krea2_attn_fp16 的唯一消费点是 attention_backend 的 cuDNN SDPA 分支；
+#    attn_mode=flash 会走 Flash varlen 并提前 return，开关开了等于没开。
+#    Preflight 会在这种组合下给 warning 提醒。
+#
+# 2. mixed_precision 必须保持 bf16，绝不能改成 fp16。
+#    正确做法是「外层 bf16 + 内层 fp16 GEMM + 逐层 frexp/ldexp 缩放」，由
+#    nf4_dir1 与 attention backend 在内部完成，不改变 compute_dtype。
+#    把 compute 改成 fp16 会绕过这套缩放，导致 35.65% 的逐层梯度偏差
+#    （已否决，见 docs/findings/krea2_nf4_fp16_grad_underflow_20261108.md）。
+#
+# 3. 两个开关要同时开，收益才完整。
+#    只开一个 → preflight 给 nf4_fp16_inner_pairing（提示补另一个）
+#    都不开   → preflight 给 nf4_fp16_inner_available（提示可以开）
+#    都开且 attn_mode=torch → preflight 静默
+#
+# ── 用法 ─────────────────────────────────────────────────────────────────
+#
+#   WebUI:  变体选 krea2_lora_nf4_fp16，方法目录 methods，预设 default
+#   CLI:    .venv/bin/python train.py --method krea2_lora_nf4_fp16 --preset default
+#   看合并: .venv/bin/python tasks.py print-config METHOD=krea2_lora_nf4_fp16 PRESET=default
+#
+# ── 调整建议 ─────────────────────────────────────────────────────────────
+#
+#   显存吃紧  → blocks_to_swap 20 → 24 → 28（28 是上限），或降 resolution
+#   显存充裕  → blocks_to_swap 20 → 12 换速度
+#   不要靠降 network_dim 省显存，那是拿质量换速度。
+#
+# 背景与完整实测见 docs/findings/krea2_nf4_fp16_inner_path_20261109.md
+
+model_family = "krea2_raw"
+pretrained_model_name_or_path = "models/diffusion_models/krea2_raw_bf16.safetensors"
+
+# NF4 基座（bf16 master + 4bit 量化权重）。
+base_compute = "nf4"
+nf4_prequantized_path = "models/diffusion_models/krea2_raw_nf4_self_contained.safetensors"
+
+# 两个内层 fp16 开关：外层仍是 bf16，只有内层 GEMM/SDPA 走 fp16。
+nf4_dir1 = true
+krea2_attn_fp16 = true
+
+# 必须是 torch（见上方约束 1）。
+attn_mode = "torch"
+# sm<80 上 bf16 compile 会 skip，开着只是徒增启动开销。
+torch_compile = false
+
+# NF4 权重常驻 + 1024 分辨率激活的平衡点；实测峰值 6.89 GiB。
+blocks_to_swap = 20
