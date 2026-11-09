@@ -9,7 +9,7 @@ def _codes(items) -> set[str]:
     return {item.code for item in items}
 
 
-@pytest.mark.parametrize("attn_mode", [None, "torch", "flash", "sdpa"])
+@pytest.mark.parametrize("attn_mode", [None, "torch", "flash", "sdpa", "cudnn", "cudnn_sdpa"])
 def test_krea2_compat_accepts_supported_attention_modes(attn_mode) -> None:
     result = check_training_compat(
         {
@@ -29,6 +29,7 @@ def test_krea2_compat_accepts_supported_attention_modes(attn_mode) -> None:
     ("patch", "code"),
     [
         ({"attn_mode": "xformers"}, "krea2_invalid_attn_mode"),
+        ({"attn_mode": "native"}, "krea2_invalid_attn_mode"),
         ({"compile_inductor_mode": "reduce-overhead"}, "krea2_compile_inductor_mode"),
         ({"selective_checkpoint": "mlp_only"}, "krea2_selective_checkpoint"),
         ({"v100_flash_stability": "safe"}, "krea2_v100_flash_stability"),

@@ -1348,6 +1348,21 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         help="Temporarily disable block swapping during validation/sample preview. "
         "Only use when eval fits in VRAM without swapped blocks.",
     )
+    parser.add_argument(
+        "--compat_unverified_policy",
+        type=str,
+        default="warn",
+        choices=["strict", "warn", "allow"],
+        help=(
+            "How training-compat checks report audited unverified combinations. "
+            "strict restores the historical hard errors; warn (default) only "
+            "relaxes the audited C1 codes (implementation exists but lacks "
+            "real-machine acceptance); allow also relaxes audited C2/C3 codes "
+            "(no code path in the family, or official-recipe/VRAM policy) and "
+            "prints a warning naming the ignored key. Input-validation and "
+            "semantic-conflict codes stay errors under every policy."
+        ),
+    )
 
 
 def add_network_arguments(parser: argparse.ArgumentParser):

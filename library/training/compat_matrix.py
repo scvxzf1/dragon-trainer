@@ -1,12 +1,16 @@
 """Shared training compatibility checks for optimization flags.
 
-The helpers here are intentionally pure: they inspect a mapping/object and
-return errors, warnings, and suggested mutations. CLI and Web preflight can
-consume the same rules without importing each other.
+The helpers here are pure decision functions: they inspect a mapping/object and
+return errors, warnings, and suggested mutations. CLI and Web preflight consume
+the same rules without importing each other. The single side effect is one
+summary log line when the unverified policy downgraded codes (see
+``check_training_compat``), so the training bootstrap path cannot silently drop
+the relaxed-combination record.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -20,6 +24,9 @@ from library.models.pipeline_parallel import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 VALID_SELECTIVE_CHECKPOINTS = {
     "off",
     "adapter_aware",
@@ -30,7 +37,10 @@ VALID_SELECTIVE_CHECKPOINTS = {
     "peak_blocks_mlp",
     "peak_blocks_mlp_layer1",
 }
-KREA2_ATTN_MODES = {"", "torch", "flash", "sdpa"}
+# Keep this whitelist in sync with
+# library/models/krea2_raw/attention_backend.py::normalize_krea2_attention_mode:
+# sdpa/cudnn/cudnn_sdpa are normalized to torch there.
+KREA2_ATTN_MODES = {"", "torch", "flash", "sdpa", "cudnn", "cudnn_sdpa"}
 KREA2_SELECTIVE_CHECKPOINTS = {"off", "every_other"}
 KREA2_UNSUPPORTED_ADAPTER_FLAGS = (
     "use_ip_adapter",
@@ -46,6 +56,237 @@ KREA2_UNSUPPORTED_ADAPTER_FLAGS = (
     "add_reft",
     "train_llm_adapter",
 )
+
+
+# ---------------------------------------------------------------------------
+# Unverified-combination policy
+#
+# Classification source: docs/findings/compat_unverified_audit_20261109.md
+# (52 ``out.error`` sites -> 77 codes; the two always-false sites are deleted).
+# Round-2 refinement (t5 review): the C2/C3 tables are split by *what happens
+# when the gate is bypassed*.
+#
+# * ``strict``: every audited site is an error again (origin/dev behavior,
+#               except the intentionally documented whitelist/message fixes).
+# * ``warn``  : only the audited C1 codes (implementation exists and takes
+#               effect, real-machine acceptance missing) degrade to warnings.
+# * ``allow`` : additionally the C2-*ignored* codes (the family never reads the
+#               key, so bypassing only makes the flag a no-op) degrade; the
+#               C2-raise / C3-raise codes and A/B/mixed input-validation codes
+#               stay hard errors under every policy.
+#
+# A gate that would turn into a downstream raise must never be relaxed by
+# ``allow``: that would replace a clear preflight error with a harder-to-debug
+# crash later in startup.
+# ---------------------------------------------------------------------------
+
+COMPAT_UNVERIFIED_POLICY_KEY = "compat_unverified_policy"
+COMPAT_UNVERIFIED_POLICIES = ("strict", "warn", "allow")
+DEFAULT_COMPAT_UNVERIFIED_POLICY = "warn"
+UNVERIFIED_MARKER = "[unverified 未验证]"
+UNWIRED_NOTE = (
+    "该键在本族未接线/会被忽略（放行不会改变训练行为，也不会在下游 raise）；"
+    "allow 档仅放行这一类无效果开关。"
+)
+
+# C1: the implementation path exists and consumes the flag; only the
+# real-machine/numeric acceptance is missing.
+UNVERIFIED_C1_CODES = frozenset({
+    "qwen_image_2_1_mixed_precision",
+    "qwen_image_2_1_masked_loss",
+    "qwen_image_2_1_loss_type",
+    "qwen_image_2_1_weighting_scheme",
+    "z_image_loss_type",
+    "z_image_flow_shift",
+    "z_image_weighting_scheme",
+})
+
+# Per-code C1 evidence: why relaxing to a warning is safe (the flag is read).
+UNVERIFIED_C1_REASONS = {
+    "qwen_image_2_1_mixed_precision": (
+        "the qwen torch/sdpa path has no fp16 guard (only flash requires bf16); "
+        "qwen fp16 has no accepted real-machine run"
+    ),
+    "qwen_image_2_1_masked_loss": (
+        "the shared masked flow-matching loss applies to qwen's [B,64,H,W] "
+        "target; only the data/quality acceptance is missing"
+    ),
+    "qwen_image_2_1_loss_type": (
+        "library/training/losses.py applies l1/huber on the qwen path; only the "
+        "official L2 recipe has been accepted"
+    ),
+    "qwen_image_2_1_weighting_scheme": (
+        "library/training/noise_target.py consumes args.weighting_scheme on the "
+        "qwen path"
+    ),
+    "z_image_loss_type": (
+        "library/training/losses.py applies l1/huber on the z_image path; only "
+        "the official L2 recipe has been accepted"
+    ),
+    "z_image_flow_shift": (
+        "library/models/z_image/family.py feeds args.discrete_flow_shift into "
+        "shifted_uniform_sigmas, so non-6.0 values take effect"
+    ),
+    "z_image_weighting_scheme": (
+        "library/training/noise_target.py consumes args.weighting_scheme on the "
+        "z_image path"
+    ),
+}
+
+# C2-ignored: the family never reads the key (or the loader explicitly clears
+# the switch), so bypassing the gate leaves training behaviour unchanged. These
+# are the only codes ``allow`` may relax.
+UNVERIFIED_C2_IGNORED_CODES = frozenset({
+    "qwen_image_2_1_base_compute",           # qwen loader never quantizes base_compute
+    "qwen_image_2_1_adaptive_precision",     # qwen loader never installs adaptive precision
+    "qwen_image_2_1_selective_checkpoint",   # selective checkpoint is anima/krea2 only
+    "qwen_image_2_1_timestep_sampling",      # qwen uses fixed dynamic-shift sigmas
+    "qwen_image_2_1_layer_start",            # no layer-range targeting for qwen
+    "qwen_image_2_1_t_min",                  # qwen uses the full sigma range
+    "krea2_v100_flash_stability",            # Anima-only diagnostic, never read by krea2
+    "z_image_base_compute",                  # z_image loader never quantizes base_compute
+    "z_image_selective_checkpoint",          # selective checkpoint is anima/krea2 only
+    "z_image_layer_range",                   # no layer-range targeting for z_image
+    "z_image_timestep_range",                # fixed official scheduler grid
+    "z_image_training_sampler",              # sampler is not read on the z_image path
+    "z_image_v100_flash_stability",          # Anima-only diagnostic, never read by z_image
+    "z_image_timestep_sampling",             # fixed shifted-uniform sigma schedule
+})
+
+# C2-raise: no code path *and* bypassing the gate raises later in startup (or
+# silently produces an AttributeError inside the loss/preview path). Always an
+# error, under every policy.
+UNVERIFIED_C2_RAISE_CODES = frozenset({
+    "qwen_image_2_1_compile_backend",        # compile.py raises for cudagraphs
+    "qwen_image_2_1_compile_mode",           # compile.py accepts only None/default
+    "qwen_image_2_1_auto_block_swap",        # capacity.py raises for unknown family
+    "qwen_image_2_1_cpu_offload_checkpointing",  # bootstrap enable_gradient_checkpointing(cpu_offload=) TypeError
+    "qwen_image_2_1_network_train_unet_only",    # extra_args assert (TE caching)
+    "qwen_image_2_1_weighted_captions",      # no encode_tokens_with_weights on qwen
+    "qwen_image_2_1_caption_dropout_rate",   # strategy/family raise
+    "qwen_image_2_1_preview_text_cache",     # training_preview raises without cached TE
+    "qwen_fused_projections_family",         # training_blocks raises
+    "qwen_fused_projections_plain_lora",     # training_blocks raises
+    "qwen_fused_projections_mixed_precision",  # training_blocks raises
+    "qwen_fused_projections_base_compute",   # training_blocks raises
+    "qwen_fused_projections_block_swap_transfer_dtype",  # training_blocks raises
+    "qwen_fused_projections_gradient_checkpointing",     # training_blocks raises
+    "qwen_fused_projections_selective_checkpoint",       # training_blocks raises
+    "qwen_fused_projections_cpu_offload_checkpointing",  # training_blocks raises
+    "pipeline_parallel_runtime_unavailable",  # pp gate fails closed
+    "krea2_compile_inductor_mode",           # dit.py raises
+    "krea2_selective_checkpoint",            # dit.py raises
+    "z_image_torch_compile",                 # unet.compile_blocks() missing -> AttributeError
+    "z_image_checkpoint_offload",            # bootstrap enable_gradient_checkpointing(cpu_offload=) TypeError
+    "z_image_weighted_captions",             # no encode_tokens_with_weights on z_image
+    "z_image_caption_dropout",               # strategy raises
+    "family_plain_lora_only",                # method adapters raise; split per conflict first
+})
+
+# C3: runnable, but departs from the official recipe or the VRAM policy, or the
+# bypassed gate turns into a runtime raise/TypeError. Always an error.
+UNVERIFIED_C3_CODES = frozenset({
+    "qwen_image_2_1_block_swap_checkpoint",  # swap without checkpointing exhausts VRAM
+    "qwen_nf4_compile_experiment",           # qwen_nf4_compile_policy rejects the config
+    "z_image_bf16_only",                     # flash+fp16 raises in attention_backend
+    "block_swap_cpu_offload",                # non-Anima unet.enable_gradient_checkpointing(cpu_offload=) TypeError
+    "block_swap_unsloth_offload",            # swap and unsloth offload are mutually exclusive
+})
+
+# Kept for readability/tests: the audited C2 set is the union of both classes.
+UNVERIFIED_C2_CODES = UNVERIFIED_C2_IGNORED_CODES | UNVERIFIED_C2_RAISE_CODES
+
+# A (semantic conflict / structural), B (input validation) and B+C2 mixed.
+# These stay hard errors under every policy; ``allow`` must not turn a typo or
+# a silently overridden switch into a warning.
+HARD_BLOCK_CODES = frozenset({
+    "selective_full_gradient_checkpointing",
+    "selective_cpu_offload",
+    "selective_unsloth_offload",
+    "unsloth_cpu_offload",
+    "convrot_block_swap_int8_mutex",
+    "block_swap_soft_tokens",
+    "block_swap_functional_loss",
+    "qwen_image_2_1_attn_mode",
+    "qwen_image_2_1_blocks_to_swap",
+    "invalid_qwen_saved_projection_blocks",
+    "invalid_qwen_projection_budget_mib",
+    "invalid_qwen_fused_projections",
+    "invalid_selective_checkpoint",
+    "invalid_model_family",
+    "pipeline_parallel_config",
+    "negative_blocks_to_swap",
+    "invalid_base_compute",
+    "krea2_invalid_attn_mode",
+    "z_image_attention_mode",
+    "z_image_block_swap_range",
+    "auto_block_swap_contract",
+    "adaptive_precision_contract",
+    "sample_vae_decode_contract",
+    "qwen_preview_memory_contract",
+    "qwen_saved_projection_contract",
+})
+
+# Codes added after the audit by the round-2 review: always hard errors.
+EXTRA_HARD_CODES = frozenset({
+    # huber/smooth_l1 + huber_schedule=snr raises NotImplementedError because
+    # get_noise_scheduler always returns FlowMatchEulerDiscreteScheduler (no
+    # alphas_cumprod). CLI default huber_schedule is "snr".
+    "loss_type_huber_schedule_unsupported",
+    # qwen mixed_precision subconditions that raise regardless of policy.
+    "qwen_image_2_1_mixed_precision_flash",
+    "qwen_image_2_1_mixed_precision_nf4",
+})
+
+# ``allow`` may relax only C2-ignored codes. Unknown/new codes are never relaxed.
+RELAXABLE_UNWIRED_CODES = UNVERIFIED_C2_IGNORED_CODES
+
+# Every code that must stay an error under all three policies.
+ALWAYS_ERROR_CODES = (
+    HARD_BLOCK_CODES
+    | UNVERIFIED_C2_RAISE_CODES
+    | UNVERIFIED_C3_CODES
+    | EXTRA_HARD_CODES
+)
+
+_POLICY_ALIASES = {
+    "strict": "strict",
+    "error": "strict",
+    "off": "strict",
+    "none": "strict",
+    "warn": "warn",
+    "warning": "warn",
+    "default": "warn",
+    "allow": "allow",
+    "permissive": "allow",
+}
+
+
+def resolve_unverified_policy(
+    config: Mapping[str, Any] | object | None = None,
+    override: str | None = None,
+) -> tuple[str, str | None]:
+    """Resolve the unverified policy from an explicit override or the config.
+
+    Returns ``(policy, invalid_message)``. An explicit keyword wins over the
+    ``compat_unverified_policy`` config key; an unknown value falls back to the
+    default and reports a message the caller turns into a hard error.
+    """
+
+    raw = override if override is not None else _get(config, COMPAT_UNVERIFIED_POLICY_KEY, None)
+    if raw is None:
+        return DEFAULT_COMPAT_UNVERIFIED_POLICY, None
+    text = str(raw).strip().lower()
+    if not text:
+        return DEFAULT_COMPAT_UNVERIFIED_POLICY, None
+    policy = _POLICY_ALIASES.get(text)
+    if policy is None:
+        return DEFAULT_COMPAT_UNVERIFIED_POLICY, (
+            f"unknown {COMPAT_UNVERIFIED_POLICY_KEY}={raw!r}; expected "
+            + " | ".join(COMPAT_UNVERIFIED_POLICIES)
+            + f" (using {DEFAULT_COMPAT_UNVERIFIED_POLICY!r})"
+        )
+    return policy, None
 
 
 @dataclass(frozen=True)
@@ -68,6 +309,9 @@ class TrainingCompatResult:
     errors: tuple[TrainingCompatIssue, ...]
     warnings: tuple[TrainingCompatIssue, ...]
     mutations: tuple[TrainingCompatMutation, ...]
+    unverified_policy: str = DEFAULT_COMPAT_UNVERIFIED_POLICY
+    # Codes that the policy downgraded from error to warning in this call.
+    relaxed: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -75,13 +319,52 @@ class TrainingCompatResult:
 
 
 class _CompatBuilder:
-    def __init__(self) -> None:
+    def __init__(self, unverified_policy: str = DEFAULT_COMPAT_UNVERIFIED_POLICY) -> None:
+        self.unverified_policy = unverified_policy
         self.errors: list[TrainingCompatIssue] = []
         self.warnings: list[TrainingCompatIssue] = []
         self.mutations: list[TrainingCompatMutation] = []
+        self.relaxed: list[str] = []
 
     def error(self, code: str, key: str, message: str) -> None:
+        # ``allow`` relaxes only C2-ignored sites (the family never reads the
+        # key); raise-class, A/B codes and any code outside the audited tables
+        # stay hard errors under every policy.
+        if self.unverified_policy == "allow" and code in RELAXABLE_UNWIRED_CODES:
+            self.warnings.append(
+                TrainingCompatIssue(
+                    code,
+                    key,
+                    f"{UNVERIFIED_MARKER}[allow] {message} {UNWIRED_NOTE}",
+                )
+            )
+            self.relaxed.append(code)
+            return
         self.errors.append(TrainingCompatIssue(code, key, message))
+
+    def unverified(self, code: str, key: str, message: str) -> None:
+        """Report an audited C1 site: unvalidated but effective implementation.
+
+        ``strict`` keeps the historical verdict (an error) and the audited
+        message; ``warn`` (default) and ``allow`` report a warning carrying the
+        未验证 marker and the per-code reason.
+        """
+
+        reason = UNVERIFIED_C1_REASONS[code]
+        if self.unverified_policy == "strict":
+            self.errors.append(TrainingCompatIssue(code, key, message))
+            return
+        self.warnings.append(
+            TrainingCompatIssue(
+                code,
+                key,
+                f"{UNVERIFIED_MARKER} {message} Reason: {reason}. "
+                "Downgraded to a warning by "
+                f"{COMPAT_UNVERIFIED_POLICY_KEY}={self.unverified_policy}; set "
+                f"{COMPAT_UNVERIFIED_POLICY_KEY}=strict to reject this combination.",
+            )
+        )
+        self.relaxed.append(code)
 
     def warning(self, code: str, key: str, message: str) -> None:
         self.warnings.append(TrainingCompatIssue(code, key, message))
@@ -94,6 +377,8 @@ class _CompatBuilder:
             errors=tuple(self.errors),
             warnings=tuple(self.warnings),
             mutations=tuple(self.mutations),
+            unverified_policy=self.unverified_policy,
+            relaxed=tuple(self.relaxed),
         )
 
 
@@ -176,6 +461,26 @@ def _nested_caption_dropout_enabled(config: Mapping[str, Any] | object) -> bool:
     return False
 
 
+def _loads_mixed_nf4_weights(config: Mapping[str, Any] | object, family: str) -> bool:
+    """Return whether the configured checkpoint is a pre-quantized mixed-NF4 file.
+
+    Mirrors ``library/quantization/training.py`` (a mixed-NF4 model is BF16-only)
+    without materializing weights: only the safetensors header is inspected.
+    Missing/unreadable paths count as "not mixed NF4" so preflight stays usable
+    for not-yet-downloaded checkpoints; the loader still validates later.
+    """
+
+    path = _get(config, "pretrained_model_name_or_path", None)
+    if not path:
+        return False
+    try:
+        from library.quantization.format import inspect_mixed_nf4
+
+        return inspect_mixed_nf4(str(path), family=family) is not None
+    except (OSError, ValueError):
+        return False
+
+
 def _check_qwen_image_2_1_contract(out: _CompatBuilder, config, *,
                                    selective_checkpoint: str, blocks_to_swap: int,
                                    torch_compile: bool, cpu_offload_checkpointing: bool,
@@ -184,17 +489,41 @@ def _check_qwen_image_2_1_contract(out: _CompatBuilder, config, *,
         if active:
             out.error(f"qwen_image_2_1_{flag}", flag, message)
 
+    def unverified(flag: str, active: bool, message: str) -> None:
+        # Audited C1: the qwen path consumes the flag; only real-machine
+        # acceptance is missing. Relaxed by compat_unverified_policy.
+        if active:
+            out.unverified(f"qwen_image_2_1_{flag}", flag, message)
+
     task = str(_get(config, "qwen_image_2_1_task", "t2i") or "t2i").strip().lower()
     family = "Qwen Image 2.1 Edit adapter" if task == "edit" else "Qwen Image 2.1 T2I adapter"
-    forbid("mixed_precision", str(_get(config, "mixed_precision", "bf16") or "bf16").lower() != "bf16",
-           f"{family} requires mixed_precision=bf16")
+    mixed_precision = str(_get(config, "mixed_precision", "bf16") or "bf16").lower()
+    qwen_attn_mode = str(_get(config, "attn_mode", "torch") or "torch").lower()
+    if mixed_precision != "bf16":
+        # Two subconditions raise regardless of policy: flash attention is
+        # bf16-only (attention_backend raises for any other dtype) and mixed NF4
+        # weights require bf16 compute (quantization/training raises). Only the
+        # remaining fp16 combinations are C1 (implemented, unvalidated).
+        if qwen_attn_mode == "flash":
+            forbid("mixed_precision_flash", True,
+                   f"{family} attn_mode=flash is validated for bf16 compute only; "
+                   "fp16 raises RuntimeError in the attention backend")
+        elif _loads_mixed_nf4_weights(config, "qwen_image_2_1"):
+            forbid("mixed_precision_nf4", True,
+                   f"{family} pre-quantized mixed-NF4 weights require BF16 compute; "
+                   "fp16 raises in the mixed-NF4 loader")
+        else:
+            unverified("mixed_precision", True,
+                       f"{family} requires mixed_precision=bf16")
     forbid("base_compute", str(_get(config, "base_compute", "bf16") or "bf16").lower() != "bf16",
-           f"{family} does not support NF4/ConvRot; use base_compute=bf16")
+           f"{family} has no runtime NF4/ConvRot base quantization; keep "
+           "base_compute=bf16 (pre-quantized mixed-NF4 weights load under bf16)")
     forbid("adaptive_precision", str(_get(config, "adaptive_precision", "off") or "off").lower() != "off",
            f"{family} does not support adaptive precision")
     mode = str(_get(config, "attn_mode", "torch") or "torch").lower()
-    forbid("attn_mode", mode not in {"torch", "sdpa", "flash"} or _bool_value(_get(config, "xformers")),
-           f"{family} supports torch/sdpa and bf16 FlashAttention varlen")
+    forbid("attn_mode", mode not in {"torch", "sdpa", "native", "flash"} or _bool_value(_get(config, "xformers")),
+           f"{family} supports torch, sdpa and native (sdpa/native are torch "
+           "aliases) plus bf16 FlashAttention varlen")
     forbid("blocks_to_swap", blocks_to_swap > 30,
            f"{family} blocks_to_swap must be between 0 and 30")
     forbid("block_swap_checkpoint", blocks_to_swap > 0 and not _bool_value(_get(config, "gradient_checkpointing")),
@@ -216,14 +545,14 @@ def _check_qwen_image_2_1_contract(out: _CompatBuilder, config, *,
     forbid("caption_dropout_rate", _float_value(_get(config, "caption_dropout_rate")) > 0
            or _nested_caption_dropout_enabled(config),
            f"{family} requires caption_dropout_rate=0")
-    forbid("masked_loss", _bool_value(_get(config, "masked_loss")),
-           f"{family} masked loss is not implemented")
-    forbid("loss_type", str(_get(config, "loss_type", "l2") or "l2").lower() != "l2",
-           f"{family} supports L2 flow-matching loss only")
+    unverified("masked_loss", _bool_value(_get(config, "masked_loss")),
+               f"{family} masked loss has no accepted real-machine run")
+    unverified("loss_type", str(_get(config, "loss_type", "l2") or "l2").lower() != "l2",
+               f"{family} official recipe uses the L2 flow-matching loss only")
     forbid("timestep_sampling", str(_get(config, "timestep_sampling", "uniform") or "uniform").lower() != "uniform",
            f"{family} uses uniformly sampled dynamic-shift sigmas")
-    forbid("weighting_scheme", str(_get(config, "weighting_scheme", "none") or "none").lower() != "none",
-           f"{family} requires weighting_scheme=none")
+    unverified("weighting_scheme", str(_get(config, "weighting_scheme", "none") or "none").lower() != "none",
+               f"{family} official recipe uses weighting_scheme=none")
     sampling = any(_bool_value(_get(config, key)) if key == "sample_at_first"
                    else _int_value(_get(config, key)) > 0
                    for key in ("sample_at_first", "sample_every_n_steps", "sample_every_n_epochs"))
@@ -239,10 +568,41 @@ def check_training_compat(
     config: Mapping[str, Any] | object,
     *,
     world_size: int | None = None,
+    unverified_policy: str | None = None,
 ) -> TrainingCompatResult:
-    """Validate optimization-flag combinations used by training and Web preflight."""
+    """Validate optimization-flag combinations used by training and Web preflight.
 
-    out = _CompatBuilder()
+    ``unverified_policy`` (or the ``compat_unverified_policy`` config key)
+    selects how audited unverified combinations are reported: ``strict``
+    (origin/dev behavior), ``warn`` (default; the seven audited C1 codes become
+    warnings) or ``allow`` (the audited C2-*ignored* codes become warnings too).
+    C2-raise/C3-raise codes, input validation and semantic-conflict codes stay
+    errors under every policy.
+    """
+
+    policy, policy_error = resolve_unverified_policy(config, unverified_policy)
+    out = _CompatBuilder(policy)
+    if policy_error is not None:
+        out.error(
+            "invalid_compat_unverified_policy",
+            COMPAT_UNVERIFIED_POLICY_KEY,
+            policy_error,
+        )
+    # huber/smooth_l1 + huber_schedule=snr needs noise_scheduler.alphas_cumprod,
+    # but get_noise_scheduler() always returns FlowMatchEulerDiscreteScheduler,
+    # so losses.py raises NotImplementedError at the first step. The CLI default
+    # for huber_schedule is "snr", so --loss_type huber alone is a hard error.
+    loss_type = str(_get(config, "loss_type", "l2") or "l2").strip().lower()
+    huber_schedule = str(_get(config, "huber_schedule", "snr") or "snr").strip().lower()
+    if loss_type in {"huber", "smooth_l1"} and huber_schedule == "snr":
+        out.error(
+            "loss_type_huber_schedule_unsupported",
+            "huber_schedule",
+            f"loss_type={loss_type!r} with huber_schedule='snr' raises "
+            "NotImplementedError in library/training/losses.py: the SNR schedule "
+            "needs noise_scheduler.alphas_cumprod, which FlowMatchEulerDiscreteScheduler "
+            "does not provide. Use huber_schedule='constant' or 'exponential'.",
+        )
     from library.quantization.qwen_nf4_compile_policy import qwen_nf4_compile_experiment_errors
 
     for message in qwen_nf4_compile_experiment_errors(_get(config, "model_family"), config):
@@ -463,8 +823,10 @@ def check_training_compat(
         if functional_loss_weight > 0:
             adapter_conflicts.append("functional_loss_weight")
         if adapter_conflicts:
+            # krea2_raw sets plain_lora_only=False, so the historical
+            # "krea2_plain_lora_only" branch was unreachable dead code.
             out.error(
-                ("krea2_plain_lora_only" if krea2_family else "family_plain_lora_only"),
+                "family_plain_lora_only",
                 "network_module",
                 f"{family_spec.display_name} training supports only "
                 + ("plain LoRA, LoKr, or LoHa" if qwen_image_2_1_family else "plain LoRA")
@@ -492,8 +854,8 @@ def check_training_compat(
             out.error(
                 "krea2_invalid_attn_mode",
                 "attn_mode",
-                "Krea-2 attn_mode supports only torch or flash (sdpa is a "
-                f"torch alias); got {krea2_attn_mode!r}.",
+                "Krea-2 attn_mode supports torch and flash; sdpa/cudnn/cudnn_sdpa "
+                f"are torch aliases; got {krea2_attn_mode!r}.",
             )
         if compile_dynamic_seq:
             message = (
@@ -569,14 +931,14 @@ def check_training_compat(
                 message,
             )
         attn_mode = str(_get(config, "attn_mode", "flash") or "flash").strip().lower()
-        if attn_mode not in {"torch", "flash", "sdpa"} or _bool_value(
+        if attn_mode not in {"torch", "flash", "sdpa", "native"} or _bool_value(
             _get(config, "xformers"), False
         ):
             out.error(
                 "z_image_attention_mode",
                 "attn_mode",
-                "Z-Image supports attn_mode=torch or flash (sdpa is a torch "
-                "alias); xformers must be disabled.",
+                "Z-Image supports attn_mode=torch, sdpa and native (sdpa/native "
+                "are torch aliases) plus flash; xformers must be disabled.",
             )
         mixed_precision = (
             str(_get(config, "mixed_precision", "bf16") or "bf16").strip().lower()
@@ -585,7 +947,7 @@ def check_training_compat(
         adaptive_islands = islands_enabled(config)
         if mixed_precision != "bf16" and not (
             (adaptive_islands and mixed_precision == "fp16" or mixed_precision == "no")
-            and attn_mode in {"torch", "sdpa"}
+            and attn_mode in {"torch", "sdpa", "native"}
         ):
             out.error(
                 "z_image_bf16_only",
@@ -600,7 +962,9 @@ def check_training_compat(
             out.error(
                 "z_image_base_compute",
                 "base_compute",
-                "Z-Image v1 does not yet support NF4 or ConvRot base compute; use bf16.",
+                "Z-Image v1 has no runtime NF4/ConvRot base quantization; "
+                "pre-quantized mixed-NF4 weights are supported but must load "
+                "with base_compute=bf16.",
             )
         if torch_compile:
             out.error(
@@ -645,10 +1009,10 @@ def check_training_compat(
             )
         loss_type = str(_get(config, "loss_type", "l2") or "l2").strip().lower()
         if loss_type != "l2":
-            out.error(
+            out.unverified(
                 "z_image_loss_type",
                 "loss_type",
-                "Z-Image v1 reproduces the official L2 flow-matching loss only.",
+                "Z-Image official recipe uses the L2 flow-matching loss only.",
             )
         if _get(config, "t_min") is not None or _get(config, "t_max") is not None:
             out.error(
@@ -672,10 +1036,10 @@ def check_training_compat(
             )
         flow_shift = _float_value(_get(config, "discrete_flow_shift"), 6.0)
         if abs(flow_shift - 6.0) > 1e-7:
-            out.error(
+            out.unverified(
                 "z_image_flow_shift",
                 "discrete_flow_shift",
-                "Z-Image training requires the official discrete_flow_shift=6.0.",
+                "Z-Image official recipe uses discrete_flow_shift=6.0.",
             )
         timestep_sampling = (
             str(_get(config, "timestep_sampling", "uniform") or "uniform")
@@ -692,10 +1056,10 @@ def check_training_compat(
             str(_get(config, "weighting_scheme", "none") or "none").strip().lower()
         )
         if weighting_scheme != "none":
-            out.error(
+            out.unverified(
                 "z_image_weighting_scheme",
                 "weighting_scheme",
-                "Z-Image v1 supports weighting_scheme=none only.",
+                "Z-Image official recipe uses weighting_scheme=none.",
             )
         caption_dropout_rate = _float_value(_get(config, "caption_dropout_rate"), 0.0)
         if caption_dropout_rate > 0 or _nested_caption_dropout_enabled(config):
@@ -809,16 +1173,9 @@ def check_training_compat(
             "block_swap_transfer_dtype=int8 (double dequant / confused semantics). "
             "Use block_swap_transfer_dtype=bf16 when enabling ConvRot.",
         )
-    # NF4 (Krea-2 QLoRA) 与 ConvRot 互斥: ConvRot 是 anima cross-attn/AdaLN 专属
-    # 量化路径, NF4 是 Krea-2 single-stream 通用 bnb 4-bit, 两者架构假设不同.
-    if nf4_active and convrot_active:
-        out.error(
-            "nf4_convrot_mutex",
-            "base_compute",
-            "base_compute=nf4 is mutually exclusive with ConvRot paths "
-            "(w8a16_convrot/w8a8_convrot). NF4 is the Krea-2 QLoRA path; "
-            "ConvRot is anima-specific. Pick one.",
-        )
+    # NF4 与 ConvRot 的真实互斥由 base_compute 单值枚举保证: convrot_active 与
+    # nf4_active 都从同一个 base_compute 字符串派生, 因此历史上那条
+    # "nf4 + ConvRot" 互斥检查恒假, 已删除 (审计文档 §8/§9).
     # NF4 × block_swap 已验证通过 (方向 A: deepcopy master + Params4bit.to() 整体
     # 搬运, offloading.py isinstance 分流不碰 bf16/int8/fp8 路径). 端到端探针
     # (probe_nf4_blockswap.py, PG199, 1024, swap=4, 30 步): host RAM 18.18GB
@@ -859,8 +1216,8 @@ def check_training_compat(
         out.error(
             "invalid_base_compute",
             "base_compute",
-            f"unknown base_compute={base_compute!r}; expected bf16 | "
-            "w8a16_convrot | w8a8_convrot | nf4",
+            f"unknown base_compute={base_compute!r}; expected bf16 | fp16 | "
+            "none | off | w8a16_convrot | w8a8_convrot | w8a16 | w8a8 | nf4",
         )
 
     # ConvRot on attention linears + flash + torch.compile can materialize
@@ -968,17 +1325,40 @@ def check_training_compat(
                 "Disable block swap for postfix/functional multi-forward training.",
             )
 
-    return out.build()
+    result = out.build()
+    if result.relaxed:
+        # One summary line per check so the training bootstrap path (which only
+        # raises on errors) cannot silently drop the relaxed-combination record.
+        logger.warning(
+            "compat_unverified_policy=%s relaxed: %s",
+            result.unverified_policy,
+            sorted(result.relaxed),
+        )
+    return result
 
 
 def apply_training_compat_mutations(
     target: Mapping[str, Any] | object,
     result: TrainingCompatResult,
 ) -> None:
-    """Apply suggested mutations to a mutable mapping or argparse namespace."""
+    """Apply suggested mutations and stamp the policy record on *target*.
+
+    The stamp keeps ``compat_unverified_policy`` and the actual relaxed code
+    list (``compat_unverified_relaxed``) on the training args so metadata can
+    record which unverified combinations a run actually used.
+    """
 
     for mutation in result.mutations:
         if isinstance(target, dict):
             target[mutation.key] = mutation.value
         else:
             setattr(target, mutation.key, mutation.value)
+    stamped = {
+        COMPAT_UNVERIFIED_POLICY_KEY: result.unverified_policy,
+        "compat_unverified_relaxed": sorted(set(result.relaxed)),
+    }
+    for key, value in stamped.items():
+        if isinstance(target, dict):
+            target[key] = value
+        else:
+            setattr(target, key, value)

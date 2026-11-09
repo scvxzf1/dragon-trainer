@@ -9,6 +9,7 @@
 | 安装并启动 WebUI | [根 README](../README.md)、[Linux 部署指南](guidelines/linux-deployment.zh.md) |
 | 使用和维护当前 WebUI | [Next 前端 README](../web/frontend-next/README.md) |
 | 准备数据并训练 | [训练参考](guidelines/training.md) |
+| 训练被兼容预检拦下（未验证组合、默认 warn / strict 回退） | [模型训练能力与兼容预检策略](configuration/model-training-capabilities.md) |
 | 推理与组合 DCW、Spectrum | [推理参考](guidelines/inference.md) |
 | 判断哪些操作可直接执行 | [授权分级](guidelines/authorization_tiers.md) |
 | 理解配置合并和外置路径 | [配置索引](configuration/README.md) |

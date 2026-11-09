@@ -69,6 +69,53 @@ def _compat_web_message(item) -> str:
             "selective_checkpoint 取值不受支持；请改为 off、adapter_aware、"
             "mlp_only、peak_blocks_mlp 等已知模式。"
         ),
+        "invalid_compat_unverified_policy": (
+            "compat_unverified_policy 取值不受支持；请改为 strict、warn 或 allow。"
+        ),
+        "loss_type_huber_schedule_unsupported": (
+            "huber/smooth_l1 损失不支持 huber_schedule=snr：SNR 调度需要 "
+            "noise_scheduler.alphas_cumprod，而 flow-matching 族只有 "
+            "FlowMatchEulerDiscreteScheduler，训练第一步就会 NotImplementedError。"
+            "请改用 huber_schedule=constant 或 exponential。"
+        ),
+        "qwen_image_2_1_mixed_precision_flash": (
+            "Qwen Image 2.1 的 attn_mode=flash 只验证过 bf16 计算；fp16 + flash 会在"
+            "注意力后端直接 RuntimeError，compat_unverified_policy 任何档位都不会放行。"
+        ),
+        "qwen_image_2_1_mixed_precision_nf4": (
+            "预量化 mixed-NF4 权重要求 BF16 计算；fp16 + mixed-NF4 会在 NF4 加载器里"
+            "直接报错，compat_unverified_policy 任何档位都不会放行。"
+        ),
+        # Audited C1 codes (docs/findings/compat_unverified_audit_20261109.md).
+        # warn 档下它们是 warning，strict 档下仍是 error，文案统一标注未验证。
+        "qwen_image_2_1_mixed_precision": (
+            "Qwen Image 2.1 仅验收过 bf16；该 mixed_precision 在 torch/sdpa 路径会生效，"
+            "但缺少真机验收（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "qwen_image_2_1_masked_loss": (
+            "Qwen Image 2.1 掩码损失已接线但缺少数据与质量验收（未验证）；"
+            "compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "qwen_image_2_1_loss_type": (
+            "Qwen Image 2.1 官方配方仅使用 L2；其他 loss_type 会生效但未验收（未验证）。"
+            "compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "qwen_image_2_1_weighting_scheme": (
+            "Qwen Image 2.1 官方配方使用 weighting_scheme=none；其他取值会生效但未验收"
+            "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "z_image_loss_type": (
+            "Z-Image 官方配方仅使用 L2；其他 loss_type 会生效但未验收（未验证）。"
+            "compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "z_image_flow_shift": (
+            "Z-Image 官方配方使用 discrete_flow_shift=6.0；其他取值会生效但未验收"
+            "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "z_image_weighting_scheme": (
+            "Z-Image 官方配方使用 weighting_scheme=none；其他取值会生效但未验收"
+            "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
         "krea2_invalid_attn_mode": (
             "Krea-2 注意力后端仅支持 torch 或 flash（sdpa 作为 torch 别名）。"
         ),
@@ -97,18 +144,8 @@ def _compat_web_message(item) -> str:
         "krea2_v100_flash_stability": (
             "v100_flash_stability 是 Anima 专用诊断项，Krea-2 下必须为 off。"
         ),
-        "krea2_plain_lora_only": "Krea-2 当前仅支持 plain LoRA，不能组合高级 adapter 或路由。",
-        "pipeline_parallel_krea2_only": (
-            "流水线并行当前仅支持 Krea-2 Raw"
-            "（model_family=krea2_raw 或别名 krea2）。"
-        ),
         "pipeline_parallel_config": (
             "流水线配置无效；当前需要两阶段、1F1B、balanced，"
-            "只训练 DiT，并关闭 block swap、torch.compile、选择性 checkpoint "
-            "与 CPU/Unsloth activation offload。"
-        ),
-        "krea2_pipeline_parallel_config": (
-            "Krea-2 流水线配置无效；当前需要两阶段、1F1B、balanced，"
             "只训练 DiT，并关闭 block swap、torch.compile、选择性 checkpoint "
             "与 CPU/Unsloth activation offload。"
         ),

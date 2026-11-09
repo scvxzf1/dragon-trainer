@@ -9,7 +9,7 @@
 | [moss-image.md](moss-image.md) | 首版基础实现 | MOSS-Image 文生图 plain LoRA、NF4/BF16 文本精度与兼容边界 |
 | [moss-image-training-preflight.md](moss-image-training-preflight.md) | 维护用清单 | MOSS 记录索引、训练前契约核对、本机现状与执行序列模板 |
 | [external-configs.md](external-configs.md) | 当前实现说明 | 解释 `ANIMA_CONFIGS_ROOT`、WebUI 全局设置里的 `configs_root`、路径解析优先级和迁移建议 |
-| [model-training-capabilities.md](model-training-capabilities.md) | 当前实现说明 | 模型训练能力标签、编辑数据集匹配、预检查和旧任务参数兼容 |
+| [model-training-capabilities.md](model-training-capabilities.md) | 当前实现说明 | 模型训练能力标签、编辑数据集匹配、预检查、兼容预检策略（`--compat_unverified_policy`，默认 warn）与旧任务参数兼容 |
 | [dragon-training-config-215.md](dragon-training-config-215.md) | 历史快照 | 记录已退役 Dragon 配置页当时显示的 215 项；当前配置入口为 `/next/training` |
 | [dataset-cache-semantics.md](dataset-cache-semantics.md) | 当前实现说明 | Dragon 数据集的 `mask_mode`、family-aware 缓存、模型身份 stamp 与 runtime 预检契约 |
 | [preprocess-auto-batch.md](preprocess-auto-batch.md) | 当前实现说明 | VAE/文本缓存从 1 起步的自动批大小、预测上拉、OOM 退避和固定预设兼容 |
