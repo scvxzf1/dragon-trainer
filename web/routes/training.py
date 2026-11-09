@@ -87,6 +87,7 @@ async def handle_preflight(request: web.Request) -> web.Response:
             methods_subdir,
             config_file=config_file,
             world_size=_preflight_world_size(data.get("gpu_whitelist")),
+            gpu_whitelist=data.get("gpu_whitelist"),
         )
         return web.json_response(result)
     except Exception as e:
@@ -152,6 +153,7 @@ async def handle_start(request: web.Request) -> web.Response:
             methods_subdir,
             config_file=config_file,
             world_size=_preflight_world_size(gpu_whitelist),
+            gpu_whitelist=gpu_whitelist,
         )
         remaining, extra_args = acknowledge_request_risks(data, preflight, extra_args)
         if not remaining.get("ok", False):
@@ -255,6 +257,7 @@ async def handle_preprocess(request: web.Request) -> web.Response:
             methods_subdir,
             config_file=config_file,
             world_size=_preflight_world_size(gpu_whitelist),
+            gpu_whitelist=gpu_whitelist,
         )
     except Exception as e:
         return web.json_response({"ok": False, "error": f"预处理预检测失败: {e}"}, status=400)
@@ -472,6 +475,7 @@ async def _handle_queue_start_data(request: web.Request, data: dict) -> web.Resp
             methods_subdir,
             config_file=config_file,
             world_size=_preflight_world_size(gpu_whitelist),
+            gpu_whitelist=gpu_whitelist,
         )
         remaining, extra_args = acknowledge_request_risks(data, preflight, extra_args)
         needs_preprocess = not config_file or not is_web_runtime_config(config_file)
@@ -558,6 +562,7 @@ async def _handle_queue_batch_start_data(request: web.Request, data: dict) -> we
                 methods_subdir,
                 config_file=config_file,
                 world_size=_preflight_world_size(gpu_whitelist),
+                gpu_whitelist=gpu_whitelist,
             )
         except Exception as e:
             return web.json_response({
