@@ -47,6 +47,8 @@ from trajectory_gate import (
     run_trajectory,
 )
 
+from library.quantization.nf4 import set_dir1_enabled
+
 ROOT = Path(__file__).resolve().parents[2]
 CUDA = torch.device("cuda")
 
@@ -62,71 +64,6 @@ def _cos(a: torch.Tensor, b: torch.Tensor) -> float:
         a.float().flatten(), b.float().flatten(), dim=0
     ).item()
 
-
-def install_dir1():
-    """把 bnb 的 MatMul4Bit 换成 dir1 版本，返回原类以便恢复。
-
-    三个实现要点都是踩过的坑：
-
-    - ``torch.ldexp`` 第二参数必须是 Tensor，不能传 Python int；
-    - 平移量必须双向 clamp：``min=-126`` 防向下溢出，``max=126`` 防
-      ``amax=1e-40 -> exp=-132 -> -exp=+132`` 向上溢出；
-    - ``frexp(0.0) == (0.0, 0)``，全零梯度天然免疫，不需要 eps/where 分支。
-    """
-    import bitsandbytes.functional as bnb_f
-    from bitsandbytes.autograd import _functions as bnb_autograd
-
-    original = bnb_autograd.MatMul4Bit
-
-    class Dir1MatMul4Bit(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, A, B, out=None, bias=None, quant_state=None):
-            ctx.is_empty = A.numel() == 0
-            ctx.state = quant_state
-            ctx.dtype_A = A.dtype
-            ctx.bias = bias
-            ctx.tensors = (None, B)
-            if ctx.is_empty:
-                shape = quant_state.shape
-                return torch.empty(
-                    A.shape[:-1] + shape[1:], dtype=A.dtype, device=A.device
-                )
-            w = bnb_f.dequantize_4bit(B, quant_state)
-            # 前向不需要缩放：激活量级 O(1e-2~1e0)，本来就在 fp16 正规区。
-            # bias 必须一起转 fp16，否则 F.linear 内部 matmul 报 dtype 不匹配。
-            output = torch.nn.functional.linear(
-                A.to(torch.float16),
-                w.to(torch.float16).t(),
-                None if bias is None else bias.to(torch.float16),
-            )
-            return output.to(ctx.dtype_A)
-
-        @staticmethod
-        def backward(ctx, grad_output):
-            if ctx.is_empty:
-                return torch.zeros_like(ctx.tensors[1]), None, None, None, None
-            _, B = ctx.tensors
-            w = bnb_f.dequantize_4bit(B, ctx.state)
-            g = grad_output
-            exp = torch.frexp(g.abs().max())[1]
-            shift = torch.clamp(-exp, min=-126, max=126)
-            g16 = torch.ldexp(g.float(), shift).to(torch.float16)
-            out = torch.matmul(g16, w.to(torch.float16).t())
-            grad_A = torch.ldexp(out.float(), -shift).to(ctx.dtype_A)
-
-            grad_bias = None
-            if ctx.bias is not None and ctx.needs_input_grad[3]:
-                grad_bias = grad_output.sum(0, dtype=ctx.bias.dtype)
-            return grad_A, None, None, grad_bias, None
-
-    bnb_autograd.MatMul4Bit = Dir1MatMul4Bit
-    return original
-
-
-def restore_matmul4bit(original) -> None:
-    from bitsandbytes.autograd import _functions as bnb_autograd
-
-    bnb_autograd.MatMul4Bit = original
 
 
 def main() -> int:
@@ -188,11 +125,11 @@ def main() -> int:
     results["fp16"] = one(torch.float16, "fp16")
     torch.cuda.empty_cache()
 
-    original = install_dir1()
+    set_dir1_enabled(True)
     try:
         results["dir1"] = one(torch.bfloat16, "dir1")
     finally:
-        restore_matmul4bit(original)
+        set_dir1_enabled(False)
     torch.cuda.empty_cache()
 
     ref = results["fp32"]["grad"]

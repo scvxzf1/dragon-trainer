@@ -4,11 +4,10 @@
 9.0s -> 3.1s，但同一脚本内 fp32 反而比 bf16 快，说明顺序效应明显）。本脚本用
 **交替运行**消除顺序偏差，并取中位数。
 
-dir1 的实现包含 ``qs.dtype=torch.float16`` 的 dequant 优化：bnb 的 dequant 内核
-在 FP32 寄存器里查表并乘 absmax，只在写回时按 ``quant_state.dtype`` 转换。把
-``dtype`` 临时设为 fp16，可以直接写出 10 位尾数的 fp16 权重，省掉
-``dequant(bf16) -> .half()`` 那一次 72 MB 读 + 72 MB 写（实测 0.581 -> 0.308 ms）。
-副作用是权重精度从 bf16 的 7 位尾数升到 fp16 的 10 位。
+dir1 的实现已收敛到 ``library.quantization.nf4``（单一真源），本脚本只负责计时。
+启用 ``set_dir1_enabled(True)`` 后，``BF16AutocastLinear4bit.forward`` 会把 GEMM
+切到 fp16 + 逐层 ``frexp``/``ldexp`` 缩放；``compute_dtype`` 仍是 bfloat16，
+BF16 fail-closed 契约不变。
 
 用法::
 
@@ -16,7 +15,6 @@ dir1 的实现包含 ``qs.dtype=torch.float16`` 的 dequant 优化：bnb 的 deq
 """
 
 import argparse
-import copy
 import json
 import os
 import statistics
@@ -29,6 +27,8 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", os.environ.get("K2FP16_GPU", "1"))
 
 import torch
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trajectory_gate import (
@@ -39,92 +39,9 @@ from trajectory_gate import (
     run_trajectory,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+from library.quantization.nf4 import set_dir1_enabled
+
 CUDA = torch.device("cuda")
-
-
-def dequant_fp16(B: torch.Tensor, quant_state) -> torch.Tensor:
-    """按 fp16 直接 dequant：省一次 bf16 写出 + bf16->fp16 拷贝，且保留 10 位尾数。
-
-    用 ``copy.copy`` 浅拷贝 QuantState 而不是原地改 ``quant_state.dtype``：
-
-    - ``QuantState`` 只是轻量 Python 壳（持有 absmax/code 等 GPU 张量的引用），
-      浅拷贝不复制显存、耗时亚微秒；
-    - 原对象全程零改动（Zero Mutation），多线程并发 dequant 无竞争，不需要锁；
-    - 对全局 ``dequantize_4bit`` 无副作用。
-
-    不用 bnb 的 ``out=`` 参数：0.49.2 的 cuda kernel 里 ``torch._check(out.shape == shape)``
-    中 ``shape`` 经 ``torch.ops`` 的 ``int[]`` schema 被转成 list，而 ``out.shape`` 是
-    ``torch.Size``；``torch.Size == list`` 恒为 False（Size 是 tuple 子类，只与 tuple 相等），
-    所以传 Size/tuple/list 都会报 ``Expected out.shape == [6144, 6144], got
-    torch.Size([6144, 6144])``。这是 bnb 的缺陷，改 ``qs.shape`` 绕不过去。
-    """
-    import bitsandbytes.functional as bnb_f
-
-    qs = copy.copy(quant_state)
-    qs.dtype = torch.float16
-    return bnb_f.dequantize_4bit(B, qs)
-
-
-def install_dir1():
-    """替换 bnb 的 MatMul4Bit：内层 fp16 GEMM + frexp/ldexp 逐层缩放。
-
-    三个实现要点（都踩过）：
-    - ``torch.ldexp`` 第二参数必须是 Tensor；
-    - 平移量双向 clamp：``min=-126`` 防向下溢出，``max=126`` 防 ``amax=1e-40``
-      时 ``-exp=+132`` 向上溢出；
-    - forward 的 bias 必须一起转 fp16，否则 F.linear 内部 matmul 报 dtype 不匹配。
-    """
-    from bitsandbytes.autograd import _functions as bnb_autograd
-
-    original = bnb_autograd.MatMul4Bit
-
-    class Dir1MatMul4Bit(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, A, B, out=None, bias=None, quant_state=None):
-            ctx.is_empty = A.numel() == 0
-            ctx.state = quant_state
-            ctx.dtype_A = A.dtype
-            ctx.bias = bias
-            ctx.tensors = (None, B)
-            if ctx.is_empty:
-                shape = quant_state.shape
-                return torch.empty(
-                    A.shape[:-1] + shape[1:], dtype=A.dtype, device=A.device
-                )
-            w = dequant_fp16(B, quant_state)
-            output = torch.nn.functional.linear(
-                A.to(torch.float16),
-                w.t(),
-                None if bias is None else bias.to(torch.float16),
-            )
-            return output.to(ctx.dtype_A)
-
-        @staticmethod
-        def backward(ctx, grad_output):
-            if ctx.is_empty:
-                return torch.zeros_like(ctx.tensors[1]), None, None, None, None
-            _, B = ctx.tensors
-            w = dequant_fp16(B, ctx.state)
-            g = grad_output
-            exp = torch.frexp(g.abs().max())[1]
-            shift = torch.clamp(-exp, min=-126, max=126)
-            g16 = torch.ldexp(g.float(), shift).to(torch.float16)
-            out = torch.matmul(g16, w.t())
-            grad_A = torch.ldexp(out.float(), -shift).to(ctx.dtype_A)
-            grad_bias = None
-            if ctx.bias is not None and ctx.needs_input_grad[3]:
-                grad_bias = grad_output.sum(0, dtype=ctx.bias.dtype)
-            return grad_A, None, None, grad_bias, None
-
-    bnb_autograd.MatMul4Bit = Dir1MatMul4Bit
-    return original
-
-
-def restore(original) -> None:
-    from bitsandbytes.autograd import _functions as bnb_autograd
-
-    bnb_autograd.MatMul4Bit = original
 
 
 def main() -> int:
@@ -145,7 +62,9 @@ def main() -> int:
         f"dir1_e2e_{args.img}{('_' + args.tag) if args.tag else ''}.json"
     )
 
-    print(f"=== GPU: {torch.cuda.get_device_name(0)} | img={args.img} | repeat={args.repeat} ===")
+    print(
+        f"=== GPU: {torch.cuda.get_device_name(0)} | img={args.img} | repeat={args.repeat} ==="
+    )
     blob = prepare_inputs(args.img, args.out_dir / "cache")
     dit = load_krea2_dit(KREA2_NF4, device=str(CUDA), dtype=torch.bfloat16, eval=False)
     dit.train()
@@ -155,11 +74,18 @@ def main() -> int:
     net = build_lora(dit, args.lora_dim, args.lora_dim * 1.0).to(CUDA)
     init_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
 
-    def one(dtype: torch.dtype) -> tuple[float, torch.Tensor]:
+    def one() -> tuple[float, torch.Tensor]:
         t0 = time.perf_counter()
         r = run_trajectory(
-            dit, net, blob, dtype=dtype, steps=1, lr=0.0,
-            init_state=init_state, loss_scale=1.0, device=CUDA,
+            dit,
+            net,
+            blob,
+            dtype=torch.bfloat16,
+            steps=1,
+            lr=0.0,
+            init_state=init_state,
+            loss_scale=1.0,
+            device=CUDA,
         )
         torch.cuda.synchronize()
         return time.perf_counter() - t0, r["grads"][0]
@@ -167,24 +93,24 @@ def main() -> int:
     times = {"bf16": [], "dir1": []}
     grads = {}
     # 预热：两种路径各跑一次，排除首次编译/显存分配的影响
-    one(torch.bfloat16)
-    orig = install_dir1()
+    one()
+    set_dir1_enabled(True)
     try:
-        one(torch.bfloat16)
+        one()
     finally:
-        restore(orig)
+        set_dir1_enabled(False)
     torch.cuda.empty_cache()
 
     for r in range(args.repeat):
-        t_bf, g_bf = one(torch.bfloat16)
+        t_bf, g_bf = one()
         times["bf16"].append(t_bf)
         grads["bf16"] = g_bf
 
-        orig = install_dir1()
+        set_dir1_enabled(True)
         try:
-            t_d1, g_d1 = one(torch.bfloat16)
+            t_d1, g_d1 = one()
         finally:
-            restore(orig)
+            set_dir1_enabled(False)
         times["dir1"].append(t_d1)
         grads["dir1"] = g_d1
         print(
@@ -214,7 +140,7 @@ def main() -> int:
         "repeat": args.repeat,
         "seed": args.seed,
         "gpu": torch.cuda.get_device_name(0),
-        "note": "交替运行取中位数；dir1 含 qs.dtype=fp16 dequant 优化",
+        "note": "交替运行取中位数；dir1 走 library.quantization.nf4 的单一实现",
         "times_s": times,
         "median_s": med,
         "speedup": med["bf16"] / med["dir1"],

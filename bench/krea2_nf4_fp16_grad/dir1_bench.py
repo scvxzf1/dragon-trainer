@@ -33,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trajectory_gate import KREA2_NF4, load_krea2_dit
 
+from library.quantization.nf4 import dequant_fp16
+
 ROOT = Path(__file__).resolve().parents[2]
 DEV = torch.device("cuda")
 GATE = 0.61  # 由实测反推：顶层 4.4e-3 -> 深层 6.5e-9 共 5.8 decade / 28 层
@@ -120,15 +122,11 @@ def cos_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 def dequant_as(B: torch.Tensor, quant_state, dtype: torch.dtype) -> torch.Tensor:
-    """按指定 dtype dequant（``copy.copy`` 浅拷贝 QuantState，原对象零改动）。
-
-    不用 bnb 的 ``out=``：0.49.2 的 cuda kernel 里 ``torch._check(out.shape == shape)``
-    的 ``shape`` 经 ``torch.ops`` 的 ``int[]`` schema 被转成 list，而 ``out.shape`` 是
-    ``torch.Size``；``torch.Size == list`` 恒为 False，所以传 Size/tuple/list 都报
-    ``Expected out.shape == [6144, 6144], got torch.Size([6144, 6144])``。
-    """
+    """按指定 dtype dequant；fp16 走生产实现 ``library.quantization.nf4.dequant_fp16``。"""
     import bitsandbytes.functional as bnb_f
 
+    if dtype == torch.float16:
+        return dequant_fp16(B, quant_state)
     qs = copy.copy(quant_state)
     qs.dtype = dtype
     return bnb_f.dequantize_4bit(B, qs)
