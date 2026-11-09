@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Callable
 
 import torch
@@ -9,6 +11,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
+
+logger = logging.getLogger(__name__)
 
 KREA2_ATTENTION_MODES = frozenset({"torch", "flash"})
 
@@ -25,6 +29,33 @@ KREA2_ATTENTION_MODES = frozenset({"torch", "flash"})
 #: （``SDPA_bwd(Q,K,V, 2^s·dO) = 2^s·(dQ,dK,dV)``），所以用 frexp/ldexp 把 dO
 #: 平移到 fp16 正规区再算、出结果后平移回来，数学上无损。
 _ATTN_FP16_ENABLED = False
+
+#: 严格模式：强制 EFFICIENT、失败时带完整张量诊断抛错，用于定位静默回退。
+_ATTN_STRICT = os.environ.get("K2_ATTN_STRICT") == "1"
+
+
+def _attn_diag(q, k, v, mask, gqa, scale) -> str:
+    """收集 SDPA 输入的全部判别性信息，用于定位为何回退 MATH。"""
+
+    def one(name, x):
+        if x is None:
+            return f"{name}=None"
+        return (
+            f"{name}: shape={tuple(x.shape)} dtype={x.dtype} "
+            f"contig={x.is_contiguous()} stride={x.stride()} "
+            f"offset={x.storage_offset()} numel={x.numel()}"
+        )
+
+    parts = [one("q", q), one("k", k), one("v", v), one("mask", mask)]
+    if mask is not None:
+        try:
+            parts.append(
+                f"mask.sum={int(mask.sum())} any_all_true={bool(mask.all(dim=-1).any())}"
+            )
+        except Exception:
+            logger.debug("attention mask diagnostics unavailable", exc_info=True)
+    parts.append(f"gqa={gqa} scale={scale} autocast={torch.is_autocast_enabled()}")
+    return "\n  ".join(parts)
 
 
 def set_krea2_attn_fp16(enabled: bool) -> None:
@@ -230,12 +261,31 @@ def _fp16_attention(
         gqa = False
     state: dict = {}
     q16, k16, v16 = _PreFp16SDPA.apply(q, k, v, state)
-    with sdpa_kernel(
-        [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]
-    ):
-        out16 = F.scaled_dot_product_attention(
-            q16, k16, v16, attn_mask=mask, scale=scale, enable_gqa=gqa
-        )
+    # 关键：训练在 torch.autocast(dtype=bfloat16) 里跑，而 sm70 没有 bf16 内核。
+    # autocast 会把 SDPA 的调度上下文设成 bf16，EFFICIENT 对 fp16 输入直接
+    # "No available kernel" 并静默回退 MATH（4864 tokens 单层 4.23 GiB）。
+    # 这段内部计算是纯 fp16 的，必须在 autocast 外执行。
+    if _ATTN_STRICT:
+        try:
+            with torch.autocast(
+                device_type="cuda", enabled=False
+            ), sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
+                out16 = F.scaled_dot_product_attention(
+                    q16, k16, v16, attn_mask=mask, scale=scale, enable_gqa=gqa
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                "K2_ATTN_STRICT: EFFICIENT_ATTENTION unavailable for these inputs\n  "
+                + _attn_diag(q16, k16, v16, mask, gqa, scale)
+                + f"\n  original: {type(exc).__name__}: {exc}"
+            ) from exc
+    else:
+        with torch.autocast(device_type="cuda", enabled=False), sdpa_kernel(
+            [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]
+        ):
+            out16 = F.scaled_dot_product_attention(
+                q16, k16, v16, attn_mask=mask, scale=scale, enable_gqa=gqa
+            )
     output = _PostFp16SDPA.apply(out16, state, q.dtype)
     return rearrange(output, "B H L D -> B L (H D)")
 
