@@ -296,6 +296,29 @@ class TrainingBootstrap:
         return True
 
     @staticmethod
+    def maybe_enable_nf4_dir1(args) -> bool:
+        """Enable NF4 dir1 (inner fp16 GEMM) when ``--nf4_dir1`` is set.
+
+        Must run after the DiT is loaded and before any forward / ``compile_blocks``:
+        ``torch.compile`` specializes ``BF16AutocastLinear4bit.forward`` on the
+        module-level ``_DIR1_ENABLED`` flag, so the flag has to be final before
+        tracing. ``compute_dtype`` stays bfloat16 — the 22 BF16 fail-closed
+        contracts in ``weights.py`` / ``quantize.py`` are untouched.
+
+        Evidence: docs/proposal/krea2_nf4_fp16_layer_scaling.md
+        """
+        if not getattr(args, "nf4_dir1", False):
+            return False
+        from library.quantization.nf4 import set_dir1_enabled
+
+        set_dir1_enabled(True)
+        logger.info(
+            "NF4 dir1 enabled: inner GEMM runs fp16 with per-layer frexp/ldexp "
+            "scaling; compute_dtype stays bfloat16. Only beneficial on sm<80."
+        )
+        return True
+
+    @staticmethod
     def maybe_apply_convrot_base(args, network, *, unet=None) -> bool:
         """Optionally patch LoRA org_forward with ConvRot W8A* base path.
 
@@ -703,6 +726,11 @@ class TrainingBootstrap:
         # Optional ConvRot W8A* base path — MUST run after org_forward capture
         # (apply_to/load/grad-ckpt/fp32 residual) and before compile_blocks.
         self.maybe_apply_convrot_base(args, network, unet=unet)
+
+        # Optional NF4 dir1 (inner fp16 GEMM). MUST run before compile_blocks so
+        # dynamo traces the dir1 branch, and before the first forward so the
+        # flag is final. compute_dtype stays bfloat16.
+        self.maybe_enable_nf4_dir1(args)
 
         from library.models.qwen_image_2_1.training_blocks import install_training_block_projections
 

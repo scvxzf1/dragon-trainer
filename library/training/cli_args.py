@@ -1144,6 +1144,20 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         ),
     )
     parser.add_argument(
+        "--nf4_dir1",
+        action="store_true",
+        default=False,
+        help=(
+            "[EXPERIMENTAL] NF4 Linear 内层 fp16 GEMM（dir1）。只在 --base_compute nf4 "
+            "下有意义。外层 compute_dtype 保持 bfloat16，只把每个 NF4 Linear 的 "
+            "forward/backward GEMM 换成 fp16，backward 用 frexp/ldexp 做 2 的整数次幂"
+            "缩放以消除 fp16 subnormal。不新增全局 FP16 NF4 路径，22 处 BF16 "
+            "fail-closed 契约不变。只对没有原生 bf16 tensor core 的卡（sm70/sm75）有"
+            "收益；sm80+ 上启用会直接报错。证据见 "
+            "docs/proposal/krea2_nf4_fp16_layer_scaling.md。"
+        ),
+    )
+    parser.add_argument(
         "--convrot_group_size",
         type=int,
         default=256,

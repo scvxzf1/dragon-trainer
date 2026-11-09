@@ -834,6 +834,16 @@ def check_training_compat(
             "--nf4_prequantized_path only takes effect with --base_compute nf4; "
             "ignored under current base_compute. Drop the path or switch to nf4.",
         )
+    # nf4_dir1: 只在 base_compute=nf4 时生效. 开了但 base_compute 不是 nf4 →
+    # 没有 NF4 Linear, 开关等于空转; 明确提醒而不是静默忽略.
+    if _get(config, "nf4_dir1", False) and not nf4_active:
+        out.warning(
+            "nf4_dir1_ignored",
+            "nf4_dir1",
+            "--nf4_dir1 only takes effect with --base_compute nf4; there is no "
+            "NF4 Linear to accelerate under current base_compute. Drop the flag "
+            "or switch to nf4.",
+        )
     if base_compute not in {
         "bf16",
         "fp16",

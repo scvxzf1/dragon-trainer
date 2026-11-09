@@ -122,6 +122,11 @@ vae_chunk_size = 64
 vae_disable_cache = true
 masked_loss = true
 qwen_nf4_compile_experiment = false
+# NF4 Linear inner fp16 GEMM (dir1). Only meaningful with base_compute="nf4";
+# compute_dtype stays bfloat16, so the BF16 fail-closed contracts are unchanged.
+# Only beneficial on GPUs without native bf16 tensor cores (sm70/sm75); enabling
+# it on sm80+ raises. Evidence: docs/proposal/krea2_nf4_fp16_layer_scaling.md
+nf4_dir1 = false
 torch_compile = true
 attn_mode = "flash"
 compile_block_scope = "resident"

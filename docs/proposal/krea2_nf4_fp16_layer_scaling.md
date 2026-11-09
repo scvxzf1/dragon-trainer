@@ -346,7 +346,33 @@ def dequant_fp16(B, quant_state):
 5. **与 `torch.compile` 的兼容性**：`frexp`/`ldexp`/`clamp` 核心算术已通过
    `fullgraph=True` 验证（见 §7），仅缺**含 `dequant_fp16` 的整网**编译验证。
 
-## 10. 复现
+## 10. 启用方式
+
+实现已收敛到 `library/quantization/nf4.py`，默认关闭。三条入口：
+
+```bash
+# CLI（推荐）：必须与 --base_compute nf4 一起用
+.venv/bin/python train.py --base_compute nf4 --nf4_dir1 ...
+
+# 配置项（configs/base.toml，默认 false）
+nf4_dir1 = false
+```
+
+```python
+# Python API
+from library.quantization.nf4 import set_dir1_enabled
+set_dir1_enabled(True)   # sm80+ 会直接抛 ValueError
+```
+
+接线位置：`library/training/bootstrap.py::TrainingBootstrap.maybe_enable_nf4_dir1`，
+在 `maybe_apply_convrot_base` 之后、`compile_blocks` 之前执行——`torch.compile` 会把
+`BF16AutocastLinear4bit.forward` 按模块级 `_DIR1_ENABLED` 特化，所以开关必须在 trace
+前定稿。
+
+`--nf4_dir1` 但 `base_compute != nf4` 时 `compat_matrix` 会给出 `nf4_dir1_ignored` 警告
+（没有 NF4 Linear 可加速）。
+
+## 11. 复现
 
 ```bash
 # 1. 合成矩阵模拟（单层扫描 + 28 层串联 + 边界检查；可 CPU 小维度冒烟）

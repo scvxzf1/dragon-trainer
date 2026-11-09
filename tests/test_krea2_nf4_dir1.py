@@ -195,3 +195,53 @@ class TestDir1MatMul4Bit:
             t.join()
         assert not errors, errors
         assert qs.dtype == before_dtype
+
+
+# === CLI / 配置接线 ===
+
+
+def test_cli_flag_defaults_off():
+    from library.training.cli_args import setup_parser
+
+    args = setup_parser().parse_args([])
+    assert args.nf4_dir1 is False
+
+
+def test_cli_flag_parses():
+    from library.training.cli_args import setup_parser
+
+    args = setup_parser().parse_args(["--nf4_dir1"])
+    assert args.nf4_dir1 is True
+
+
+def test_bootstrap_noop_when_flag_off():
+    from types import SimpleNamespace
+
+    from library.training.bootstrap import TrainingBootstrap
+
+    assert TrainingBootstrap.maybe_enable_nf4_dir1(SimpleNamespace(nf4_dir1=False)) is False
+
+
+@CUDA
+@pytest.mark.skipif(not dir1_supported(), reason="dir1 只对 sm<80 有意义")
+def test_bootstrap_enables_dir1():
+    from types import SimpleNamespace
+
+    from library.training.bootstrap import TrainingBootstrap
+
+    try:
+        assert TrainingBootstrap.maybe_enable_nf4_dir1(SimpleNamespace(nf4_dir1=True)) is True
+        assert is_dir1_enabled() is True
+    finally:
+        set_dir1_enabled(False)
+
+
+def test_base_toml_declares_nf4_dir1():
+    """配置项必须在 base.toml 里显式声明，默认关闭。"""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    with (root / "configs" / "base.toml").open("rb") as fh:
+        cfg = tomllib.load(fh)
+    assert cfg.get("nf4_dir1") is False
