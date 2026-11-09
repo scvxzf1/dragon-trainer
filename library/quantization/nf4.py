@@ -15,6 +15,7 @@ from .constants import STATE_KEYS
 #: 本开关**不改变** ``compute_dtype``（始终 bfloat16），因此不触碰
 #: ``weights.py`` / ``quantize.py`` 的 BF16 fail-closed 契约，也不是"全局 FP16 NF4"。
 _DIR1_ENABLED = False
+_DIR1_STATS = {"dir1": 0, "stock": 0}
 
 
 def dir1_supported() -> bool:
@@ -97,11 +98,19 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
         w = dequant_fp16(B, quant_state)
         # 前向不需要缩放：激活量级 O(1e-2~1e0)，本来就在 fp16 正规区。
         # bias 必须一起转 fp16，否则 F.linear 内部 matmul 报 dtype 不匹配。
-        output = torch.nn.functional.linear(
-            A.to(torch.float16),
-            w.t(),
-            None if bias is None else bias.to(torch.float16),
-        )
+        # 关键：训练跑在 torch.autocast(dtype=bfloat16) 里。autocast 会把
+        # F.linear 的 fp16 输入静默转回 bf16 执行，于是整个 dir1 白做——GEMM
+        # 仍然落到 sm70 的 MAGMA 软件路径（实测 27.3s/步，占 78%）。
+        # 这段内部计算是纯 fp16 的，必须在 autocast 外执行。
+        with torch.autocast(device_type="cuda", enabled=False):
+            output = torch.nn.functional.linear(
+                A.to(torch.float16),
+                w.t(),
+                None if bias is None else bias.to(torch.float16),
+            )
+        if output.dtype != torch.float16:
+            output = output.to(torch.float16)
+
         return output.to(ctx.dtype_A)
 
     @staticmethod
@@ -136,7 +145,9 @@ class BF16AutocastLinear4bit(Linear4bit):
 
     def forward(self, x: torch.Tensor):
         if _DIR1_ENABLED and x.device.type == "cuda":
+            _DIR1_STATS["dir1"] += 1
             return self._forward_dir1(x)
+        _DIR1_STATS["stock"] += 1
         if (
             x.device.type == "cuda"
             and x.dtype in (torch.float32, torch.float16)
