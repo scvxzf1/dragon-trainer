@@ -126,6 +126,12 @@ def build_training_metadata(
         "ss_noise_offset_random_strength": args.noise_offset_random_strength,
         "ss_ip_noise_gamma_random_strength": args.ip_noise_gamma_random_strength,
         "ss_loss_type": args.loss_type,
+        # Stamp the unverified-compat policy so a checkpoint records whether the
+        # run was allowed to use audited-but-unvalidated combinations
+        # (see docs/findings/compat_unverified_audit_20261109.md).
+        "ss_compat_unverified_policy": str(
+            getattr(args, "compat_unverified_policy", "warn") or "warn"
+        ),
         "ss_huber_schedule": args.huber_schedule,
         "ss_huber_scale": args.huber_scale,
         "ss_huber_c": args.huber_c,

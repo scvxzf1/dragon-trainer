@@ -336,8 +336,11 @@ def test_official_transformer_has_136_attention_only_targets() -> None:
 
 
 def test_z_image_compat_rejects_unverified_optimizations() -> None:
+    # strict keeps the historical hard errors; the default warn policy relaxes
+    # only the audited C1 codes (see tests/test_compat_unverified_policy.py).
     result = check_training_compat(
         {
+            "compat_unverified_policy": "strict",
             "model_family": "z_image",
             "network_module": "networks.lora_anima",
             "mixed_precision": "fp16",
@@ -380,7 +383,7 @@ def test_z_image_compat_rejects_unverified_optimizations() -> None:
     } <= codes
 
 
-@pytest.mark.parametrize("attn_mode", [None, "flash", "torch", "sdpa"])
+@pytest.mark.parametrize("attn_mode", [None, "flash", "torch", "sdpa", "native"])
 def test_z_image_compat_accepts_supported_attention_modes(attn_mode) -> None:
     result = check_training_compat(
         {

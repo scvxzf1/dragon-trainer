@@ -69,6 +69,39 @@ def _compat_web_message(item) -> str:
             "selective_checkpoint 取值不受支持；请改为 off、adapter_aware、"
             "mlp_only、peak_blocks_mlp 等已知模式。"
         ),
+        "invalid_compat_unverified_policy": (
+            "compat_unverified_policy 取值不受支持；请改为 strict、warn 或 allow。"
+        ),
+        # Audited C1 codes (docs/findings/compat_unverified_audit_20261109.md).
+        # warn 档下它们是 warning，strict 档下仍是 error，文案统一标注未验证。
+        "qwen_image_2_1_mixed_precision": (
+            "Qwen Image 2.1 仅验收过 bf16；该 mixed_precision 在 torch/sdpa 路径会生效，"
+            "但缺少真机验收（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "qwen_image_2_1_masked_loss": (
+            "Qwen Image 2.1 掩码损失已接线但缺少数据与质量验收（未验证）；"
+            "compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "qwen_image_2_1_loss_type": (
+            "Qwen Image 2.1 官方配方仅使用 L2；其他 loss_type 会生效但未验收（未验证）。"
+            "compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "qwen_image_2_1_weighting_scheme": (
+            "Qwen Image 2.1 官方配方使用 weighting_scheme=none；其他取值会生效但未验收"
+            "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "z_image_loss_type": (
+            "Z-Image 官方配方仅使用 L2；其他 loss_type 会生效但未验收（未验证）。"
+            "compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "z_image_flow_shift": (
+            "Z-Image 官方配方使用 discrete_flow_shift=6.0；其他取值会生效但未验收"
+            "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
+        "z_image_weighting_scheme": (
+            "Z-Image 官方配方使用 weighting_scheme=none；其他取值会生效但未验收"
+            "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
+        ),
         "krea2_invalid_attn_mode": (
             "Krea-2 注意力后端仅支持 torch 或 flash（sdpa 作为 torch 别名）。"
         ),
