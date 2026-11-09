@@ -25,10 +25,24 @@ def resolve_mixed_precision(
 
     Only acts when current value is ``bf16`` and GPU major < 8.
     Capability probe failure is fail-closed: keep bf16 and warn.
+
+    ``base_compute=nf4`` is exempt: NF4 hard-requires a bf16 ``compute_dtype``
+    (``weights.py::load_krea2_dit`` rejects anything else), so rewriting to fp16
+    would make the NF4 base fail to load on exactly the pre-Ampere cards NF4 is
+    meant to serve. The bf16 outer dtype is what carries the tiny gradients
+    across layers; ``--nf4_dir1`` recovers fp16 tensor cores in the inner GEMM
+    without touching ``compute_dtype``.
     """
     if getattr(args, "mixed_precision", None) != "bf16":
         return
     if not torch.cuda.is_available():
+        return
+    if str(getattr(args, "base_compute", "bf16") or "bf16").strip().lower() == "nf4":
+        logger.info(
+            "base_compute=nf4 requires bf16 compute_dtype; skipping the sm<8 "
+            "bf16->fp16 rewrite. Pass --nf4_dir1 to run the inner GEMM in fp16 "
+            "tensor cores."
+        )
         return
 
     probe = get_capability or _default_get_capability
