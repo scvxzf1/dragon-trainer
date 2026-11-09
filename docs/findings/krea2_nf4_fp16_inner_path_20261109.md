@@ -1,0 +1,305 @@
+# Krea-2 NF4 fp16 内层路径：autocast 静默截胡的两次实例与 V100 实测
+
+状态：实验
+适用版本：commit `afa372ae`（分支 `codex/krea2-fp16-layer-scaling`）
+入口命令：
+- `.venv/bin/python train.py --method krea2_lora --base_compute nf4 --nf4_prequantized_path models/diffusion_models/krea2_raw_nf4_self_contained.safetensors --attn_mode torch --krea2_attn_fp16 --nf4_dir1 --blocks_to_swap 20`
+- 诊断模式：`K2_ATTN_STRICT=1`（attention）、`_DIR1_STATS`（dir1 调用计数）
+相关代码：
+- `library/quantization/nf4.py`（`_Dir1MatMul4Bit`、`BF16AutocastLinear4bit`）
+- `library/models/krea2_raw/attention_backend.py`（`_PreFp16SDPA` / `_PostFp16SDPA` / `_fp16_attention`）
+- `docs/proposal/krea2_nf4_fp16_layer_scaling.md`（设计推导）
+- `docs/findings/krea2_nf4_fp16_grad_underflow_20261108.md`（数值可行性前置）
+
+## 1. 结论
+
+**`torch.autocast(dtype=bfloat16)` 会把 fp16 内层计算的输入静默转回 bf16，使两条 fp16 优化路径同时失效且不报错。** 这不是一个实现缺陷，而是一个反复出现的模式——本次在两个互相独立的位置各命中一次：
+
+| 位置 | 表现 | 修复 |
+|---|---|---|
+| `_fp16_attention` 的 `F.scaled_dot_product_attention` | EFFICIENT 内核 `No available kernel`，静默回退 MATH（单层 4.23 GiB） | `torch.autocast(device_type="cuda", enabled=False)` 包裹（`e783f584`） |
+| `_Dir1MatMul4Bit.forward` 的 `F.linear` | fp16 输入被转回 bf16，264 个主干 GEMM 全部落到 MAGMA 软件路径 | 同上（`bb8c5b63`） |
+
+V100（sm70）上的实测结果：
+
+| 配置 | s/step | 20 步总耗时 | peak allocated | loss |
+|---|---:|---:|---:|---:|
+| 仅 `--krea2_attn_fp16`，swap 26 | 44.8 | 15:20 | 5.05 GiB | 0.169 |
+| 双开但 dir1 被 autocast 截胡，swap 20 | 35.0 | — | 6.89 GiB | — |
+| **双开且两者都生效，swap 20** | **11.06** | **3:47** | **6.89 GiB** | **0.205** |
+
+修复前后差 **4.05×**。`recent_s_per_step` 在 20 步内稳定在 11.02~11.06，无热降频。
+
+## 2. 根因：autocast 的 dtype 抢占
+
+`torch.autocast(dtype=torch.bfloat16)` 会对列入 autocast 白名单的算子（含 `F.linear`、`F.scaled_dot_product_attention`）做输入 dtype 收敛：**任何落入白名单算子的 fp16 输入都会被强制转成 autocast 的 dtype**。
+
+在 sm70 上这特别致命——V100 没有 bf16 tensor core，也不存在 bf16 SDPA 内核：
+
+- bf16 GEMM 落到 **MAGMA 软件实现**（`magma_sgemmEx_kernel<float, __nv_bfloat16, __nv_bfloat16>`），吞吐比 tensor core 低一个数量级；
+- bf16 SDPA 只剩 **MATH** 后端，物化 `O(N²)` 注意力矩阵。
+
+于是「外层 bf16 + 内层 fp16」的设计意图被 autocast 完整抹平，且**全程无异常、无警告**。
+
+### 2.1 attention 侧的呈现
+
+严格模式（`K2_ATTN_STRICT=1`）强制 EFFICIENT 后拿到完整诊断：
+
+```
+q: shape=(1, 48, 4608, 128) dtype=torch.float16 contig=True
+mask: shape=(1, 1, 4608, 4608) dtype=torch.bool contig=True mask.sum=17007376
+original: RuntimeError: No available kernel. Aborting execution.
+```
+
+`q` 明明是 fp16、连续、mask 合法，EFFICIENT 仍然拒绝。最小复现把变量隔离出来：
+
+| 条件 | EFFICIENT |
+|---|---|
+| autocast OFF + fp16 | OK |
+| **autocast bf16 ON + fp16** | **`No available kernel`** |
+| autocast fp16 ON + fp16 | OK |
+
+同一个 L=4608 + 20% padding bool mask 的组合，在 autocast 外完全正常——**mask 与长度都不是原因**，autocast 才是。
+
+### 2.2 dir1 侧的呈现
+
+`dir1` 的开关、日志、调用计数都显示「已启用」：
+
+```
+[DIR1DBG] args.nf4_dir1=True type=Namespace has_attr=True
+INFO     NF4 dir1 enabled: inner GEMM runs fp16 ...
+```
+
+`_forward_dir1` 也确实被调用。但探针打在 `F.linear` 两侧，看到的是：
+
+```
+[DIR1MM] A=bf16->fp16  w=fp16  autocast=True acdtype=bf16
+[DIR1MM] out=bf16      expect=fp16          <-- 输出被 autocast 改回 bf16
+```
+
+**输入已经手工转成 fp16，输出仍然是 bf16。** 这一层转换发生在 PyTorch 内部，Python 侧不可见。
+
+## 3. 诊断方法论
+
+本次定位依赖三类证据，按可信度排序。
+
+### 3.1 CUDA memory snapshot 定位「哪一行在分配大显存」
+
+`torch.cuda.memory._record_memory_history(max_entries=..., stacks="all")` + OOM 时 `_dump_snapshot()`，再按 block 大小排序取调用栈。
+
+第一次命中的是 `_fp16_attention` 内部的 SDPA 调用点，`4332 MiB = 48 × 4864² × 4 bytes`——直接把「回退 MATH」这个假设钉死。
+
+注意两点：
+- `stacks="all"` 记录的栈前几帧是 snapshot 工具自身（`torch::cuda::gather_with_cpp`），要按 `/mnt/SD_Dataset` 过滤出仓库内帧；
+- snapshot 只列 `active_allocated` 的块；瞬时分配的峰值要看 `device_traces`。
+
+### 3.2 profiler 按 dtype + shape 聚合
+
+`torch.profiler` 的 trace 里，CUDA kernel 的 `args.External id` 与 CPU op 的 `args.External id` 对应。对每个 CPU op 取 `Input type` / `Input Dims`，再把关联 kernel 的 `dur` 归到该 op 上，就能得到 **dtype × shape × GPU 耗时** 的精确分布。
+
+本次输出的表：
+
+```
+12.396s x112  aten::mm  BFloat16  [[4864, 6144], [6144, 16384]]   MLP up/gate
+ 6.642s x168  aten::mm  BFloat16  [[4864, 6144], [6144, 6144]]    attn QKV + out
+ 6.022s x56   aten::mm  BFloat16  [[4864, 16384], [16384, 6144]]  MLP down
+ 1.157s x112  aten::mm  BFloat16  [[4864, 6144], [6144, 1536]]    AdaLN 调制
+ 0.457s x420  aten::mm  BFloat16  [[4864, 6144], [6144, 16]]      LoRA A
+```
+
+调用次数与 28 层结构完全吻合（`112 = 28 × 4`、`56 = 28 × 2`），可以作为形状归属正确性的交叉校验。
+
+**限制**：PyTorch 2.10 的 trace 里即使 `with_stack=True` 也没有可直接读取的 `Call stack` 字段，调用栈只能由 shape + 次数 + 代码路径推断。
+
+### 3.3 计数器与 dtype 探针
+
+对「开关到底有没有穿透」这类问题，布尔值不够。有效做法是在目标分支入口累加计数、在算子两侧打印输入输出 dtype——本次正是 `out=bf16` 与 `expect=fp16` 的对比直接指认了 autocast。
+
+## 4. 修复
+
+两处都是同一个形状：**把纯 fp16 的内层计算移出 autocast 作用域**。
+
+```python
+# library/models/krea2_raw/attention_backend.py
+with torch.autocast(device_type="cuda", enabled=False), sdpa_kernel([...]):
+    out16 = F.scaled_dot_product_attention(q16, k16, v16, ...)
+```
+
+```python
+# library/quantization/nf4.py — _Dir1MatMul4Bit.forward
+with torch.autocast(device_type="cuda", enabled=False):
+    output = torch.nn.functional.linear(
+        A.to(torch.float16), w.t(),
+        None if bias is None else bias.to(torch.float16),
+    )
+if output.dtype != torch.float16:   # 兜底：防止外层再改 dtype
+    output = output.to(torch.float16)
+```
+
+`compute_dtype` 全程保持 bfloat16，`weights.py` / `quantize.py` 的 22 处 BF16 fail-closed 契约未改动。
+
+### 4.1 顺带修掉的第二个隐患
+
+`_PreFp16SDPA.forward` 对 q/k/v 统一加 `.contiguous()`。原因是 RMSNorm / rearrange 之后 v 常常是非连续的，而 sm70 的 memory-efficient 内核对非连续输入同样以 `No available kernel` 静默回退 MATH。成本是一次 O(n) 拷贝。
+
+## 5. 显存与 swap 的关系（重要的口径澄清）
+
+`blocks_to_swap` 对显存的影响是单调的，但对速度**几乎没有影响，甚至 swap 多的略快**：
+
+| swap | peak allocated | reserved | s/step |
+|---:|---:|---:|---:|
+| 26 | 5.05 GiB | 5.49 | 44.8（当时 dir1 未生效） |
+| 20 | 6.26 GiB | 6.68 | 45.9 |
+| 10 | 8.28 GiB | 8.73 | 47.1 |
+| 0 | 14.80 GiB | — | **OOM** |
+
+**因此「5.05 GiB」不是一个可以和 bf16 基线直接对比的数字**——它是 `blocks_to_swap 26` 换来的。等效口径应取 swap 10 的 **8.28 GiB**，与 3080 上 bf16 + flash 的 8.25~9.63 GiB 基本持平。
+
+### 5.1 与 3080 基线的差异来源
+
+V100 与 3080 的 fp16 算力相近（125 vs 120 TFLOPS），但：
+
+| | V100 (sm70) | 3080 (sm86) |
+|---|---|---|
+| bf16 tensor core | 无 | 有 |
+| flash-attn | 不可用（依赖 sm80+ 指令） | 可用 |
+| `torch.compile` bf16 | **inductor 直接跳过** | 原生支持 |
+
+`Tesla V100-SXM2-16GB does not support bfloat16 compilation natively, skipping` 意味着 V100 上不存在「编译后变慢」的中间态，而是根本没有编译。这也是为什么当前实测命令使用 `torch_compile = false`。
+
+## 6. 未验证边界
+
+- **训练质量**：150 步固定 seed=42 验证（见下表）只证明「不炸、不掉速、稳定下降」，不足以判断最终收敛质量。完整数值链验证见 `krea2_nf4_fp16_grad_underflow_20261108.md`（固定种子下 bf16 1.316%、dir1 0.988%、裸 fp16 135.315%）。
+
+#### 150 步收敛验证（`--seed 42`，`--krea2_attn_fp16 --nf4_dir1`，swap 20）
+
+| step | avr_loss | s/step |
+|---:|---:|---:|
+| 15 | 0.2100 | 11.04 |
+| 30 | 0.1900 | 11.07 |
+| 45 | 0.1870 | 11.08 |
+| 60 | 0.1830 | 11.11 |
+| 75 | 0.1800 | 11.77 |
+| 90 | 0.1860 | 11.78 |
+| 105 | 0.1800 | 11.76 |
+| 120 | 0.1850 | 11.05 |
+| 135 | 0.1820 | 11.76 |
+| 150 | 0.1790 | 11.76 |
+
+首/末/最低/最高 = 0.1770 / 0.1790 / 0.1760 / 0.2350，**全程无 NaN/inf**，峰值显存 6.89 GiB。
+首步 0.235 到 0.177 的差异主要来自每步随机采样的 σ，不是模型退化。
+- **11s/step 的剖面**：修复后未重新 profiler，剩余 11s 中 fp16 tensor core / attention / swap 搬运的占比未知。
+- **单项开关**：`--nf4_dir1` 单独开启（不含 attention fp16）的耗时未测。
+- **3080 的 3.6s 基线口径**：`krea2_3080_speed_final.md` 未记录该读数的 token 数；按 4864 tokens 的算力推算（约 332.7 TFLOPs / 120 TFLOPS ≈ 2.8s 理论下限，实际效率 30~50% 即 6~9s），3.6s 不太可能对应 4864 tokens，需要回到原始实验条件确认。
+- **swap 0 的真实峰值**：只观察到 OOM，未测得具体数值。
+
+## 7. 复现
+
+```bash
+# 主路径（双开）
+.venv/bin/python train.py --method krea2_lora \
+  --base_compute nf4 \
+  --nf4_prequantized_path models/diffusion_models/krea2_raw_nf4_self_contained.safetensors \
+  --max_train_steps 20 --attn_mode torch \
+  --krea2_attn_fp16 --nf4_dir1 --blocks_to_swap 20
+
+# attention 严格诊断（强制 EFFICIENT，失败时打印全量张量信息）
+K2_ATTN_STRICT=1 .venv/bin/python train.py ...（同上）
+
+# 显存分配栈（OOM 时 dump snapshot）
+#   用 runpy + torch.cuda.memory._record_memory_history(stacks="all")
+#   包住 train.py，异常时 _dump_snapshot()
+
+# profiler（dtype × shape × GPU 耗时）
+#   torch.profiler.profile(activities=[CPU, CUDA], record_shapes=True)
+#   按 args["External id"] 关联 CPU op 与 CUDA kernel
+```
+
+## 9. WebUI 接线与 Preflight 拦截
+
+两个开关最初只有 CLI 一条入口。要让 Web 用户能安全开启，补齐了三层并加了五类预检。
+
+### 9.1 表单与文案
+
+`FORM_GROUPS["Performance"]` 与 `FIELD_HELP` 补两键，前端 `config-field-catalog.js`
+放进 `group('resources','compute')`，`labels-options.js` 补中文标签（此前
+`fieldCatalog.ts` 的 `FIELD_LABEL_ZH[key] || key` 会直接渲染裸字段 key）。
+
+### 9.2 五类 Preflight 规则
+
+blocker 走普通 `error`（无 `overridable`），`preflight ok=False` 会真正拒绝启动：
+
+| 场景 | 级别 | code |
+|---|---|---|
+| sm80+ 或无 CUDA 时开启 | error | `*_requires_cuda` / `*_requires_pre_ampere` / `*_architecture_unknown` |
+| 非 NF4 开 `nf4_dir1` | warning | `nf4_dir1_ignored` |
+| 非 Krea-2 开 `krea2_attn_fp16` | warning | `krea2_attn_fp16_ignored` |
+| sm70/75 + Krea-2 + NF4 单开其一 | info | `nf4_fp16_inner_pairing` |
+| sm70/75 + Krea-2 + NF4 + bf16 双关 | info | `nf4_fp16_inner_available` |
+| flash / 非 bf16 下开 `krea2_attn_fp16` | warning | `krea2_attn_fp16_requires_torch_attention` |
+
+第 5 类是实测挖出的真缺陷：`_ATTN_FP16_ENABLED` 唯一消费点是
+`attention_backend._cudnn_attention`，而 Krea-2 出厂默认 `attn_mode=flash`，
+`_flash_varlen_attention` 提前 return——**默认配置下开了等于没开**，而旧的
+compat 还在建议用户双开去拿「完整内层 fp16」。判定前先按运行时口径归一化
+（`sdpa` / `cudnn` / `cudnn_sdpa` → `torch`），未设置 `attn_mode` 不判定。
+
+pairing info 只在**单开**时给（`nf4_dir1 != attn_fp16`）；双开本来就不需要建议。
+
+第 6 类（`nf4_fp16_inner_available`）补的是反方向的盲区：用户在 V100 上
+用默认 bf16、两个开关都不开时，训练能跑、不报错，但每个 bf16 GEMM 都落到
+MAGMA 软件模拟（44.8 vs 11.06 s/step），用户只会觉得卡慢而不知道根因。
+只做 info 不做 warning——bf16 是 `base.toml` 的生产默认，标成「配置有问题」
+会让所有 bf16 用户收到噪音。触发范围收窄到 `krea2_raw` + `nf4` + bf16 +
+双关：其它组合仍在函数入口早退，不为一条提示让全部训练都付 `nvidia-smi`
+探测成本。文案同时明确**禁止**改用 `mixed_precision=fp16`——那条路已被
+[梯度下溢否决](krea2_nf4_fp16_grad_underflow_20261108.md) 挡掉，不写清楚
+等于把一个坑换成另一个坑。
+
+### 9.3 硬件探针必须按任务真实设备
+
+旧探针固定读 Web 进程 `device 0`。这台机器就是反例：
+
+```
+nvidia-smi 物理序:  index0 = GTX 1050 (6.1)   index1/2 = V100 (7.0)
+torch 序:           device0 = V100 (7,0)
+```
+
+两者顺序相反。训练子进程由 `gpu_whitelist` 重写 `CUDA_VISIBLE_DEVICES`，所以
+预检必须按**物理 index** 解析：`gpu.py::query_gpu_compute_capabilities()` 读
+`nvidia-smi --query-gpu=compute_cap`（老驱动回退名称表）。全部被选设备 sm<80
+放行、任一 sm≥80 阻断并列出被选 `sm_xx`、解析不到降级 warning。6 个
+`preflight_training_config` 调用点全部透传 `gpu_whitelist`，含
+`launcher_start` 预处理完成后的自动启动复检。
+
+`_format_device_label` 用 `(index, capability)` 配对生成文案——部分解析时
+`selected` 与 `capabilities` 长度不等，平行序列 `zip` 会把 capability 安到错误的
+物理 index 上。
+
+### 9.4 WebUI 真实训练与 CLI 持平
+
+用 `save-as → preflight → start` 的完整 HTTP 链路实跑（V100，1 步）：
+
+```
+INFO  NF4 dir1 enabled: inner GEMM runs fp16 ...        bootstrap.py:315
+INFO  Krea-2 attention fp16 enabled: GQA expanded...    bootstrap.py:336
+steps: 1/1 [00:11<00:00, 11.89s/it]  avr_loss=0.212  max_memory_allocated_gb=6.32
+```
+
+对照 CLI 路径：11.80 s/step、6.32 GiB——**持平**。
+
+WebUI 侧有三个易踩的配置语义：
+
+1. `extra_args` 会同时透传给预处理脚本，训练参数放进去会让 `resize_images.py` 报
+   `unrecognized arguments`；训练参数应写进配置。
+2. `configs/gui-methods/` 是系统预设，锁定不可 PATCH，编辑前必须「另存为新配置」。
+3. `config_file` 是**覆盖层**不是完整配置：`datasets` 来自 `variant` 的合并链，
+   而预处理读的是顶层 `source_image_dir`（`base.toml` 默认 `image_dataset`），
+   用 `config_file` 覆盖启动时必须在覆盖文件里同时给出 `source_image_dir` 与
+   `[[datasets]]`，否则训练报 `No data found`。
+
+## 10. 相关文档
+
+- [NF4 fp16 梯度下溢与逐层缩放判据](krea2_nf4_fp16_grad_underflow_20261108.md)——本方案的数值可行性前置
+- [Krea-2 NF4 fp16 逐层缩放提案](../proposal/krea2_nf4_fp16_layer_scaling.md)——设计推导与实现边界
+- [Krea-2 3080 最终结论](krea2_3080_speed_final.md)——另一硬件平台的基线

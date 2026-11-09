@@ -175,7 +175,15 @@ def preflight_training_config(
     *,
     config_file: str | None = None,
     world_size: int | None = None,
+    gpu_whitelist: Any = None,
 ) -> dict[str, Any]:
+    """Run every preflight check for one training config.
+
+    ``gpu_whitelist`` is the WebUI GPU selection (physical nvidia-smi indices).
+    It is forwarded to the sm<80-only switch rules so the hardware probe uses
+    the GPU the training subprocess will actually see, not the Web process's
+    default device 0.
+    """
     cfg = _load_training_config_for_web_run(
         variant, preset, methods_subdir, config_file=config_file
     )
@@ -406,7 +414,9 @@ def preflight_training_config(
     dataset_rows = _dataset_rows_for_estimate(cfg)
     _check_core_training_semantics(cfg, add, dataset_rows=dataset_rows)
     task_cfg = task_check_config(cfg, _dataset_config_path_from_cfg(cfg), add)
-    _check_checkpointing_config(task_cfg, add, world_size=world_size)
+    _check_checkpointing_config(
+        task_cfg, add, world_size=world_size, gpu_whitelist=gpu_whitelist
+    )
     _check_no_dataset_regularization_config(cfg, add)
     _check_output_dir_history_reuse(cfg, add)
     if family == "z_image":

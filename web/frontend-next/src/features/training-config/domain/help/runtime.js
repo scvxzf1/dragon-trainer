@@ -269,6 +269,14 @@ export const FIELD_HELP_RUNTIME_ZH = {
     cautions: ['不要用不同族的 VAE 或 latent 缓存互相替代。错误组件会影响预处理、样张与训练输入，文件可以加载不等于结果正确。'],
     relatedKeys: ['model_family', 'use_vae_cache', 'vae_chunk_size'],
   },
+  vocab_pack_path: {
+    version: 2,
+    summary: '可选的 Anima vocab pack 文件或目录；选择后会把内容摘要写入 TE 缓存，pack 更新或切换会自动重建缓存。当前只影响缓存身份，实际 pack runtime 仍需单独接入。',
+    recommendation: 'Anima 训练保持留空即可。只有确实要更换 vocab pack 时才填写，并预留缓存重建的时间。',
+    guidance: [{ title: '它当前改什么', paragraphs: ['内容摘要会进入 TE 缓存指纹，用来区分不同 pack 产出的文本缓存。pack 更新或切换后，旧缓存不再命中。'] }],
+    cautions: ['该项只影响缓存身份，训练运行时的词汇表仍以文本编码器自身为准。', '非 Anima 模型族下该字段会被隐藏，不要把它当成跨模型族的通用开关。'],
+    relatedKeys: ['use_text_cache', 'qwen3'],
+  },
   output_dir: {
     version: 2,
     summary: '指定命令行训练的输出目录，WebUI 会为每次运行生成实际输出位置。',

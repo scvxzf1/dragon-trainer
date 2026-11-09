@@ -37,11 +37,47 @@ VALID_SELECTIVE_CHECKPOINTS = {
     "peak_blocks_mlp",
     "peak_blocks_mlp_layer1",
 }
-# Keep this whitelist in sync with
-# library/models/krea2_raw/attention_backend.py::normalize_krea2_attention_mode:
-# sdpa/cudnn/cudnn_sdpa are normalized to torch there.
+#: ``sdpa``/``cudnn``/``cudnn_sdpa`` 与 ``normalize_krea2_attention_mode`` 同口径
+#: 都是 ``torch`` 的别名（cli_entry 会把 sdpa 归一成 torch），预检必须放行。
+#: 保持与 library/models/krea2_raw/attention_backend.py 同源。
 KREA2_ATTN_MODES = {"", "torch", "flash", "sdpa", "cudnn", "cudnn_sdpa"}
 KREA2_SELECTIVE_CHECKPOINTS = {"off", "every_other"}
+#: sm>=80 有原生 BF16 Tensor Core。``nf4_dir1`` / ``krea2_attn_fp16`` 只服务
+#: sm<80（sm70 V100、sm75 2080Ti/T4），与 ``set_dir1_enabled`` /
+#: ``set_krea2_attn_fp16`` 的运行时抛错条件一一对应。
+NATIVE_BF16_TENSOR_CORE_MIN_MAJOR = 8
+#: 两个"内层 fp16"实验开关的运行时门禁文案；preflight 只复用这里的判断。
+#: ``nf4_dir1`` 无 CUDA 时运行时直接抛 RuntimeError（error）；``krea2_attn_fp16``
+#: 无 CUDA 时只是把全局 flag 置真后空转（runtime gate 不抛），故 preflight 只给
+#: warning，避免把「Web 进程看不到 CUDA」误判成训练会崩。架构读不到时两者都只
+#: 给 warning（无法证明 sm70/sm75，运行时门禁仍然在 set_* 处 fail-closed）。
+_FP16_INNER_PATH_GATES: dict[str, dict[str, str]] = {
+    "nf4_dir1": {
+        "no_cuda": "set_dir1_enabled(True) raises RuntimeError without a CUDA device",
+        "no_cuda_severity": "error",
+        "newer_arch": "set_dir1_enabled(True) raises ValueError",
+    },
+    "krea2_attn_fp16": {
+        "no_cuda": (
+            "set_krea2_attn_fp16(True) only sets the global flag and is a no-op "
+            "without CUDA"
+        ),
+        "no_cuda_severity": "warning",
+        "newer_arch": "set_krea2_attn_fp16(True) raises ValueError",
+    },
+}
+#: ``attn_mode`` 与 cli_entry / normalize_krea2_attention_mode 同口径的别名。
+KREA2_ATTENTION_TORCH_ALIASES = {
+    "sdpa": "torch",
+    "cudnn": "torch",
+    "cudnn_sdpa": "torch",
+}
+#: 让 ``krea2_attn_fp16`` 空转的非 bf16 计算精度（q.dtype != bfloat16）。
+NON_BF16_COMPUTE_PRECISIONS = {"fp16", "no", "fp32"}
+#: 会触发第 5 类告警的 inert 原因集合（flash 死开关 / 非 bf16 compute）。
+_FP16_ATTENTION_INERT_REASONS = frozenset(
+    {"flash"} | {f"compute={item}" for item in NON_BF16_COMPUTE_PRECISIONS}
+)
 KREA2_UNSUPPORTED_ADAPTER_FLAGS = (
     "use_ip_adapter",
     "use_easycontrol",
@@ -312,6 +348,8 @@ class TrainingCompatResult:
     unverified_policy: str = DEFAULT_COMPAT_UNVERIFIED_POLICY
     # Codes that the policy downgraded from error to warning in this call.
     relaxed: tuple[str, ...] = ()
+    #: 非阻断建议（Web 预检渲染为 info）。默认空元组，保持既有调用方兼容。
+    infos: tuple[TrainingCompatIssue, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -325,6 +363,7 @@ class _CompatBuilder:
         self.warnings: list[TrainingCompatIssue] = []
         self.mutations: list[TrainingCompatMutation] = []
         self.relaxed: list[str] = []
+        self.infos: list[TrainingCompatIssue] = []
 
     def error(self, code: str, key: str, message: str) -> None:
         # ``allow`` relaxes only C2-ignored sites (the family never reads the
@@ -369,6 +408,9 @@ class _CompatBuilder:
     def warning(self, code: str, key: str, message: str) -> None:
         self.warnings.append(TrainingCompatIssue(code, key, message))
 
+    def info(self, code: str, key: str, message: str) -> None:
+        self.infos.append(TrainingCompatIssue(code, key, message))
+
     def mutate(self, code: str, key: str, value: Any, message: str) -> None:
         self.mutations.append(TrainingCompatMutation(code, key, value, message))
 
@@ -379,6 +421,7 @@ class _CompatBuilder:
             mutations=tuple(self.mutations),
             unverified_policy=self.unverified_policy,
             relaxed=tuple(self.relaxed),
+            infos=tuple(self.infos),
         )
 
 
@@ -481,6 +524,349 @@ def _loads_mixed_nf4_weights(config: Mapping[str, Any] | object, family: str) ->
         return False
 
 
+def _normalized_capability(value: Any) -> tuple[int, int] | None:
+    if value is None:
+        return None
+    try:
+        major, minor = value
+        return int(major), int(minor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fp16_inner_path_hardware_verdict(
+    *,
+    cuda_available: bool | None,
+    capability: tuple[int, int] | None,
+    selected_capabilities: tuple[tuple[int, int], ...],
+    selection_unresolved: bool,
+) -> tuple[str, tuple[int, int] | None]:
+    """Collapse the caller's hardware context into one verdict.
+
+    ``selected_capabilities`` describes every GPU the training subprocess will
+    actually see (physical ``CUDA_VISIBLE_DEVICES`` indices). All of them must
+    be sm<80; one sm80+ device is enough to make the switch raise at runtime.
+    """
+    if selected_capabilities:
+        offending = [
+            item
+            for item in selected_capabilities
+            if item[0] >= NATIVE_BF16_TENSOR_CORE_MIN_MAJOR
+        ]
+        if offending:
+            return "newer_arch", offending[0]
+        if selection_unresolved:
+            # 白名单里还有设备没解析出来：已知的都是 sm<80，但不能证明全部，
+            # 按「无法确认」降级为 warning，而不是假装放行。
+            return "unresolved", selected_capabilities[0]
+        return "ok", selected_capabilities[0]
+    if selection_unresolved:
+        return "unresolved", None
+    if cuda_available is None and capability is None:
+        return "unknown_context", None
+    if cuda_available is False:
+        return "no_cuda", None
+    if capability is None:
+        return "unresolved", None
+    if capability[0] >= NATIVE_BF16_TENSOR_CORE_MIN_MAJOR:
+        return "newer_arch", capability
+    return "ok", capability
+
+
+def _fp16_inner_path_issue(
+    flag: str,
+    verdict: str,
+    offending: tuple[int, int] | None,
+    *,
+    selected_capabilities: tuple[tuple[int, int], ...] = (),
+) -> tuple[bool, TrainingCompatIssue] | None:
+    """Build the issue for one switch; ``(severity_is_error, issue)`` or ``None``.
+
+    Severity mirrors the runtime gate: sm80+ raises for both switches, a missing
+    CUDA device raises only for ``nf4_dir1`` and is a silent no-op for
+    ``krea2_attn_fp16``, and an unreadable architecture is never a hard block
+    because the runtime gate still fails closed on its own.
+    """
+    if verdict == "ok" or verdict == "unknown_context":
+        return None
+    gates = _FP16_INNER_PATH_GATES[flag]
+    if verdict == "newer_arch":
+        major, minor = offending or (0, 0)
+        if selected_capabilities:
+            device_detail = "selected device(s) " + ", ".join(
+                f"sm{item[0]}{item[1]}" for item in selected_capabilities
+            )
+        else:
+            device_detail = f"detected device sm{major}{minor}"
+        return True, TrainingCompatIssue(
+            f"{flag}_requires_pre_ampere",
+            flag,
+            f"--{flag} only targets sm70/sm75 devices (V100 / 2080Ti / T4) "
+            f"without native BF16 tensor cores; {device_detail} already runs "
+            f"BF16 on tensor cores and {gates['newer_arch']}. Training start is "
+            "blocked instead of silently downgrading; keep the flag off on sm80+ "
+            "to use native BF16.",
+        )
+    if verdict == "no_cuda":
+        severity_is_error = gates["no_cuda_severity"] == "error"
+        return severity_is_error, TrainingCompatIssue(
+            f"{flag}_requires_cuda",
+            flag,
+            f"--{flag} only targets sm70/sm75 devices (V100 / 2080Ti / T4) "
+            f"without native BF16 tensor cores and needs a CUDA device; "
+            f"{gates['no_cuda']}. "
+            + (
+                "Training start is blocked instead of silently downgrading; "
+                "keep the flag off."
+                if severity_is_error
+                else "Preflight cannot give the switch its SDPA kernels, so "
+                "treat it as disabled; the runtime flag stays a silent no-op."
+            ),
+        )
+    return False, TrainingCompatIssue(
+        f"{flag}_architecture_unknown",
+        flag,
+        f"--{flag} could not confirm a sm70/sm75 device: the compute capability "
+        "of the training device could not be resolved. Preflight keeps going "
+        "with a warning; the runtime set_* gate still fails closed if the "
+        "device turns out to be sm80+.",
+    )
+
+
+def _normalized_krea2_attention_mode(config: Mapping[str, Any] | object) -> str:
+    """Normalize ``attn_mode`` the same way the runtime does (aliases → torch)."""
+    raw_mode = str(_get(config, "attn_mode", "") or "").strip().lower()
+    return KREA2_ATTENTION_TORCH_ALIASES.get(
+        raw_mode.replace("-", "_"), raw_mode
+    )
+
+
+def _krea2_attn_fp16_inert_reason(config: Mapping[str, Any] | object) -> str | None:
+    """Return why ``krea2_attn_fp16`` cannot take effect, or ``None``.
+
+    Runtime consumers of ``_ATTN_FP16_ENABLED`` are the cuDNN SDPA branch only
+    (``attention_backend._cudnn_attention``: ``if _ATTN_FP16_ENABLED and
+    q.dtype == torch.bfloat16``). ``mode="flash"`` returns early through the
+    packed Flash varlen path in its own dtype, and a non-bf16 compute dtype
+    skips the branch as well. An unset ``attn_mode`` is treated as unspecified
+    here (production configs always inherit ``flash`` from ``base.toml``).
+    """
+    mode = _normalized_krea2_attention_mode(config)
+    if mode == "flash":
+        return "flash"
+    if mode not in {"", "torch"}:
+        # Unsupported values already fail with krea2_invalid_attn_mode; never
+        # recommend the pairing switch on top of an unloadable configuration.
+        return "invalid"
+    mixed_precision = (
+        str(_get(config, "mixed_precision", "") or "").strip().lower()
+    )
+    if mixed_precision in NON_BF16_COMPUTE_PRECISIONS:
+        return f"compute={mixed_precision}"
+    return None
+
+
+def _check_fp16_inner_path_flags(
+    out: _CompatBuilder,
+    config: Mapping[str, Any] | object,
+    *,
+    family_name: str,
+    nf4_active: bool,
+    cuda_available: bool | None,
+    device_capability: tuple[int, int] | None,
+    selected_device_capabilities: tuple[tuple[int, int], ...] | None = None,
+    selection_unresolved: bool = False,
+) -> None:
+    """Check ``nf4_dir1`` / ``krea2_attn_fp16`` against runtime semantics.
+
+    Five distinct branches, aligned with ``set_dir1_enabled``,
+    ``set_krea2_attn_fp16`` and ``run_krea2_attention``:
+
+    1. blocker: either switch on with a sm80+ device, or ``nf4_dir1`` without a
+       CUDA device (its runtime gate raises); ``krea2_attn_fp16`` without CUDA
+       and an unresolvable architecture only warn;
+    2. warning: ``nf4_dir1`` without ``base_compute=nf4`` (no NF4 Linear);
+    3. warning: ``krea2_attn_fp16`` outside ``model_family=krea2_raw``;
+    4. info: sm70/sm75 + Krea-2 + NF4 with only one of the two switches on;
+    5. warning: ``krea2_attn_fp16`` with ``attn_mode=flash`` or non-bf16
+       compute, where the runtime never reads the switch (dead switch).
+    """
+    nf4_dir1 = _bool_value(_get(config, "nf4_dir1", False), False)
+    attn_fp16 = _bool_value(_get(config, "krea2_attn_fp16", False), False)
+    # 双关也不是无事可做：Krea-2 + NF4 在 sm<80 上用默认 bf16 时，每个 bf16 GEMM
+    # 都落到 MAGMA 软件模拟（V100 实测 44.8 vs 11.06 s/step），需要一条 info 告诉
+    # 用户有可开的内层 fp16 路径。其它组合仍然早退，避免为一条提示让所有训练都去
+    # 探测 GPU。
+    if (
+        not nf4_dir1
+        and not attn_fp16
+        and (family_name != "krea2_raw" or not nf4_active)
+    ):
+        return
+    capability = _normalized_capability(device_capability)
+    selected_capabilities = tuple(
+        item
+        for item in (_normalized_capability(entry) for entry in selected_device_capabilities or ())
+        if item is not None
+    )
+    verdict, offending = _fp16_inner_path_hardware_verdict(
+        cuda_available=cuda_available,
+        capability=capability,
+        selected_capabilities=selected_capabilities,
+        selection_unresolved=selection_unresolved,
+    )
+
+    blocked: set[str] = set()
+    for flag, enabled in (("nf4_dir1", nf4_dir1), ("krea2_attn_fp16", attn_fp16)):
+        if not enabled:
+            continue
+        issue = _fp16_inner_path_issue(
+            flag,
+            verdict,
+            offending,
+            selected_capabilities=selected_capabilities,
+        )
+        if issue is None:
+            continue
+        severity_is_error, item = issue
+        if severity_is_error:
+            out.error(item.code, item.key, item.message)
+            blocked.add(flag)
+        else:
+            out.warning(item.code, item.key, item.message)
+
+    # Branch 5: the runtime only consumes the attention switch inside the cuDNN
+    # SDPA branch for bf16 inputs. Flash / non-bf16 compute makes it a dead
+    # switch, so warn instead of silently accepting it (and never recommend
+    # turning it on in that configuration).
+    inert_reason = _krea2_attn_fp16_inert_reason(config)
+    if (
+        attn_fp16
+        and inert_reason in _FP16_ATTENTION_INERT_REASONS
+        and "krea2_attn_fp16" not in blocked
+    ):
+        if inert_reason == "flash":
+            message = (
+                "--krea2_attn_fp16 only takes effect on the Krea-2 attention "
+                "path with attn_mode=torch/sdpa (cuDNN SDPA) and bf16 compute; "
+                "attn_mode='flash' runs the packed Flash varlen path in its own "
+                "dtype and never reads the switch, so enabling it is a no-op. "
+                "Set attn_mode=torch (sdpa is a torch alias) and keep "
+                "mixed_precision=bf16 to get the inner fp16 SDPA with GQA "
+                "expansion."
+            )
+        else:
+            message = (
+                "--krea2_attn_fp16 only takes effect on the Krea-2 attention "
+                "path with attn_mode=torch/sdpa (cuDNN SDPA) and bf16 compute; "
+                f"current mixed_precision={inert_reason.split('=', 1)[-1]!r} "
+                "already runs attention outside bf16, and the switch only "
+                "rewrites bf16 inputs, so it is a no-op. Keep "
+                "mixed_precision=bf16 to use it or turn the switch off."
+            )
+        out.warning(
+            "krea2_attn_fp16_requires_torch_attention",
+            "krea2_attn_fp16",
+            message,
+        )
+
+    # Only mention "ignored" when the combination is actually reachable; a
+    # blocked flag would otherwise produce a second, useless message.
+    if nf4_dir1 and not nf4_active and "nf4_dir1" not in blocked:
+        out.warning(
+            "nf4_dir1_ignored",
+            "nf4_dir1",
+            "--nf4_dir1 only takes effect with --base_compute nf4; there is no "
+            "NF4 Linear to accelerate under current base_compute. Drop the flag "
+            "or switch to nf4.",
+        )
+    if attn_fp16 and family_name != "krea2_raw" and "krea2_attn_fp16" not in blocked:
+        out.warning(
+            "krea2_attn_fp16_ignored",
+            "krea2_attn_fp16",
+            "--krea2_attn_fp16 only takes effect on the Krea-2 attention path "
+            f"(model_family=krea2_raw); current model_family={family_name!r} "
+            "never runs Krea-2 attention, so the flag is ignored. Drop the flag "
+            "or switch the family.",
+        )
+
+    supported_architecture = verdict == "ok" and not blocked
+    if (
+        supported_architecture
+        and family_name == "krea2_raw"
+        and nf4_active
+        and nf4_dir1 != attn_fp16
+        # Never recommend the attention switch when the current attention
+        # configuration makes it dead (flash / non-bf16 compute).
+        and inert_reason is None
+    ):
+        enabled_flag, missing_flag = (
+            ("nf4_dir1", "krea2_attn_fp16") if nf4_dir1 else ("krea2_attn_fp16", "nf4_dir1")
+        )
+        representative = offending or capability or (0, 0)
+        if selected_capabilities:
+            device_detail = "/".join(
+                f"sm{major}{minor}" for major, minor in selected_capabilities
+            )
+            lead = (
+                f"Training devices {device_detail} have no native BF16 "
+                "tensor cores."
+            )
+        else:
+            lead = (
+                f"sm{representative[0]}{representative[1]} has no native BF16 "
+                "tensor cores."
+            )
+        out.info(
+            "nf4_fp16_inner_pairing",
+            missing_flag,
+            f"{lead} Under Krea-2 + "
+            "base_compute=nf4, --nf4_dir1 covers the NF4 Linear inner GEMM in "
+            "fp16 and --krea2_attn_fp16 covers the attention inner SDPA in fp16 "
+            f"(GQA expanded to MHA); only --{enabled_flag} is enabled. Enable "
+            "both for the complete inner-fp16 path.",
+        )
+
+    # 双关：Krea-2 + NF4 在 sm<80 上用默认 bf16，两个内层 fp16 开关都没开。
+    # 这不是错误（bf16 数值正确），但每个 bf16 GEMM 都会落到 MAGMA 软件模拟，
+    # V100 实测 44.8 vs 11.06 s/step。只做 info，不做 warning：bf16 是 base.toml
+    # 的生产默认，把它标成"有问题的配置"会制造噪音。
+    # 也绝不建议把 compute 改成 fp16 —— 那条路已被
+    # krea2_nf4_fp16_grad_underflow_20261108.md 的 35.65% 梯度偏差否决。
+    if (
+        supported_architecture
+        and family_name == "krea2_raw"
+        and nf4_active
+        and not nf4_dir1
+        and not attn_fp16
+        # 只在 bf16 compute 下提示：两个开关都要求 compute=bf16，用户已经是
+        # fp16/fp32 时建议开启它们同样不生效，属于误导。
+        and str(_get(config, "mixed_precision", "bf16") or "bf16").strip().lower()
+        == "bf16"
+    ):
+        device_detail = "/".join(
+            f"sm{major}{minor}" for major, minor in selected_capabilities
+        ) or f"sm{(offending or capability or (0, 0))[0]}{(offending or capability or (0, 0))[1]}"
+        attention_hint = (
+            " --krea2_attn_fp16 additionally moves the attention inner SDPA to "
+            "fp16 (GQA expanded to MHA) and needs attn_mode=torch/sdpa; it is "
+            "inert under attn_mode=flash."
+            if inert_reason is None
+            else ""
+        )
+        out.info(
+            "nf4_fp16_inner_available",
+            "nf4_dir1",
+            f"Training devices {device_detail} have no native BF16 tensor "
+            "cores, so every bf16 GEMM falls back to a software emulation path "
+            "(V100 measured 44.8 vs 11.06 s/step). Neither inner-fp16 switch is "
+            "enabled. Enabling --nf4_dir1 moves the NF4 Linear inner GEMM to "
+            f"fp16 (about 4x on those GEMMs).{attention_hint} Both keep "
+            "compute_dtype=bfloat16; do not switch mixed_precision to fp16 "
+            "instead — that path is rejected for gradient underflow.",
+        )
+
+
 def _check_qwen_image_2_1_contract(out: _CompatBuilder, config, *,
                                    selective_checkpoint: str, blocks_to_swap: int,
                                    torch_compile: bool, cpu_offload_checkpointing: bool,
@@ -569,8 +955,23 @@ def check_training_compat(
     *,
     world_size: int | None = None,
     unverified_policy: str | None = None,
+    cuda_available: bool | None = None,
+    device_capability: tuple[int, int] | None = None,
+    selected_device_capabilities: tuple[tuple[int, int], ...] | None = None,
+    selection_unresolved: bool = False,
 ) -> TrainingCompatResult:
     """Validate optimization-flag combinations used by training and Web preflight.
+
+    ``cuda_available`` / ``device_capability`` carry the caller's hardware
+    context for the sm<80-only switches (``nf4_dir1`` / ``krea2_attn_fp16``).
+    Leaving them ``None`` means "no hardware context": the architecture rule is
+    skipped and the runtime ``set_*`` gate still fails closed.
+
+    ``selected_device_capabilities`` is the capability of every GPU the
+    training subprocess will actually see (physical ``CUDA_VISIBLE_DEVICES``
+    indices); all of them must be sm<80. ``selection_unresolved`` marks a
+    selection whose capability could not be resolved, which downgrades the
+    architecture rule to a warning instead of a hard block.
 
     ``unverified_policy`` (or the ``compat_unverified_policy`` config key)
     selects how audited unverified combinations are reported: ``strict``
@@ -1202,6 +1603,19 @@ def check_training_compat(
             "--nf4_prequantized_path only takes effect with --base_compute nf4; "
             "ignored under current base_compute. Drop the path or switch to nf4.",
         )
+    # nf4_dir1 / krea2_attn_fp16: 两个"无原生 bf16 tensor core"内层 fp16 开关.
+    # 架构 blocker、忽略提示与 sm70/sm75 双开建议统一在 helper 内处理, 条件与
+    # set_dir1_enabled / set_krea2_attn_fp16 的运行时抛错严格对齐.
+    _check_fp16_inner_path_flags(
+        out,
+        config,
+        family_name=family_spec.name,
+        nf4_active=nf4_active,
+        cuda_available=cuda_available,
+        device_capability=device_capability,
+        selected_device_capabilities=selected_device_capabilities,
+        selection_unresolved=selection_unresolved,
+    )
     if base_compute not in {
         "bf16",
         "fp16",

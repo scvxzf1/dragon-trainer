@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from collections.abc import Callable
 
 import torch
@@ -10,8 +12,115 @@ from einops import rearrange
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+logger = logging.getLogger(__name__)
 
 KREA2_ATTENTION_MODES = frozenset({"torch", "flash"})
+
+#: 把 SDPA 的 q/k/v 转 fp16 计算，并展开 GQA 成 MHA 形状。
+#:
+#: sm70 上 bf16 没有任何可用的 SDPA 内核（FLASH/EFFICIENT/CUDNN 全部
+#: "No available kernel"，只剩 MATH），而 MATH 的显存是 O(N²)：4864 tokens
+#: 单层就要 10 GiB。fp16 同样不行——memory-efficient 内核在
+#: ``q_heads != kv_heads``（GQA）时直接回退 MATH。把 kv 显式展开成与 q 同
+#: head 数后，fp16 能走 EFFICIENT，4096 tokens 峰值从 7424 MiB 降到 224 MiB。
+#:
+#: 反向不能裸转 fp16：深层 attention 的上游梯度 dO 是 1e-8 量级（findings §2.1），
+#: 直接 ``.to(fp16)`` 会掉进 subnormal 区。SDPA 反向对 dO 严格齐次线性
+#: （``SDPA_bwd(Q,K,V, 2^s·dO) = 2^s·(dQ,dK,dV)``），所以用 frexp/ldexp 把 dO
+#: 平移到 fp16 正规区再算、出结果后平移回来，数学上无损。
+_ATTN_FP16_ENABLED = False
+
+#: 严格模式：强制 EFFICIENT、失败时带完整张量诊断抛错，用于定位静默回退。
+_ATTN_STRICT = os.environ.get("K2_ATTN_STRICT") == "1"
+
+
+def _attn_diag(q, k, v, mask, gqa, scale) -> str:
+    """收集 SDPA 输入的全部判别性信息，用于定位为何回退 MATH。"""
+
+    def one(name, x):
+        if x is None:
+            return f"{name}=None"
+        return (
+            f"{name}: shape={tuple(x.shape)} dtype={x.dtype} "
+            f"contig={x.is_contiguous()} stride={x.stride()} "
+            f"offset={x.storage_offset()} numel={x.numel()}"
+        )
+
+    parts = [one("q", q), one("k", k), one("v", v), one("mask", mask)]
+    if mask is not None:
+        try:
+            parts.append(
+                f"mask.sum={int(mask.sum())} any_all_true={bool(mask.all(dim=-1).any())}"
+            )
+        except Exception:
+            logger.debug("attention mask diagnostics unavailable", exc_info=True)
+    parts.append(f"gqa={gqa} scale={scale} autocast={torch.is_autocast_enabled()}")
+    return "\n  ".join(parts)
+
+
+def set_krea2_attn_fp16(enabled: bool) -> None:
+    """启用 Krea-2 attention 的 fp16 内层 + GQA 展开（sm<80 专用）。"""
+    global _ATTN_FP16_ENABLED
+    if enabled and torch.cuda.is_available():
+        major = torch.cuda.get_device_capability()[0]
+        if major >= 8:
+            raise ValueError(
+                f"Krea-2 attention fp16 路径只对 sm<80 有收益；当前 sm_{major}0 "
+                "有原生 bf16 内核，走默认路径即可"
+            )
+    _ATTN_FP16_ENABLED = bool(enabled)
+
+
+def is_krea2_attn_fp16_enabled() -> bool:
+    return _ATTN_FP16_ENABLED
+
+
+class _PreFp16SDPA(torch.autograd.Function):
+    """q/k/v 转 fp16；反向把 dq/dk/dv 从缩放空间平移回 bf16。"""
+
+    @staticmethod
+    def forward(ctx, q, k, v, state):
+        ctx.state = state
+        ctx.dtype = q.dtype
+        # sm70 的 memory-efficient 内核对非连续输入直接 "No available kernel"
+        # 并静默回退 MATH（O(N²) 显存）。RMSNorm/rearrange 之后 v 常常是非连续的，
+        # 这里统一转连续，成本只有一次 O(n) 拷贝。
+        return (
+            q.to(torch.float16).contiguous(),
+            k.to(torch.float16).contiguous(),
+            v.to(torch.float16).contiguous(),
+        )
+
+    @staticmethod
+    def backward(ctx, dq16, dk16, dv16):
+        shift = ctx.state.get("shift")
+        if shift is None:  # 前向没产生梯度（推理/no_grad）：不做缩放
+            return dq16.to(ctx.dtype), dk16.to(ctx.dtype), dv16.to(ctx.dtype), None
+        neg = -shift
+        return (
+            torch.ldexp(dq16.float(), neg).to(ctx.dtype),
+            torch.ldexp(dk16.float(), neg).to(ctx.dtype),
+            torch.ldexp(dv16.float(), neg).to(ctx.dtype),
+            None,
+        )
+
+
+class _PostFp16SDPA(torch.autograd.Function):
+    """SDPA 的 fp16 输出转回 bf16；反向把 dO 平移到 fp16 正规区。"""
+
+    @staticmethod
+    def forward(ctx, out16, state, out_dtype):
+        ctx.state = state
+        return out16.to(out_dtype)
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        # dO 是深层 1e-8 量级的 bf16 梯度：裸转 fp16 会 subnormal/归零。
+        # 取 amax 的二进制指数做 2 的整数次幂平移，尾数一位不丢。
+        exp = torch.frexp(grad_out.abs().max())[1]
+        shift = torch.clamp(-exp, min=-126, max=126)
+        ctx.state["shift"] = shift
+        return torch.ldexp(grad_out.float(), shift).to(torch.float16), None, None
 
 
 def normalize_krea2_attention_mode(value: object) -> str:
@@ -115,6 +224,8 @@ def _cudnn_attention(
     scale: float | None,
     gqa: bool,
 ) -> Tensor:
+    if _ATTN_FP16_ENABLED and q.dtype == torch.bfloat16:
+        return _fp16_attention(q, k, v, mask=mask, scale=scale, gqa=gqa)
     try:
         with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
             output = F.scaled_dot_product_attention(
@@ -124,6 +235,58 @@ def _cudnn_attention(
         output = F.scaled_dot_product_attention(
             q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
         )
+    return rearrange(output, "B H L D -> B L (H D)")
+
+
+def _fp16_attention(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    *,
+    mask: Tensor | None,
+    scale: float | None,
+    gqa: bool,
+) -> Tensor:
+    """fp16 内层 + GQA 展开 + 反向 frexp/ldexp 缩放。
+
+    sm70 的 memory-efficient 内核对 GQA 直接回退 MATH（O(N²) 显存）。把 kv
+    展开成与 q 同 head 数后形状变成 MHA，fp16 就能走 EFFICIENT：4096 tokens
+    峰值 7424 MiB -> 224 MiB。展开多花 96 MiB，数学上与 GQA 等价（反向的
+    ``repeat_interleave`` 会把梯度 sum 回原 kv head 数）。
+    """
+    if gqa and q.shape[1] != k.shape[1]:
+        group = q.shape[1] // k.shape[1]
+        k = k.repeat_interleave(group, dim=1)
+        v = v.repeat_interleave(group, dim=1)
+        gqa = False
+    state: dict = {}
+    q16, k16, v16 = _PreFp16SDPA.apply(q, k, v, state)
+    # 关键：训练在 torch.autocast(dtype=bfloat16) 里跑，而 sm70 没有 bf16 内核。
+    # autocast 会把 SDPA 的调度上下文设成 bf16，EFFICIENT 对 fp16 输入直接
+    # "No available kernel" 并静默回退 MATH（4864 tokens 单层 4.23 GiB）。
+    # 这段内部计算是纯 fp16 的，必须在 autocast 外执行。
+    if _ATTN_STRICT:
+        try:
+            with torch.autocast(
+                device_type="cuda", enabled=False
+            ), sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
+                out16 = F.scaled_dot_product_attention(
+                    q16, k16, v16, attn_mask=mask, scale=scale, enable_gqa=gqa
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                "K2_ATTN_STRICT: EFFICIENT_ATTENTION unavailable for these inputs\n  "
+                + _attn_diag(q16, k16, v16, mask, gqa, scale)
+                + f"\n  original: {type(exc).__name__}: {exc}"
+            ) from exc
+    else:
+        with torch.autocast(device_type="cuda", enabled=False), sdpa_kernel(
+            [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]
+        ):
+            out16 = F.scaled_dot_product_attention(
+                q16, k16, v16, attn_mask=mask, scale=scale, enable_gqa=gqa
+            )
+    output = _PostFp16SDPA.apply(out16, state, q.dtype)
     return rearrange(output, "B H L D -> B L (H D)")
 
 

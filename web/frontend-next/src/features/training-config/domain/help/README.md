@@ -9,14 +9,14 @@
 | 分册 | 条目数 | 内容 | 主要核对入口 |
 | --- | ---: | --- | --- |
 | [basics.js](basics.js) | 5 | 模型族、标注后缀、图片过滤、预览解码 | `library/models/family_registry.py`、`library/preprocess/captions.py`、`images.py`、`library/training/preview_decode_policy.py` |
-| [input.js](input.js) | 22 | 数据集、验证切分、标注来源、日志、Qwen 任务 | `library/datasets/`、`library/preprocess/captions.py`、`web/services/config/dataset_edit_pairs.py` |
+| [input.js](input.js) | 23 | 数据集、验证切分、标注来源、日志、Qwen 任务 | `library/datasets/`、`library/preprocess/captions.py`、`web/services/config/dataset_edit_pairs.py` |
 | [plan.js](plan.js) | 36 | 预算、批量、优化器、损失、预览和保存 | `library/training/bootstrap.py`、`schedulers.py`、`checkpoints.py`、各模型族 `training_preview.py` |
-| [resources.js](resources.js) | 49 | 注意力、检查点、块交换、量化、诊断和预处理 | `library/training/compat_matrix.py`、`auto_block_swap/`、`gradient_flow_probe.py`、`library/runtime/offloading.py` |
-| [runtime.js](runtime.js) | 35 | 编译、精度、OOM 重试、缓存、路径和格式 | `library/training/adaptive_runtime/`、`bootstrap.py`、`mask_loss.py`、`web/services/training/runtime_prepare.py` |
+| [resources.js](resources.js) | 56 | 注意力、检查点、块交换、量化、诊断和预处理 | `library/training/compat_matrix.py`、`auto_block_swap/`、`gradient_flow_probe.py`、`library/runtime/offloading.py` |
+| [runtime.js](runtime.js) | 37 | 编译、精度、OOM 重试、缓存、路径和格式 | `library/training/adaptive_runtime/`、`bootstrap.py`、`mask_loss.py`、`web/services/training/runtime_prepare.py` |
 | [adapters.js](adapters.js) | 67 | 网络容量、专家路由和适配器变体 | `networks/lora_anima/config.py`、`routing_state.py`、`networks/plugins/`、`library/training/losses.py` |
 | [advanced.js](advanced.js) | 58 | Chimera、对比目标、PE-LoRA、Soft Tokens、SPD | `networks/methods/ip_adapter.py`、`ip_adapter_pe_lora.py`、`soft_tokens.py`、`configs/methods/spd.toml` |
 
-合计 272 项：保留原有 266 个帮助键，并补齐 Qwen 任务、正则化子集、三个梯度流探针参数和按步保存间隔。
+合计 282 项：保留原有 266 个帮助键，并补齐 Qwen 任务、正则化子集、三个梯度流探针参数、按步保存间隔、vocab pack 路径，以及 `nf4_dir1`、`krea2_attn_fp16` 两个 Krea-2 实验开关。
 当前字段目录和表单显式字段均有帮助。旧键 `use_hydra`、`use_sigma_router`、`batch_size` 保留迁移说明。
 
 源码核对说明实现行为，不等于新增真机验证。界面允许选择的组合、代码支持和已有硬件证据须分别表述。

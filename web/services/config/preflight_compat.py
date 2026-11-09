@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +64,151 @@ def _inspect_network_weight_impl(
         root=ROOT,
     )
 
-def _compat_web_message(item) -> str:
+@dataclass(frozen=True)
+class _CudaDeviceProbe:
+    """Local CUDA context for the sm<80-only fp16 inner-path switches."""
+
+    available: bool
+    capability: tuple[int, int] | None
+
+
+@dataclass(frozen=True)
+class _Fp16InnerPathHardware:
+    """Hardware context fed into the shared compat rules.
+
+    白名单非空时用 ``selected_capabilities``（训练子进程真正可见的物理 GPU）；
+    白名单为空/未指定时退回 Web 进程 device-0 探针的 ``cuda_available`` /
+    ``capability``（此时子进程不覆盖 ``CUDA_VISIBLE_DEVICES``，两者口径一致）。
+    ``selection_unresolved`` 表示白名单给出但 capability 解析不到，compat 会把它
+    降级成 warning 而不是硬阻断。
+    """
+
+    cuda_available: bool | None = None
+    capability: tuple[int, int] | None = None
+    selected_capabilities: tuple[tuple[int, int], ...] = ()
+    selection_unresolved: bool = False
+    device_label: str = ""
+
+
+#: 只在 sm<80（无原生 BF16 Tensor Core）有意义的两个实验开关。
+FP16_INNER_PATH_FLAGS = ("nf4_dir1", "krea2_attn_fp16")
+
+
+def _flag_enabled(cfg: dict[str, Any], flag: str) -> bool:
+    """Local truthiness for the two switches.
+
+    Deliberately not ``preflight_runtime._bool_value``: that helper is only
+    filled by the config-service facade sync, and the hardware probe must stay
+    callable from unit tests (and from any future direct caller) without the
+    facade import cycle.
+    """
+    value = cfg.get(flag)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fp16_inner_path_requires_probe(cfg: dict[str, Any]) -> bool:
+    return any(_flag_enabled(cfg, flag) for flag in FP16_INNER_PATH_FLAGS)
+
+
+def _probe_cuda_device() -> _CudaDeviceProbe:
+    """Read the local CUDA device, failing closed for preflight decisions.
+
+    ``torch.cuda.is_available()`` 为 False 时按「无 CUDA」处理；
+    设备可见但读不到 compute capability 时返回 ``(True, None)``，让兼容规则
+    以「无法确认架构」降级为 warning，而不是假装 sm70/sm75 放行。
+    """
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - a broken torch install must fail closed
+        return _CudaDeviceProbe(False, None)
+    try:
+        if not torch.cuda.is_available():
+            return _CudaDeviceProbe(False, None)
+    except Exception:  # noqa: BLE001 - driver errors must fail closed
+        return _CudaDeviceProbe(False, None)
+    try:
+        major, minor = torch.cuda.get_device_capability()
+    except Exception:  # noqa: BLE001 - unknown architecture must fail closed
+        return _CudaDeviceProbe(True, None)
+    return _CudaDeviceProbe(True, (int(major), int(minor)))
+
+
+def _probe_cuda_device_for(cfg: dict[str, Any]) -> _CudaDeviceProbe | None:
+    """Probe CUDA only when one of the switches is on (avoids needless context)."""
+    if not _fp16_inner_path_requires_probe(cfg):
+        return None
+    return _probe_cuda_device()
+
+
+def _selected_device_capabilities(
+    gpu_whitelist: Any,
+) -> tuple[list[int], tuple[tuple[int, tuple[int, int]], ...]]:
+    """Resolve ``(selected_indices, [(physical_index, capability), ...])``.
+
+    返回配对而不是两个平行序列：部分解析时 ``selected`` 与 ``capabilities`` 长度
+    不等，平行序列会让 label 把 capability 安到错误的物理 index 上。
+    """
+    from web.services.training.gpu import (
+        normalize_gpu_whitelist,
+        query_gpu_compute_capabilities,
+    )
+
+    selected = normalize_gpu_whitelist(gpu_whitelist)
+    if not selected:
+        return [], ()
+    found = query_gpu_compute_capabilities(selected)
+    paired = tuple((index, found[index]) for index in selected if index in found)
+    return selected, paired
+
+
+def _format_device_label(paired: tuple[tuple[int, tuple[int, int]], ...]) -> str:
+    if not paired:
+        return ""
+    parts = [f"GPU{index} sm_{major}{minor}" for index, (major, minor) in paired]
+    return "、".join(parts)
+
+
+def _fp16_inner_path_hardware(
+    cfg: dict[str, Any], *, gpu_whitelist: Any = None
+) -> _Fp16InnerPathHardware | None:
+    """Build the hardware context, preferring the task's whitelisted GPUs.
+
+    ``gpu_whitelist`` 为空/未指定时保持原行为（Web 进程 device 0 探针）；非空时
+    按 nvidia-smi 物理 index 解析每张被选设备的 compute capability，避免在异构
+    多卡机上用错卡判断 sm 架构。
+    """
+    if not _fp16_inner_path_requires_probe(cfg):
+        return None
+    selected, paired = _selected_device_capabilities(gpu_whitelist)
+    if selected:
+        capabilities = tuple(capability for _, capability in paired)
+        return _Fp16InnerPathHardware(
+            selected_capabilities=capabilities,
+            selection_unresolved=len(capabilities) != len(selected),
+            device_label=_format_device_label(paired),
+        )
+    probe = _probe_cuda_device_for(cfg)
+    if probe is None:  # pragma: no cover - guarded by requires_probe above
+        return None
+    label = (
+        f"当前预检设备 sm_{probe.capability[0]}{probe.capability[1]}"
+        if probe.capability is not None
+        else ""
+    )
+    return _Fp16InnerPathHardware(
+        cuda_available=probe.available,
+        capability=probe.capability,
+        device_label=label,
+    )
+
+
+def _compat_web_message(
+    item, *, device: _Fp16InnerPathHardware | None = None
+) -> str:
     messages = {
         "invalid_selective_checkpoint": (
             "selective_checkpoint 取值不受支持；请改为 off、adapter_aware、"
@@ -117,7 +262,9 @@ def _compat_web_message(item) -> str:
             "（未验证）。compat_unverified_policy=strict 会拒绝该组合。"
         ),
         "krea2_invalid_attn_mode": (
-            "Krea-2 注意力后端仅支持 torch 或 flash（sdpa 作为 torch 别名）。"
+            "Krea-2 注意力后端仅支持 torch、flash，以及 sdpa/cudnn/cudnn_sdpa"
+            "（这三个都是 torch 的别名）；其余写法会被启动预检拒绝，"
+            "加载阶段也会报错。"
         ),
         "krea2_compile_dynamic_seq": (
             "Krea-2 使用两张固定 token-family 编译图；"
@@ -209,12 +356,89 @@ def _compat_web_message(item) -> str:
             "blocks_to_swap 不支持 functional_loss_weight > 0 的 multi-forward 训练；"
             "请关闭 block swap。"
         ),
+        "nf4_dir1_ignored": (
+            "nf4_dir1 只在 base_compute=nf4 时生效；当前 base_compute 没有 NF4 Linear "
+            "可加速，开关会被忽略。请关闭该开关，或切换 base_compute=nf4。"
+        ),
+        "nf4_dir1_requires_cuda": (
+            "nf4_dir1 仅面向无原生 BF16 Tensor Core 的 sm70/sm75（V100 / 2080Ti / T4），"
+            "且需要 CUDA 设备：set_dir1_enabled(True) 在无 CUDA 时会直接抛 RuntimeError。"
+            "当前预检未检测到可用 CUDA，会阻止启动，不会静默回退；请保持 nf4_dir1=false。"
+        ),
+        "nf4_dir1_requires_pre_ampere": (
+            "nf4_dir1 仅面向无原生 BF16 Tensor Core 的 sm70/sm75（V100 / 2080Ti / T4）；"
+            "训练设备上 bf16 已走 tensor core，set_dir1_enabled(True) 会直接抛 ValueError。"
+            "sm80+ 请保持 nf4_dir1=false 以使用原生 BF16；当前会阻止启动，不会静默回退。"
+        ),
+        "nf4_dir1_architecture_unknown": (
+            "无法解析训练设备的 compute capability（白名单里的 GPU 查不到架构，或当前 CUDA 设备读不到算力），"
+            "不能确认属于 sm70/sm75；预检降级为警告、不阻断启动，"
+            "运行时 set_dir1_enabled(True) 仍会在 sm80+ 上抛错。请确认显卡架构，"
+            "或关闭 nf4_dir1。"
+        ),
+        "krea2_attn_fp16_requires_cuda": (
+            "krea2_attn_fp16 仅面向无原生 BF16 Tensor Core 的 sm70/sm75"
+            "（V100 / 2080Ti / T4），需要 CUDA 设备才能拿到它使用的 SDPA 内核。"
+            "当前预检看不到可用 CUDA：运行时只是把全局 flag 置真后空转、不会抛错，"
+            "所以这里按「开关不生效」给出警告而不阻断启动。请保持 krea2_attn_fp16=false。"
+        ),
+        "krea2_attn_fp16_requires_pre_ampere": (
+            "krea2_attn_fp16 仅面向无原生 BF16 Tensor Core 的 sm70/sm75"
+            "（V100 / 2080Ti / T4）；训练设备已有原生 bf16 SDPA 内核，"
+            "set_krea2_attn_fp16(True) 会直接抛 ValueError。sm80+ 请保持 "
+            "krea2_attn_fp16=false 以使用原生 BF16；当前会阻止启动，不会静默回退。"
+        ),
+        "krea2_attn_fp16_architecture_unknown": (
+            "无法解析训练设备的 compute capability（白名单里的 GPU 查不到架构，或当前 CUDA 设备读不到算力），"
+            "不能确认属于 sm70/sm75；预检降级为警告、不阻断启动，"
+            "运行时 set_krea2_attn_fp16(True) 仍会在 sm80+ 上抛错。请确认显卡架构，"
+            "或关闭 krea2_attn_fp16。"
+        ),
+        "krea2_attn_fp16_requires_torch_attention": (
+            "krea2_attn_fp16 只在 attn_mode=torch/sdpa（cudnn、cudnn_sdpa 是同义别名）"
+            "且 mixed_precision=bf16 时生效：运行时代码只在 cuDNN SDPA 分支里对 bf16 "
+            "输入读取该开关。attn_mode=flash 会直接走 Flash varlen 并以自身 dtype 运行，"
+            "compute 不是 bf16 时也不会进入该分支，两种情况下开关都是空转。"
+            "要获得 attention 内层 fp16 + GQA 展开，请把 attn_mode 切到 torch"
+            "（sdpa/cudnn/cudnn_sdpa 等价）并保持 mixed_precision=bf16；"
+            "否则请关闭 krea2_attn_fp16。"
+        ),
+        "krea2_attn_fp16_ignored": (
+            "krea2_attn_fp16 只在 Krea-2（model_family=krea2_raw）的 attention 路径生效；"
+            "当前模型族不会走 Krea-2 attention，开关会被忽略。"
+            "请关闭该开关，或切换模型族。"
+        ),
+        "nf4_fp16_inner_pairing": (
+            "当前设备无原生 BF16 Tensor Core（sm70/sm75）：Krea-2 + NF4 下 nf4_dir1 负责 "
+            "NF4 Linear 内层 fp16 GEMM，krea2_attn_fp16 负责 attention 内层 fp16 SDPA"
+            "（GQA 展开为 MHA）。当前只开启其中一个，建议两个同时开启，"
+            "以获得完整的内层 fp16 收益。"
+        ),
+        "nf4_fp16_inner_available": (
+            "当前设备无原生 BF16 Tensor Core（sm70/sm75），bf16 GEMM 会落到软件模拟路径"
+            "（V100 实测 44.8 vs 11.06 s/step）。两个内层 fp16 开关都未开启。"
+            "开启 nf4_dir1 可把 NF4 Linear 内层 GEMM 切到 fp16（该类 GEMM 约 4×）；"
+            "若注意力后端是 torch/sdpa，krea2_attn_fp16 还可把内层 SDPA 也切到 fp16"
+            "（attn_mode=flash 下该开关不生效）。两者都保持 compute_dtype=bfloat16，"
+            "不要把 mixed_precision 改成 fp16——那条路径因梯度下溢已被否决。"
+        ),
     }
     if item.code == "block_swap_compile_mode_cudagraphs":
         value = getattr(item, "value", None)
         target = value or "默认 Inductor mode"
         return f"blocks_to_swap 不兼容 Inductor CUDAGraph mode；训练启动时会改用 {target}。"
-    return messages.get(item.code, item.message)
+    message = messages.get(item.code, item.message)
+    if device is not None and item.code.endswith("_requires_pre_ampere"):
+        if device.selected_capabilities:
+            detail = device.device_label or ", ".join(
+                f"sm_{major}{minor}"
+                for major, minor in device.selected_capabilities
+            )
+            message = f"{message}（被选 GPU: {detail}）"
+        elif device.capability is not None:
+            major, minor = device.capability
+            message = f"{message}（当前预检设备 sm_{major}{minor}）"
+    return message
 
 
 def _adaptive_precision_requires_runtime_resolution(cfg: dict[str, Any]) -> bool:
@@ -235,13 +459,26 @@ def _check_checkpointing_config(
     add,
     *,
     world_size: int | None = None,
+    gpu_whitelist: Any = None,
 ) -> None:
-    compat = check_training_compat(cfg, world_size=world_size)
+    device = _fp16_inner_path_hardware(cfg, gpu_whitelist=gpu_whitelist)
+    compat = check_training_compat(
+        cfg,
+        world_size=world_size,
+        cuda_available=None if device is None else device.cuda_available,
+        device_capability=None if device is None else device.capability,
+        selected_device_capabilities=(
+            None
+            if device is None or not device.selected_capabilities
+            else device.selected_capabilities
+        ),
+        selection_unresolved=False if device is None else device.selection_unresolved,
+    )
     defer_adaptive_contract = _adaptive_precision_requires_runtime_resolution(cfg)
     for item in compat.errors:
         if defer_adaptive_contract and item.code == "adaptive_precision_contract":
             continue
-        add("error", item.key, _compat_web_message(item))
+        add("error", item.key, _compat_web_message(item, device=device))
 
     if defer_adaptive_contract:
         add(
@@ -257,11 +494,13 @@ def _check_checkpointing_config(
         if item.code == "block_swap_compile_mode_cudagraphs" and item.code in mutation_codes:
             continue
         seen_warning_codes.add(item.code)
-        add("warning", item.key, _compat_web_message(item))
+        add("warning", item.key, _compat_web_message(item, device=device))
     for item in compat.mutations:
         if item.code in seen_warning_codes:
             continue
-        add("warning", item.key, _compat_web_message(item))
+        add("warning", item.key, _compat_web_message(item, device=device))
+    for item in compat.infos:
+        add("info", item.key, _compat_web_message(item, device=device))
 
 
 def _check_core_training_semantics(

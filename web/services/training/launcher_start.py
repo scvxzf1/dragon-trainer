@@ -318,6 +318,9 @@ async def _start_pending_training(self, pending: dict[str, Any]) -> None:
             world_size=resolve_training_world_size_for_gpu_selection(
                 pending.get("gpu_whitelist") or []
             ),
+            # 预处理完成后的复检必须按任务实际可见的 GPU 判定架构，不能退回
+            # Web 进程 device-0：异构机上两者可能不是同一张卡。
+            gpu_whitelist=pending.get("gpu_whitelist"),
         )
         preflight = pending_preflight(preflight, pending.get("extra_args"))
         if not preflight.get("ok", False):

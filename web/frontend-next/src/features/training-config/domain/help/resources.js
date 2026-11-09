@@ -277,6 +277,26 @@ export const FIELD_HELP_RESOURCES_ZH = {
     cautions: ['阈值过低可能覆盖多数命中层。不要把 Anima 某一层的维度直接套到其他模型结构。'],
     relatedKeys: ['convrot_large_layer_mode'],
   },
+  nf4_dir1: {
+    version: 2,
+    summary: '实验开关：让 NF4 底模的 Linear 内层 GEMM 以 FP16 计算。',
+    recommendation: '保持关闭。只有在 sm<80 显卡上已经使用 base_compute=nf4、又需要更快的内层 GEMM 时，才按已验证配置开启并自行对照数值与速度。',
+    guidance: [{ title: '它改哪一层精度', paragraphs: ['只有每个 NF4 Linear 的前向与反向 GEMM 换成 FP16，外层 compute_dtype 仍是 BF16，原有 BF16 精度契约不变。', '必须同时选择 base_compute=nf4。当前底模不是 NF4 时，开关没有可加速的层，启动预检会提示它不会生效。'] }],
+    cautions: ['这是实验路径，不属于 Krea-2 的默认 NF4 加载方式。', '只对没有原生 BF16 tensor core 的 sm70/sm75 有收益，sm80 及以上启用会直接报错。', '已有速度与精度证据来自 V100 一档，其他硬件、网络变体和长时间训练仍需自行验收。'],
+    advanced: [{ title: '为什么叫 dir1', paragraphs: ['实现把内层矩阵乘换成 FP16，并在反向用 frexp/ldexp 按 2 的整数次幂缩放，避免小梯度落进 FP16 次正规数区间。'] }],
+    relatedKeys: ['base_compute', 'mixed_precision', 'blocks_to_swap'],
+  },
+  krea2_attn_fp16: {
+    version: 2,
+    summary: '实验开关：Krea-2 注意力内层改走 FP16，并把 GQA 展开成 MHA。只有注意力后端使用 SDPA（torch / sdpa）、外层 compute 为 BF16 时才生效，attn_mode=flash 下不起作用。',
+    recommendation: '保持关闭。只有 sm<80 的 Krea-2 训练、注意力后端已选 torch 或 sdpa、外层 compute 为 BF16 时，才按已验证配置开启，并重新做一次数值与显存对照。',
+    guidance: [
+      { title: '生效前置条件', paragraphs: ['注意力后端必须选 torch，或它的 sdpa / cudnn 别名，Krea-2 会把这些写法统一到同一条 cuDNN SDPA 路径。其余后端写法会被启动预检拒绝，加载阶段同样会报错。', '外层 compute 必须是 BF16：开关只在注意力输入是 bfloat16 时把内层切到 FP16。compute 已经是 FP16 时它没有可切换的内容，开了也不改变结果。'] },
+      { title: '它改什么', paragraphs: ['kv 会展开到与 q 相同的 head 数，FP16 才能落到 memory-efficient SDPA 内核。保持 GQA 形状时 FP16 只能回退 MATH，单层显存会高出很多。', '反向用 frexp/ldexp 把 dO 平移进 FP16 正规区，compute_dtype 仍保持 BF16。'] },
+    ],
+    cautions: ['注意力后端为 flash 时该开关不生效：FlashAttention 分支按自己的 dtype 直接运行，不会读取这个开关。想在 flash 下省显存只能调整交换块数、分辨率或批大小，打开它不会让 flash 变成 FP16 也不会加速。', '这是实验路径，只对 sm<80 有意义。sm70 上没有可用的 BF16 SDPA 内核，默认路径会退到高显存的 MATH。', '在 sm80 及以上启用会直接报错，那里原生 BF16 内核已经够用。', '注意力后端与量化、交换的组合以启动预检结果为准，展开 kv 会增加注意力显存读取量。'],
+    relatedKeys: ['attn_mode', 'mixed_precision', 'base_compute', 'blocks_to_swap'],
+  },
   block_swap_restore_mode: {
     version: 2,
     summary: '选择交换块权重恢复到 GPU 时的搬运组织方式。',
