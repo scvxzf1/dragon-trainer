@@ -365,7 +365,8 @@ DiT -> attach network -> training loop
 - Qwen-Image 2.1 由训练 bootstrap 调用
   `library/models/qwen_image_2_1/compile.py::compile_qwen_image_2_1_blocks()`，编译 block
   inner forward，swap dispatch 留在图外；不复用 Anima native flatten/bands。
-- Z-Image 当前不支持 compile，不能因为共享训练入口而绕过兼容拒绝。
+- Z-Image 当前不支持 compile：`z_image_torch_compile` 在 `--compat_unverified_policy`
+  的 strict/warn/allow 三档都是 error，不能因为共享训练入口而绕过兼容拒绝。
 - Anima distillation 的 `compile_dit_blocks_for_pool()` 仍使用一个 union range，
   不复用训练侧 `compile_seq_bands`。
 
@@ -374,8 +375,8 @@ DiT -> attach network -> training loop
 - 默认配置保留 full checkpoint、fixed resident compile 和 Flash varlen；
   `torch`/`sdpa` 可显式回退，block swap 按实际可用显存选择。NF4 是显式选择的路径，
   启用时只允许 BF16 compute，不将其描述为基座加载默认值。
-- NF4 必须遵守 `weights.py` / `quantize.py` 的 BF16 compute 检查；FP16 NF4 已被
-  数值验收否决，不新增全局 FP16 NF4 开关。
+- NF4 必须遵守 `weights.py` / `quantize.py` 的 BF16 compute 检查；FP16 NF4 的数值
+  验收未通过（见 `docs/findings/krea2_3080_speed_final.md`），不新增全局 FP16 NF4 开关。
 - 编译目标是 adapter apply/load 后的 resident block `_forward`，不是 checkpoint
   wrapper 或 swapped tail。使用 fixed sequence 和 None/default mode；拒绝
   dynamic-seq、`reduce-overhead`、`max-autotune*` 等未支持配置。
@@ -417,6 +418,36 @@ latent shape 是模型族接口契约，不是所有底层 transformer 的统一
 - 详细边界见 `docs/multi_model_support.md`，相关测试为
   `tests/test_model_family_registry.py`、`tests/test_model_family_fail_closed.py`、
   `tests/test_z_image_family.py` 和 `tests/test_z_image_block_swap.py`。
+
+### 兼容预检策略（compat_unverified_policy）
+
+`library/training/compat_matrix.py::check_training_compat` 是训练前的共享兼容入口，
+三级策略 `--compat_unverified_policy`（TOML 同名键）默认 `warn`：
+
+- `warn`（默认）：只把审计 C1 的 7 个 code 降级为 warning（qwen
+  `mixed_precision`/`masked_loss`/`loss_type`/`weighting_scheme`、z_image
+  `loss_type`/`flow_shift`/`weighting_scheme`），文案带 `[unverified 未验证]` 与逐条原因。
+  降级只表示“实现会生效”，不代表数值或质量已通过验收。
+- `strict`：恢复 origin/dev 判定，用于复现旧行为与排障；与旧版的差异仅限
+  [策略文档](docs/findings/compat_unverified_policy_20261109.md) §1/§5 列出的 12 个 code
+  消息修正、4 组白名单放宽和 3 条新增硬 code。
+- `allow`：只额外放行族内从未读取、放行即 no-op 的 14 个 C2-ignored code，文案写明
+  “该键在本族未接线/会被忽略（放行不会改变训练行为，也不会在下游 raise）”。
+- 真矛盾（selective_checkpoint × gradient/cpu_offload/unsloth 三连、
+  `convrot_block_swap_int8_mutex`、`block_swap_soft_tokens`、
+  `block_swap_functional_loss`）、输入校验（`invalid_*`、`negative_blocks_to_swap`、
+  `pipeline_parallel_config`、各族 attn_mode 白名单等）以及“放行即下游 raise”的
+  C2-raise（compile/auto-block-swap/caption_dropout/weighted_captions/preview_text_cache、
+  `block_swap_cpu_offload` 等）在**任何档位**都是 error。
+- 三档恒 error 的审计外硬 code：`loss_type_huber_schedule_unsupported`
+  （huber/smooth_l1 + 默认 `huber_schedule=snr`）、
+  `qwen_image_2_1_mixed_precision_flash`、`qwen_image_2_1_mixed_precision_nf4`。
+- 可追溯：启动日志打 `compat_unverified_policy=<policy> relaxed: [codes]`，
+  metadata 落 `ss_compat_unverified_policy`（档位）与 `ss_compat_unverified_relaxed`
+  （实际降级 code 列表）。
+- 改这些拦截必须同步[逐条审计](docs/findings/compat_unverified_audit_20261109.md)与
+  [策略文档](docs/findings/compat_unverified_policy_20261109.md)，并更新
+  `tests/test_compat_unverified_policy.py`；新检查不得默认纳入降级面。
 
 ### LoRA Family 三轴路由
 
@@ -673,6 +704,10 @@ E2E 使用隔离端口和 mock API/训练 WebSocket，不对用户后端执行�
   和缓存 schema、checkpoint/adapter 保存加载和训练恢复、核心数值算法、模型族 fail-closed
   分派，以及改变已有配置或公开 API 的兼容契约。优先验证被改动的契约，不自动扩大到全套测试。
   本文件明确要求的 shape/invariant 测试仍须补充。关键风险的独立验收按上文委派规则执行。
+- 改变兼容预检的降级面（C1/C2 分类、白名单、`--compat_unverified_policy` 语义）时，
+  必须同步 `docs/findings/compat_unverified_policy_20261109.md` 的 strict 差异账与
+  `tests/test_compat_unverified_policy.py` 的定向用例；strict 档要能回退到 origin/dev
+  判定（允许的差异仅限该文档 §1 列出的四类）。
 - `test-core`、`test-integration`、`test-hardware`、`test-experimental`、`test-all`
   及完整收集默认放在集中验收或发布阶段，仅在有对应风险、明确发布要求或用户指定时选用，
   不作为普通开发交付的默认阻塞步骤。性能或数值结论必须有对应的测量证据；未测量时仅报告实现状态。

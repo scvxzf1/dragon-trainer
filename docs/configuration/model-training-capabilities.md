@@ -43,6 +43,28 @@
   缩放到样张目标尺寸后，数组中参考图的总像素数最多为 4 Mi；超过会在启动预检查时拒绝。旧的纯文本提示词行继续有效；路径导入会复制到配置根的 `sample-references/`，不会改动数据集目录。
 - 采样多参考图只影响训练过程中的编辑预览，不改变编辑训练数据集的配对契约：目标图仍与其训练参考图一对一配对。
 
+## 兼容预检策略（`--compat_unverified_policy`）
+
+训练启动前 `library/training/compat_matrix.py::check_training_compat` 会做跨族兼容预检；
+WebUI 预检查、CLI 启动和 `bootstrap` 共用同一份判定。2026-11 起默认 `warn`：
+
+| 档位 | 语义 | 放行范围 |
+| --- | --- | --- |
+| `strict` | 复现旧版判定，排障与回退用 | 全部 error（与旧版差异见策略文档 §1） |
+| `warn`（默认） | 只放行“实现会生效、仅缺真机验收”的组合 | 审计 C1 的 7 个 code → warning |
+| `allow` | 额外放行族内从未读取、放行即 no-op 的键 | 再加 14 个 C2-ignored → warning |
+
+- 入口：CLI `--compat_unverified_policy strict|warn|allow`，或训练配置同名键；WebUI 表单
+  尚未暴露该字段，WebUI 启动沿用默认 `warn`。
+- 真矛盾、输入校验和“放行即下游 raise”的拦截在任何档位都是 error，`allow` 不会绕过。
+- 每条降级 warning 带 `[unverified 未验证]` 与原因；启动日志另打一条
+  `compat_unverified_policy=<policy> relaxed: [codes]` 汇总，便于确认本次实际放行了什么。
+- checkpoint metadata 记录 `ss_compat_unverified_policy`（档位）与
+  `ss_compat_unverified_relaxed`（本次实际降级的 code 列表），事后可判断该次运行是否用过
+  未验证组合。
+- 逐条依据见[审计](../findings/compat_unverified_audit_20261109.md)与
+  [策略文档](../findings/compat_unverified_policy_20261109.md)（含 strict 差异账与已知后续）。
+
 ## 实现入口
 
 - `library/models/family_registry.py`：`supported_tasks` 及旧任务键绑定。

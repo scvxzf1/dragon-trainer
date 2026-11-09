@@ -50,7 +50,7 @@
 | code | 依据 |
 | --- | --- |
 | `qwen_image_2_1_mixed_precision` | qwen 非 flash、且未加载预量化 mixed-NF4 权重时该组合会生效；缺 qwen fp16 真机验收（子条件见 §2.3） |
-| `qwen_image_2_1_masked_loss` | 共享掩码 flow-matching 损失适用于 qwen `[B,64,H,W]` 目标；缺数据/质量验收。**条件性生效**：数据集无任何掩码时掩码归约退化为普通均值（见 §8 F7） |
+| `qwen_image_2_1_masked_loss` | 共享掩码 flow-matching 损失适用于 qwen `[B,64,H,W]` 目标；缺数据/质量验收。**条件性生效**：数据集没有任何 alpha 掩码时 `mask_image_for_loss` 返回 None、`reduce_masked_loss` 回退 full-latent mean（`library/training/losses.py:324`、`library/training/mask_loss.py:16-46`）——属“生效但不改变语义”，不等同普通 C1（见 §8 F7） |
 | `qwen_image_2_1_loss_type` | `library/training/losses.py` 在 qwen 路径应用 l1/huber；官方配方只验收 L2（`huber_schedule` 子条件见 §2.2） |
 | `qwen_image_2_1_weighting_scheme` | `library/training/noise_target.py` 在 qwen 路径读取 `args.weighting_scheme` |
 | `z_image_loss_type` | 同上（z_image 路径） |
@@ -121,8 +121,10 @@ anima/krea2 装配（`library/training/model_loading.py` 仅两处 `enable_selec
   `z_image_bf16_only`（flash+fp16 在 attention backend raise）、`block_swap_cpu_offload`、
   `block_swap_unsloth_offload`。`block_swap_cpu_offload` 属 **A/C2 且与族相关**：
   Anima 下是显存资源策略；非 Anima 族走 `bootstrap.py` 的
-  `unet.enable_gradient_checkpointing(cpu_offload=True)` 会直接 `TypeError`（Diffusers
-  transformer 不接受该关键字），因此不能进入 allow。
+  `unet.enable_gradient_checkpointing(cpu_offload=True)` 会直接 `TypeError`——Diffusers
+  transformer 不接受该关键字，Krea-2 的 `krea2_raw/dit.py:361,516` 两个
+  `enable_gradient_checkpointing()` 也都无 kwargs（t4 已在 `krea2_raw` 真机复现），
+  因此不能进入 allow。
 - 第 2 轮新增硬错误（3 个）：`loss_type_huber_schedule_unsupported`（§2.2）、
   `qwen_image_2_1_mixed_precision_flash` / `qwen_image_2_1_mixed_precision_nf4`（§2.3）。
 
@@ -215,7 +217,15 @@ anima/krea2 装配（`library/training/model_loading.py` 仅两处 `enable_selec
 - **F8（deferred，由 t6 承接）**：WebUI 暂无 `compat_unverified_policy` 表单字段；
   当前入口是 CLI `--compat_unverified_policy` 与 TOML 键，WebUI 沿用默认 `warn`。
   用户文档与 WebUI 入口由 t6 补齐，本文件不先行改写。
-- **F9（deferred）**：`compat_matrix.py` 已因分类表增长到约 1300 行，超过
-  AGENTS.md「已超 1000 行不再承载新业务」的软约束。下轮应把分类表 + 策略解析 +
-  `_CompatBuilder` 的策略分支搬到 `library/training/compat_policy.py`，让
-  `check_training_compat` 只保留 facade；本轮受 inScope（6 条真实路径）限制未拆。
+- **F9（deferred）**：`compat_matrix.py` 已约 1364 行，超过 AGENTS.md「已超 1000 行
+  不再承载新业务」的软约束。下轮应把分类表 + 策略解析 + `_CompatBuilder` 的策略分支
+  搬到 `library/training/compat_policy.py`，让 `check_training_compat` 只保留 facade；
+  本轮受 inScope（6 条真实路径）限制未拆。
+- **O1（deferred）**：汇总日志在 `extra_args`、bootstrap 与 WebUI 预检各打一次，
+  建议保留 `check_training_compat` 内的一次、其余降为 debug 或按 (policy, code 集合) 去重。
+- **O3（deferred）**：`qwen_image_2_1_mixed_precision_nf4` 的 safetensors 头探测目前只被
+  monkeypatch 用例覆盖；未下载的 NF4 checkpoint 会预检放行、加载时才报错，拆分轮补
+  基于临时 manifest 的集成用例。
+- 完整 follow-up 表（含 F7/F8/F9/O1/O3、C2 能力表方向、t4 分类订正、
+  `save_every_n_*=0` 已知缺陷与 GPU 跑测规范）见
+  [审计文档 §12–§13](compat_unverified_audit_20261109.md)。

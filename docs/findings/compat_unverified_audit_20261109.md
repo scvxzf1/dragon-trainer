@@ -1,8 +1,8 @@
-# 未验证类兼容拦截逐条审计（compat_matrix 52 处 out.error）
+# 未验证类兼容拦截逐条审计（compat_matrix 50 处 out.error + 7 处 C1 unverified）
 
 状态：审计（只读）；实现状态见[降级策略](compat_unverified_policy_20261109.md)（两个恒假死代码站点已在 `codex/compat-unverified-relax` 删除）。第 2 轮按 t5 评审补记：本表 `block_swap_cpu_offload` 改判 **A/C2 且与族相关**、`family_plain_lora_only` 标注“必须拆 code 后才允许部分降级”；另新增 3 条审计外硬错误（`loss_type_huber_schedule_unsupported`、`qwen_image_2_1_mixed_precision_flash`、`qwen_image_2_1_mixed_precision_nf4`），详见策略文档 §2.2/§2.3。
 适用版本：2026-11-09，隔离工作树 `krea2-compat-relax`（分支 `codex/compat-unverified-relax`）
-相关代码：`library/training/compat_matrix.py`（984 行，52 个 `out.error` 站点）、
+相关代码：`library/training/compat_matrix.py`（约 1364 行；`out.error` 50 个站点、C1 `out.unverified` 7 个站点，另有第 2 轮新增的 3 条硬 code）、
 `library/models/family_registry.py`、`library/models/{krea2_raw,z_image,qwen_image_2_1}/`、
 `library/training/{task_contracts,auto_block_swap,adaptive_runtime,pp}`、
 `library/quantization/`、`library/runtime/convrot/`、`web/services/config/preflight_compat.py`
@@ -33,9 +33,11 @@
 - **重复门**：compat 与实现层各有一份同义校验（放行后仍有运行时守卫，属“安全降级”，
   但会让报错从 preflight 推迟到模型加载）。
 
-统计：52 个 `out.error` 站点经模板展开后为 **79 个 code 位、77 个不同 code**
-（`qwen_nf4_compile_experiment` 在 L249/L251 各写一次，`pipeline_parallel_config`
-在 L345/L354 各写一次）。按不同 code 计：
+统计（审计时点 2026-11-09 快照：文件 984 行、52 个 `out.error` 站点，经模板展开后为
+**79 个 code 位、77 个不同 code**；`qwen_nf4_compile_experiment` 在 L249/L251 各写一次，
+`pipeline_parallel_config` 在 L345/L354 各写一次）。实现阶段删除 2 个恒假站点后为
+50 个 `out.error` + 7 个 C1 `out.unverified` 站点，并按真机结果新增 3 条硬 code（§12-c）。
+按不同 code 计：
 
 | 分类 | code 数 | 说明 |
 | --- | --- | --- |
@@ -141,7 +143,7 @@ strict 名单；本轮不动。
 | code | 所属族 | 分类 | 判定依据 | 建议动作 | 关联测试 |
 | --- | --- | --- | --- | --- | --- |
 | `krea2_invalid_attn_mode`（L492） | krea2_raw | B 枚举校验 | compat L491 白名单 `KREA2_ATTN_MODES = {"", torch, flash, sdpa}`（L33）；实现 `library/models/krea2_raw/attention_backend.py:17-26` 把 `sdpa/cudnn/cudnn_sdpa` 归一为 `torch`。**白名单与实现不同步**（见 §8-1/§8-2） | 保留 error；补 `cudnn`/`cudnn_sdpa` 别名或明确拒绝并改文案 | `tests/test_krea2_attention_compat.py:11-30` |
-| `krea2_compile_inductor_mode`（L534） | krea2_raw | C2 未实现 | compat L530-539；`library/models/krea2_raw/dit.py:580-586` raise（只接受 `None/default`）；默认档证据见 [krea2 速度阶段总结](krea2_3080_speed_stage_summary.md:28) | 保留 error（重复门） | `tests/test_krea2_attention_compat.py:33-51` |
+| `krea2_compile_inductor_mode`（L534） | krea2_raw | C2 未实现 | compat L530-539；`library/models/krea2_raw/dit.py:580-586` raise（只接受 `None/default`）；默认档证据见 [krea2 速度阶段总结](krea2_3080_speed_stage_summary.md) | 保留 error（重复门） | `tests/test_krea2_attention_compat.py:33-51` |
 | `krea2_selective_checkpoint`（L541） | krea2_raw | C2 未实现 | compat L540-546；`dit.py:526-546` 只实现整块 checkpoint，`every_other` 是唯一同义模式并直接 raise 其他值 | 保留 error（重复门） | `tests/test_krea2_attention_compat.py:33-51`、`tests/test_krea2_selective_checkpoint.py` |
 | `krea2_v100_flash_stability`（L548） | krea2_raw | C2 未实现 | compat L547-552；该开关是 Anima-only 的 Flash 诊断路径（[V100 Flash 支持](v100_flash_attention_support.md)），krea2 无对应实现 | 保留 error | `tests/test_krea2_attention_compat.py:33-51` |
 
@@ -175,7 +177,7 @@ strict 名单；本轮不动。
 | `selective_full_gradient_checkpointing`（L720） | 通用 | A 语义互斥 | compat L719-725；`library/anima/models.py:2103-2121` 的 selective 实现**先对每个 block `disable_gradient_checkpointing()`** 再按模式重开，而 `library/training/bootstrap.py:675-680` 在之后统一 `unet.enable_gradient_checkpointing()` 会重新打开全部 block → selective 被静默覆盖 | 保留 error | — （无直接断言） |
 | `selective_cpu_offload`（L727） | 通用 | A 语义互斥 | 同上；selective 重开 block 时硬编码 `cpu_offload=False, unsloth_offload=False`（`models.py:2108-2110`），offload 永不生效 | 保留 error | — |
 | `selective_unsloth_offload`（L733） | 通用 | A 语义互斥 | 同上（unsloth 分支同样被绕过） | 保留 error | — |
-| `block_swap_cpu_offload`（L741） | 通用（族相关） | **A/C2：非 Anima 族放行即 TypeError** | compat L740-746；`bootstrap.py:675-680` 只把 `cpu_offload` 传给 checkpoint 包装。**族相关性**：Anima 的 `unet.enable_gradient_checkpointing(cpu_offload=True)` 存在，属显存资源策略；Qwen/Z-Image 的 Diffusers transformer 不接受 `cpu_offload` 关键字 → 放行即 `TypeError`，与 swap 的 block 驻留调度叠加还会同时占 CPU 激活与 pinned block 缓冲 | 保留 error（任何策略档均不降级） | — |
+| `block_swap_cpu_offload`（L741） | 通用（族相关） | **A/C2：非 Anima 族放行即 TypeError** | compat L740-746；`bootstrap.py:675-680` 只把 `cpu_offload` 传给 checkpoint 包装。**族相关性**：只有 Anima 的 `unet.enable_gradient_checkpointing(cpu_offload=True)` 存在，属显存资源策略；**Krea-2**（`library/models/krea2_raw/dit.py:361` 的 block 级与 `:516` 的 DiT 级 `enable_gradient_checkpointing()` 都不接受 kwargs，t4 真机在 `krea2_raw` 实测 `TypeError: ... got an unexpected keyword argument 'cpu_offload'`）与 Qwen/Z-Image 的 Diffusers transformer 同样不接受 `cpu_offload` → 放行即 `TypeError`；与 swap 的 block 驻留调度叠加还会同时占 CPU 激活与 pinned block 缓冲 | 保留 error（任何策略档均不降级） | t4 `output/tests/krea2-c3-smoke`（`output/` 不入库） |
 | `unsloth_cpu_offload`（L762） | 通用 | A 语义互斥 | compat L761-766；`library/anima/models.py:1412` `self.cpu_offload_checkpointing = cpu_offload if not unsloth_offload else False`——两者在实现层就互相清零 | 保留 error | `tests/test_training_compat_matrix.py:19-30` |
 | `block_swap_unsloth_offload`（L768） | 通用 | C3 资源策略 | compat L767-773；CLI 帮助已声明互斥（`library/training/cli_args.py:2038-2039`） | 保留 error | — |
 | `convrot_block_swap_int8_mutex`（L805） | 通用 | A 双重反量化 | compat L804-811 与 `library/runtime/convrot/checks.py:101-113` 同义硬互斥（double dequant / confused semantics），依据 `docs/experimental/convrot_int8_training.md §G.23`（由 `checks.py:116-140` docstring 引用） | 保留 error（重复门） | `tests/test_training_compat_matrix.py:154,164` |
@@ -202,6 +204,11 @@ strict 名单；本轮不动。
 
 ## 9. 给实现阶段的建议（默认 warn / strict 回退）
 
+> 本节是 t1 审计时点的建议，落地结果见[策略文档](compat_unverified_policy_20261109.md)。
+> 现状：第 1/2/6 条已落地；第 3/4 条已完成（4 处文案修正 + 2 个死代码站点单独提交删除）；
+> 第 5 条已补 7 个 C1 code 与 invalid 值的中文映射。**allow 档已收窄**：不再是“C2/C3 全部
+> 降级”，而是只放行 14 个 C2-ignored（族内从不读取的键），C2-raise 与 C3 恒 error。
+
 1. **默认 warn 白名单（7 个）**：§0 列出的 7 个 C1 code。其余保持 error。
 2. **strict 开关语义**：建议按“按 code 粒度”回退，而不是按族整族回退——同一族内
    C1 与 C2 混杂（如 qwen 21 个 code 中只有 4 个是 C1）。
@@ -219,6 +226,10 @@ strict 名单；本轮不动。
    `preview_text_cache` 属“放行即下游 raise”的 C2，放松只会把报错推迟。
 
 ## 10. 覆盖缺口（供后续补测试参考）
+
+> 审计时点记录。实现阶段已由 `tests/test_compat_unverified_policy.py`（78 例）覆盖，
+> 含六张触发器表（C1 / C2-ignored / C2-raise / C3 / 新增硬 code / A-B-mixed）、
+> 三档判定、strict 35 组快照与 4 组白名单放宽；本节保留用于说明缺口当初如何评估。
 
 以下 38 个 code 在 `tests/` 中**没有任何断言**（既无正向也无反向）：
 
@@ -250,3 +261,37 @@ warn 化前建议补一条“默认档产出 warning 而非 error、strict 档�
   “代码结构 + 测试断言”而非实测。
 - `z_image_checkpoint_offload` 的失败形态推断自 `z_image/block_swap.py:145-149` 的透传签名，
   未实跑 `cpu_offload_checkpointing=true`。
+- t4 的真机 L2 冒烟（qwen C1、krea2 C2/C3、qwen huber+snr）已实测出三处与本审计推断不同的
+  结论（`block_swap_cpu_offload` 对 Krea-2 为 C2-raise、huber+snr 必 raise、qwen fp16 子条件
+  必 raise）；正文表格已按实测订正，逐条见 §12-c。
+
+
+## 12. 已知后续（follow-up，2026-11-09 收口）
+
+按 t8 复审与 captain 裁定，以下项本轮不修，登记为后续（实现状态见[策略文档](compat_unverified_policy_20261109.md) §8）：
+
+| # | 事项 | 现状与下一步 |
+| --- | --- | --- |
+| a | **F9**：`compat_matrix.py` 已约 1364 行，超过 AGENTS.md「已超 1000 行不再承载新业务」的软约束 | 把审计分类表 + `_CompatBuilder` 的策略分支搬到 `library/training/compat_policy.py`（搬家型重构：行为不变、单独验收、单独提交）；**优先做** |
+| b | C2 的长期方向 | 现在依赖人工维护的 14（ignored）/24（raise）划分；长期改为能力表驱动——由 `library/models/family_registry.py` 声明每族真正消费的键，兼容层从能力表派生 ignored/raise，避免人工清单再次漂移 |
+| c | t4 真机发现的分类订正 | 已在实现中落地，本表口径同步：① `block_swap_cpu_offload` 对 `krea2_raw` 实测 `TypeError`（`krea2_raw/dit.py:361,516` 签名无 kwargs），实为 **C2-raise** 而非 C3 资源策略；② `loss_type=huber` + 默认 `huber_schedule=snr` 实测第一步 `NotImplementedError`（`losses.py:212`）→ 新增 A 类硬错；③ qwen `fp16 + mixed-NF4` 实测 `ValueError: Mixed NF4 requires BF16 compute`、`fp16 + flash` 由 attention backend 直接 `RuntimeError` → 拆成两个恒 error 子 code |
+| d | **F7**：`masked_loss` 的语义 | 实现会进入 mask 分支，但数据集无 alpha mask 时 `mask_image_for_loss` 返回 None、`reduce_masked_loss` 回退 full-latent mean（`library/training/losses.py:324`、`library/training/mask_loss.py:16-46`）——属“**生效但不改变语义**”，不应按普通 C1 宣传。后续在 C1 原因与 warning 文案里写明该前提，并在无掩码时补一条提示 |
+| e | **F8**：WebUI 入口 | 表单尚未暴露 `compat_unverified_policy`，WebUI 预检沿用默认 `warn`；CLI `--compat_unverified_policy` 与 TOML 同名键已可用，入口说明见 `docs/configuration/model-training-capabilities.md` |
+| f | **O1**：汇总日志重复 | `compat_unverified_policy=... relaxed: [...]` 会在 `library/training/extra_args.py`、bootstrap（`validate_qwen_dataset_config`）与 WebUI 预检三处各打一次（各入口共用 `check_training_compat`）。建议保留 `check_training_compat` 内的一次，其余调用点降到 debug，或按 (policy, code 集合) 去重 |
+| g | **O3**：NF4 探测覆盖不足 | `qwen_image_2_1_mixed_precision_nf4` 的文件探测（`library/quantization/format.py::inspect_mixed_nf4` 读 safetensors 头）目前只被 monkeypatch 用例覆盖；未下载的 NF4 checkpoint 会预检放行、加载时才报错。拆分轮补基于临时 safetensors 头的集成用例（构造最小 manifest fixture） |
+| h | 与本次无关的既有缺陷 | `save_every_n_steps=0` / `save_every_n_epochs=0` 分别在 `library/training/checkpoints.py:1166`、`:1212` 触发 `ZeroDivisionError: integer modulo by zero`（CLI 未拒绝 0，`get_remove_ckpt_no` 的取模同样会炸）。标为已知问题，**本分支不修**；建议下一轮在 `library/training/cli_args.py` 校验 `>= 1`，或按 `None` 语义处理 |
+
+## 13. 附：GPU L2 跑测规范
+
+t4 真机冒烟的完整记录在 `output/tests/GPU_L2_SMOKE_SUMMARY.md`（`output/` 被 gitignore，
+不随分支提交，只作为运行数据留存）。可复用的规范：
+
+- **卡号对齐**：`nvidia-smi` 的序号与 CUDA 默认的 `FASTEST_FIRST` 枚举不一致；
+  `CUDA_VISIBLE_DEVICES` 必须搭配 `CUDA_DEVICE_ORDER=PCI_BUS_ID`，才能与 gpu-gate 返回的
+  卡号对齐。例：`CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1,2`。缺该变量时，
+  `1,2` 曾实际落到别的卡（混入被禁用的 GTX 1050 4 GiB 卡）并导致一次 OOM。
+- **gpu-gate 误报**：桌面进程（CherryStudio、kwin_wayland 等）占用 util 时，gpu-gate 会把
+  该卡判成 `training` 而拒绝分配；判卡应以显存占用 + `nvidia-smi --query-compute-apps`
+  的计算进程为主，util 只作参考，误报时人工复核后再决定是否放宽白名单。
+- **单次冒烟口径**：`timeout 900`，记录退出码、完成步数、峰值显存与首/末步 loss；
+  skip、OOM、0 步与“未执行”一律不计通过，也不写成“已验证”。
