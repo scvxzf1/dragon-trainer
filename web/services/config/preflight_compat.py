@@ -72,6 +72,20 @@ def _compat_web_message(item) -> str:
         "invalid_compat_unverified_policy": (
             "compat_unverified_policy 取值不受支持；请改为 strict、warn 或 allow。"
         ),
+        "loss_type_huber_schedule_unsupported": (
+            "huber/smooth_l1 损失不支持 huber_schedule=snr：SNR 调度需要 "
+            "noise_scheduler.alphas_cumprod，而 flow-matching 族只有 "
+            "FlowMatchEulerDiscreteScheduler，训练第一步就会 NotImplementedError。"
+            "请改用 huber_schedule=constant 或 exponential。"
+        ),
+        "qwen_image_2_1_mixed_precision_flash": (
+            "Qwen Image 2.1 的 attn_mode=flash 只验证过 bf16 计算；fp16 + flash 会在"
+            "注意力后端直接 RuntimeError，compat_unverified_policy 任何档位都不会放行。"
+        ),
+        "qwen_image_2_1_mixed_precision_nf4": (
+            "预量化 mixed-NF4 权重要求 BF16 计算；fp16 + mixed-NF4 会在 NF4 加载器里"
+            "直接报错，compat_unverified_policy 任何档位都不会放行。"
+        ),
         # Audited C1 codes (docs/findings/compat_unverified_audit_20261109.md).
         # warn 档下它们是 warning，strict 档下仍是 error，文案统一标注未验证。
         "qwen_image_2_1_mixed_precision": (

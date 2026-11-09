@@ -128,9 +128,18 @@ def build_training_metadata(
         "ss_loss_type": args.loss_type,
         # Stamp the unverified-compat policy so a checkpoint records whether the
         # run was allowed to use audited-but-unvalidated combinations
-        # (see docs/findings/compat_unverified_audit_20261109.md).
+        # (see docs/findings/compat_unverified_audit_20261109.md). The policy
+        # string alone does not say which gates were actually bypassed, so the
+        # concrete relaxed code list is stamped too (set by
+        # compat_matrix.apply_training_compat_mutations on the training args).
         "ss_compat_unverified_policy": str(
             getattr(args, "compat_unverified_policy", "warn") or "warn"
+        ),
+        "ss_compat_unverified_relaxed": ",".join(
+            sorted(
+                str(code)
+                for code in (getattr(args, "compat_unverified_relaxed", None) or ())
+            )
         ),
         "ss_huber_schedule": args.huber_schedule,
         "ss_huber_scale": args.huber_scale,

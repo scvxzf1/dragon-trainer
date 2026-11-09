@@ -357,6 +357,7 @@ def test_z_image_compat_rejects_unverified_optimizations() -> None:
             "weighted_captions": True,
             "layer_start": 3,
             "loss_type": "huber",
+            "huber_schedule": "constant",
             "t_min": 0.1,
             "sampler": "custom",
             "v100_flash_stability": "conservative",

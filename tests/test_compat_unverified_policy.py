@@ -1,33 +1,39 @@
-"""Unverified-combination policy contract.
+"""Unverified-combination policy contract (round 2).
 
 Audit source: docs/findings/compat_unverified_audit_20261109.md.
+Policy doc: docs/findings/compat_unverified_policy_20261109.md.
 
 ``compat_unverified_policy`` has three levels:
 
-* ``strict``: origin/dev behavior (every audited site is an error).
+* ``strict``: origin/dev verdicts, except the intentionally documented
+  whitelist/message fixes and the round-2 hard gates (policy doc §1).
 * ``warn`` (default): only the audited C1 codes become warnings.
-* ``allow``: audited C2/C3 codes become warnings too, with an explicit note
-  that the key is unwired in the family (or departs from the official recipe).
-
-Input-validation (B) and semantic-conflict (A / B+C2 mixed) codes stay errors
-under every policy.
+* ``allow``: additionally the audited C2-*ignored* codes become warnings (the
+  family never reads the key). C2-raise/C3-raise, A/B and B+C2 codes stay
+  errors under every policy.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 
 import pytest
 
 from library.training.cli_args import add_dit_training_arguments
 from library.training.compat_matrix import (
+    ALWAYS_ERROR_CODES,
     COMPAT_UNVERIFIED_POLICIES,
     DEFAULT_COMPAT_UNVERIFIED_POLICY,
+    EXTRA_HARD_CODES,
     HARD_BLOCK_CODES,
     RELAXABLE_UNWIRED_CODES,
     UNVERIFIED_C1_CODES,
     UNVERIFIED_C2_CODES,
+    UNVERIFIED_C2_IGNORED_CODES,
+    UNVERIFIED_C2_RAISE_CODES,
     UNVERIFIED_C3_CODES,
+    apply_training_compat_mutations,
     check_training_compat,
     resolve_unverified_policy,
 )
@@ -38,10 +44,13 @@ def _codes(items) -> set[str]:
     return {item.code for item in items}
 
 
+# audited C1; loss_type entries pin huber_schedule=constant so only the C1
+# gate fires (huber+snr is its own A-class hard error, see NEW_HARD_TRIGGERS).
 C1_TRIGGERS = {
     "qwen_image_2_1_mixed_precision": {
         "model_family": "qwen_image_2_1",
         "mixed_precision": "fp16",
+        "attn_mode": "torch",
     },
     "qwen_image_2_1_masked_loss": {
         "model_family": "qwen_image_2_1",
@@ -50,29 +59,127 @@ C1_TRIGGERS = {
     "qwen_image_2_1_loss_type": {
         "model_family": "qwen_image_2_1",
         "loss_type": "huber",
+        "huber_schedule": "constant",
     },
     "qwen_image_2_1_weighting_scheme": {
         "model_family": "qwen_image_2_1",
         "weighting_scheme": "cosmap",
     },
-    "z_image_loss_type": {"model_family": "z_image", "loss_type": "huber"},
+    "z_image_loss_type": {
+        "model_family": "z_image",
+        "loss_type": "huber",
+        "huber_schedule": "constant",
+    },
     "z_image_flow_shift": {"model_family": "z_image", "discrete_flow_shift": 3.0},
     "z_image_weighting_scheme": {"model_family": "z_image", "weighting_scheme": "cosmap"},
 }
 
-# Representative C2 (no code path in the family) and C3 (recipe/VRAM policy)
-# sites; ``warn`` keeps them as errors and ``allow`` relaxes them.
-C2_TRIGGERS = {
+# C2-ignored: the family never reads the key, so ``allow`` may relax it.
+C2_IGNORED_TRIGGERS = {
+    "qwen_image_2_1_timestep_sampling": {
+        "model_family": "qwen_image_2_1",
+        "timestep_sampling": "shift",
+    },
+    "qwen_image_2_1_layer_start": {
+        "model_family": "qwen_image_2_1",
+        "layer_start": 3,
+    },
+    "qwen_image_2_1_t_min": {"model_family": "qwen_image_2_1", "t_min": 0.1},
+    "qwen_image_2_1_base_compute": {
+        "model_family": "qwen_image_2_1",
+        "base_compute": "w8a16_convrot",
+    },
+    "qwen_image_2_1_selective_checkpoint": {
+        "model_family": "qwen_image_2_1",
+        "selective_checkpoint": "mlp_only",
+    },
+    "z_image_timestep_sampling": {"model_family": "z_image", "timestep_sampling": "shift"},
+    "z_image_training_sampler": {"model_family": "z_image", "sampler": "custom"},
+    "z_image_layer_range": {"model_family": "z_image", "layer_start": 3},
+    "z_image_timestep_range": {"model_family": "z_image", "t_min": 0.1},
+    "z_image_base_compute": {"model_family": "z_image", "base_compute": "nf4"},
+    "z_image_selective_checkpoint": {
+        "model_family": "z_image",
+        "selective_checkpoint": "every_other",
+    },
+    "z_image_v100_flash_stability": {
+        "model_family": "z_image",
+        "v100_flash_stability": "conservative",
+    },
+    "krea2_v100_flash_stability": {
+        "model_family": "krea2_raw",
+        "v100_flash_stability": "conservative",
+    },
+    "qwen_image_2_1_adaptive_precision": {
+        "model_family": "qwen_image_2_1",
+        "adaptive_precision": "auto",
+    },
+}
+
+# C2-raise: bypassing the gate hits a downstream raise; always an error.
+C2_RAISE_TRIGGERS = {
     "qwen_image_2_1_weighted_captions": {
         "model_family": "qwen_image_2_1",
         "weighted_captions": True,
     },
+    "qwen_image_2_1_preview_text_cache": {
+        "model_family": "qwen_image_2_1",
+        "sample_at_first": True,
+    },
+    "qwen_image_2_1_network_train_unet_only": {
+        "model_family": "qwen_image_2_1",
+        "network_train_unet_only": False,
+    },
+    "qwen_image_2_1_caption_dropout_rate": {
+        "model_family": "qwen_image_2_1",
+        "caption_dropout_rate": 0.1,
+    },
+    "qwen_image_2_1_cpu_offload_checkpointing": {
+        "model_family": "qwen_image_2_1",
+        "cpu_offload_checkpointing": True,
+    },
+    "qwen_image_2_1_auto_block_swap": {
+        "model_family": "qwen_image_2_1",
+        "auto_block_swap": True,
+    },
+    "qwen_fused_projections_family": {
+        "model_family": "anima",
+        "qwen_fused_projections": "all",
+    },
+    "qwen_fused_projections_plain_lora": {
+        "model_family": "qwen_image_2_1",
+        "qwen_fused_projections": "all",
+        "use_lokr": True,
+    },
     "z_image_torch_compile": {"model_family": "z_image", "torch_compile": True},
+    "z_image_checkpoint_offload": {
+        "model_family": "z_image",
+        "cpu_offload_checkpointing": True,
+        "gradient_checkpointing": True,
+    },
+    "z_image_weighted_captions": {
+        "model_family": "z_image",
+        "weighted_captions": True,
+    },
+    "z_image_caption_dropout": {
+        "model_family": "z_image",
+        "caption_dropout_rate": 0.1,
+    },
+    "krea2_compile_inductor_mode": {
+        "model_family": "krea2_raw",
+        "compile_inductor_mode": "reduce-overhead",
+    },
     "krea2_selective_checkpoint": {
         "model_family": "krea2_raw",
         "selective_checkpoint": "mlp_only",
     },
+    "family_plain_lora_only": {
+        "model_family": "qwen_image_2_1",
+        "use_ortho": True,
+    },
 }
+
+# C3: recipe/VRAM policy or a guaranteed runtime raise; always an error.
 C3_TRIGGERS = {
     "z_image_bf16_only": {
         "model_family": "z_image",
@@ -83,6 +190,25 @@ C3_TRIGGERS = {
         "blocks_to_swap": 4,
         "cpu_offload_checkpointing": True,
         "gradient_checkpointing": True,
+    },
+    "block_swap_unsloth_offload": {
+        "blocks_to_swap": 4,
+        "unsloth_offload_checkpointing": True,
+        "gradient_checkpointing": True,
+    },
+    "qwen_nf4_compile_experiment": {
+        "model_family": "qwen_image_2_1",
+        "qwen_nf4_compile_experiment": True,
+    },
+}
+
+# Round-2 hard gates added after the audit: always an error.
+NEW_HARD_TRIGGERS = {
+    "loss_type_huber_schedule_unsupported": {"loss_type": "huber"},
+    "qwen_image_2_1_mixed_precision_flash": {
+        "model_family": "qwen_image_2_1",
+        "mixed_precision": "fp16",
+        "attn_mode": "flash",
     },
 }
 
@@ -150,24 +276,49 @@ def test_audit_tables_are_disjoint_and_cover_every_classified_code() -> None:
         "z_image_flow_shift",
         "z_image_weighting_scheme",
     })
-    assert len(UNVERIFIED_C2_CODES) == 38
+    assert len(UNVERIFIED_C2_IGNORED_CODES) == 14
+    assert len(UNVERIFIED_C2_RAISE_CODES) == 24
+    assert UNVERIFIED_C2_CODES == UNVERIFIED_C2_IGNORED_CODES | UNVERIFIED_C2_RAISE_CODES
     assert len(UNVERIFIED_C3_CODES) == 5
     assert len(HARD_BLOCK_CODES) == 25
-    assert RELAXABLE_UNWIRED_CODES == UNVERIFIED_C2_CODES | UNVERIFIED_C3_CODES
-    groups = [UNVERIFIED_C1_CODES, UNVERIFIED_C2_CODES, UNVERIFIED_C3_CODES, HARD_BLOCK_CODES]
+    assert EXTRA_HARD_CODES == frozenset({
+        "loss_type_huber_schedule_unsupported",
+        "qwen_image_2_1_mixed_precision_flash",
+        "qwen_image_2_1_mixed_precision_nf4",
+    })
+    # ``allow`` relaxes C2-ignored only; C3/raise/A/B/extra are never relaxed.
+    assert RELAXABLE_UNWIRED_CODES == UNVERIFIED_C2_IGNORED_CODES
+    assert ALWAYS_ERROR_CODES == (
+        HARD_BLOCK_CODES | UNVERIFIED_C2_RAISE_CODES | UNVERIFIED_C3_CODES | EXTRA_HARD_CODES
+    )
+    groups = [
+        UNVERIFIED_C1_CODES,
+        UNVERIFIED_C2_IGNORED_CODES,
+        UNVERIFIED_C2_RAISE_CODES,
+        UNVERIFIED_C3_CODES,
+        HARD_BLOCK_CODES,
+    ]
     for index, group in enumerate(groups):
         for other in groups[index + 1:]:
             assert not group & other
     # 77 audited codes minus the two always-false sites deleted in this branch.
     assert sum(len(group) for group in groups) == 75
-    assert not RELAXABLE_UNWIRED_CODES & HARD_BLOCK_CODES
+    assert not RELAXABLE_UNWIRED_CODES & ALWAYS_ERROR_CODES
 
 
-def test_every_c1_trigger_reproduces_its_code_under_strict() -> None:
-    for code, config in C1_TRIGGERS.items():
-        result = check_training_compat(config, unverified_policy="strict")
-        assert code in _codes(result.errors), code
-        assert code not in _codes(result.warnings), code
+def test_every_trigger_pair_covers_its_code_under_strict() -> None:
+    for triggers in (
+        C1_TRIGGERS,
+        C2_IGNORED_TRIGGERS,
+        C2_RAISE_TRIGGERS,
+        C3_TRIGGERS,
+        NEW_HARD_TRIGGERS,
+        HARD_BLOCK_TRIGGERS,
+    ):
+        for code, config in triggers.items():
+            result = check_training_compat(config, unverified_policy="strict")
+            assert code in _codes(result.errors), code
+            assert code not in _codes(result.warnings), code
 
 
 @pytest.mark.parametrize("code", sorted(C1_TRIGGERS))
@@ -176,6 +327,7 @@ def test_default_warn_relaxes_c1_with_marker_and_reason(code: str) -> None:
 
     assert result.unverified_policy == "warn"
     assert code not in _codes(result.errors)
+    assert code in result.relaxed
     [issue] = [item for item in result.warnings if item.code == code]
     assert "未验证" in issue.message
     assert "Reason:" in issue.message
@@ -190,8 +342,9 @@ def test_strict_restores_the_historical_error(code: str) -> None:
 
     for result in (keyword, config_key):
         assert code in _codes(result.errors)
+        assert result.relaxed == ()
         [issue] = [item for item in result.errors if item.code == code]
-        # strict keeps the origin/dev message verbatim (no relaxation marker).
+        # strict keeps the origin/dev verdict and adds no relaxation marker.
         assert "未验证" not in issue.message
 
 
@@ -204,29 +357,49 @@ def test_explicit_keyword_overrides_the_config_key() -> None:
     )
 
 
-@pytest.mark.parametrize("code", sorted(C2_TRIGGERS))
-def test_warn_keeps_c2_errors_and_allow_relaxes_them(code: str) -> None:
-    config = C2_TRIGGERS[code]
-
-    assert code in _codes(check_training_compat(config).errors)
-    [issue] = [
-        item
-        for item in check_training_compat(config, unverified_policy="allow").warnings
-        if item.code == code
-    ]
-    assert "未验证" in issue.message
-    assert "该键在本族未接线/会被忽略" in issue.message
-    assert code not in _codes(check_training_compat(config, unverified_policy="allow").errors)
-
-
-@pytest.mark.parametrize("code", sorted(C3_TRIGGERS))
-def test_allow_relaxes_c3_with_unwired_note(code: str) -> None:
-    config = C3_TRIGGERS[code]
+@pytest.mark.parametrize("code", sorted(C2_IGNORED_TRIGGERS))
+def test_warn_keeps_c2_ignored_errors_and_allow_relaxes_them(code: str) -> None:
+    config = C2_IGNORED_TRIGGERS[code]
 
     assert code in _codes(check_training_compat(config).errors)
     allow = check_training_compat(config, unverified_policy="allow")
+    assert code not in _codes(allow.errors)
+    assert code in allow.relaxed
     [issue] = [item for item in allow.warnings if item.code == code]
+    assert "未验证" in issue.message
     assert "该键在本族未接线/会被忽略" in issue.message
+    assert "不会在下游 raise" in issue.message
+
+
+@pytest.mark.parametrize("code", sorted(C2_RAISE_TRIGGERS))
+def test_c2_raise_codes_stay_errors_under_every_policy(code: str) -> None:
+    config = C2_RAISE_TRIGGERS[code]
+
+    for policy in COMPAT_UNVERIFIED_POLICIES:
+        result = check_training_compat(config, unverified_policy=policy)
+        assert code in _codes(result.errors), (code, policy)
+        assert code not in _codes(result.warnings), (code, policy)
+        assert code not in result.relaxed, (code, policy)
+
+
+@pytest.mark.parametrize("code", sorted(C3_TRIGGERS))
+def test_c3_codes_stay_errors_under_every_policy(code: str) -> None:
+    config = C3_TRIGGERS[code]
+
+    for policy in COMPAT_UNVERIFIED_POLICIES:
+        result = check_training_compat(config, unverified_policy=policy)
+        assert code in _codes(result.errors), (code, policy)
+        assert code not in result.relaxed, (code, policy)
+
+
+@pytest.mark.parametrize("code", sorted(NEW_HARD_TRIGGERS))
+def test_round2_hard_gates_stay_errors_under_every_policy(code: str) -> None:
+    config = NEW_HARD_TRIGGERS[code]
+
+    for policy in COMPAT_UNVERIFIED_POLICIES:
+        result = check_training_compat(config, unverified_policy=policy)
+        assert code in _codes(result.errors), (code, policy)
+        assert code not in result.relaxed, (code, policy)
 
 
 @pytest.mark.parametrize("code", sorted(HARD_BLOCK_TRIGGERS))
@@ -237,6 +410,64 @@ def test_hard_blocks_stay_errors_under_every_policy(code: str) -> None:
         result = check_training_compat(config, unverified_policy=policy)
         assert code in _codes(result.errors), (code, policy)
         assert code not in _codes(result.warnings), (code, policy)
+
+
+def test_huber_schedule_snr_is_a_hard_error_but_constant_is_c1() -> None:
+    """F1: huber/smooth_l1 + snr raises (no alphas_cumprod); constant/exponential is C1."""
+
+    for family in ("qwen_image_2_1", "z_image"):
+        snr = {"model_family": family, "loss_type": "huber"}  # CLI default snr
+        for policy in COMPAT_UNVERIFIED_POLICIES:
+            result = check_training_compat(snr, unverified_policy=policy)
+            assert "loss_type_huber_schedule_unsupported" in _codes(result.errors)
+            assert "loss_type_huber_schedule_unsupported" not in result.relaxed
+        # smooth_l1 is the same family of losses.
+        smooth = {**snr, "loss_type": "smooth_l1"}
+        assert "loss_type_huber_schedule_unsupported" in _codes(
+            check_training_compat(smooth).errors
+        )
+
+        constant = {**snr, "huber_schedule": "constant"}
+        warn = check_training_compat(constant)
+        c1_code = (
+            "qwen_image_2_1_loss_type" if family == "qwen_image_2_1" else "z_image_loss_type"
+        )
+        assert "loss_type_huber_schedule_unsupported" not in _codes(warn.errors)
+        assert c1_code in _codes(warn.warnings)
+        assert c1_code not in _codes(warn.errors)
+        strict = check_training_compat(constant, unverified_policy="strict")
+        assert c1_code in _codes(strict.errors)
+
+
+def test_qwen_fp16_subconditions_stay_hard_errors(monkeypatch) -> None:
+    """F3: fp16+flash and fp16+mixed-NF4 raise; only the rest is C1."""
+
+    flash = NEW_HARD_TRIGGERS["qwen_image_2_1_mixed_precision_flash"]
+    for policy in COMPAT_UNVERIFIED_POLICIES:
+        result = check_training_compat(flash, unverified_policy=policy)
+        assert "qwen_image_2_1_mixed_precision_flash" in _codes(result.errors)
+        # The relaxable C1 code must not fire for the flash path.
+        assert "qwen_image_2_1_mixed_precision" not in _codes(result.warnings)
+        assert "qwen_image_2_1_mixed_precision" not in _codes(result.errors)
+
+    from library.training import compat_matrix
+
+    monkeypatch.setattr(
+        compat_matrix, "_loads_mixed_nf4_weights", lambda config, family: True
+    )
+    nf4 = {"model_family": "qwen_image_2_1", "mixed_precision": "fp16", "attn_mode": "torch"}
+    for policy in COMPAT_UNVERIFIED_POLICIES:
+        result = check_training_compat(nf4, unverified_policy=policy)
+        assert "qwen_image_2_1_mixed_precision_nf4" in _codes(result.errors)
+        assert "qwen_image_2_1_mixed_precision" not in _codes(result.warnings)
+
+    # Without mixed-NF4 weights the same config is the relaxable C1 case.
+    monkeypatch.setattr(
+        compat_matrix, "_loads_mixed_nf4_weights", lambda config, family: False
+    )
+    warn = check_training_compat(nf4)
+    assert "qwen_image_2_1_mixed_precision" in _codes(warn.warnings)
+    assert "qwen_image_2_1_mixed_precision" not in _codes(warn.errors)
 
 
 def test_invalid_policy_value_is_a_hard_error() -> None:
@@ -266,7 +497,8 @@ def test_cli_exposes_the_policy_with_warn_default() -> None:
 
     assert parser.parse_args([]).compat_unverified_policy == "warn"
     for value in COMPAT_UNVERIFIED_POLICIES:
-        assert parser.parse_args(["--compat_unverified_policy", value]).compat_unverified_policy == value
+        parsed = parser.parse_args(["--compat_unverified_policy", value])
+        assert parsed.compat_unverified_policy == value
     with pytest.raises(SystemExit):
         parser.parse_args(["--compat_unverified_policy", "bogus"])
 
@@ -298,9 +530,53 @@ def _metadata(**values):
     )
 
 
-def test_metadata_stamps_the_policy() -> None:
+def test_metadata_stamps_the_policy_and_relaxed_list() -> None:
     assert _metadata()["ss_compat_unverified_policy"] == "warn"
-    assert _metadata(compat_unverified_policy="strict")["ss_compat_unverified_policy"] == "strict"
+    assert _metadata()["ss_compat_unverified_relaxed"] == ""
+    stamped = _metadata(
+        compat_unverified_policy="warn",
+        compat_unverified_relaxed=["z_image_loss_type", "z_image_flow_shift"],
+    )
+    assert stamped["ss_compat_unverified_policy"] == "warn"
+    assert stamped["ss_compat_unverified_relaxed"] == "z_image_flow_shift,z_image_loss_type"
+
+
+def test_apply_stamps_policy_and_relaxed_codes_on_the_training_args(caplog) -> None:
+    config = {"model_family": "z_image", "loss_type": "huber", "huber_schedule": "constant"}
+    result = check_training_compat(config)
+    assert "z_image_loss_type" in result.relaxed
+
+    args = argparse.Namespace()
+    apply_training_compat_mutations(args, result)
+    assert args.compat_unverified_policy == "warn"
+    assert args.compat_unverified_relaxed == ["z_image_loss_type"]
+
+    mapping: dict = {}
+    apply_training_compat_mutations(mapping, result)
+    assert mapping["compat_unverified_policy"] == "warn"
+    assert mapping["compat_unverified_relaxed"] == ["z_image_loss_type"]
+
+    with caplog.at_level(logging.WARNING, logger="library.training.compat_matrix"):
+        check_training_compat(config)
+    summary = [r.getMessage() for r in caplog.records]
+    assert any(
+        "compat_unverified_policy=warn relaxed: ['z_image_loss_type']" in line
+        for line in summary
+    ), summary
+
+
+def test_deferred_items_are_registered_in_the_policy_doc() -> None:
+    """F7/F8/F9 are deferred by the captain but must not be silently dropped."""
+
+    from pathlib import Path
+
+    doc = (
+        Path(__file__).resolve().parents[1]
+        / "docs/findings/compat_unverified_policy_20261109.md"
+    ).read_text(encoding="utf-8")
+    assert "后续任务（follow-up" in doc
+    for marker in ("F7", "F8", "F9"):
+        assert marker in doc, marker
 
 
 def test_message_fixes_match_the_implemented_aliases() -> None:
@@ -321,7 +597,10 @@ def test_message_fixes_match_the_implemented_aliases() -> None:
 
     # invalid_base_compute lists the whole whitelist.
     [issue] = check_training_compat({"base_compute": "zzz"}).errors
-    for value in ("bf16", "fp16", "none", "off", "w8a16_convrot", "w8a8_convrot", "w8a16", "w8a8", "nf4"):
+    for value in (
+        "bf16", "fp16", "none", "off", "w8a16_convrot", "w8a8_convrot",
+        "w8a16", "w8a8", "nf4",
+    ):
         assert value in issue.message
 
     # Z-Image base_compute distinguishes runtime NF4 from pre-quantized mixed NF4.
@@ -329,6 +608,53 @@ def test_message_fixes_match_the_implemented_aliases() -> None:
         {"model_family": "z_image", "base_compute": "nf4"}
     ).errors
     assert "pre-quantized mixed-NF4" in issue.message
+
+
+def test_strict_whitelist_relaxations_are_intentional() -> None:
+    """F4: the four whitelist widenings change strict verdicts vs origin/dev.
+
+    Origin/dev emitted the listed codes for each config; the current strict
+    policy accepts the first four (the fifth still fails on the adaptive
+    contract, but the two z_image codes are gone). These sets pin the
+    documented "intentional relaxation" ledger.
+    """
+
+    krea2_cudnn = check_training_compat(
+        {"model_family": "krea2_raw", "attn_mode": "cudnn"}, unverified_policy="strict"
+    )
+    # origin/dev: {"krea2_invalid_attn_mode"}
+    assert _codes(krea2_cudnn.errors) == set()
+
+    krea2_cudnn_sdpa = check_training_compat(
+        {"model_family": "krea2_raw", "attn_mode": "cudnn_sdpa"}, unverified_policy="strict"
+    )
+    # origin/dev: {"krea2_invalid_attn_mode"}
+    assert _codes(krea2_cudnn_sdpa.errors) == set()
+
+    z_native = check_training_compat(
+        {"model_family": "z_image", "attn_mode": "native"}, unverified_policy="strict"
+    )
+    # origin/dev: {"z_image_attention_mode"}
+    assert _codes(z_native.errors) == set()
+
+    qwen_native = check_training_compat(
+        {"model_family": "qwen_image_2_1", "attn_mode": "native"},
+        unverified_policy="strict",
+    )
+    # origin/dev: {"qwen_image_2_1_attn_mode"}
+    assert _codes(qwen_native.errors) == set()
+
+    z_fp16_native_islands = check_training_compat(
+        {
+            "model_family": "z_image",
+            "mixed_precision": "fp16",
+            "attn_mode": "native",
+            "adaptive_precision": "fp16_fp32",
+        },
+        unverified_policy="strict",
+    )
+    # origin/dev: {"adaptive_precision_contract", "z_image_attention_mode", "z_image_bf16_only"}
+    assert _codes(z_fp16_native_islands.errors) == {"adaptive_precision_contract"}
 
 
 STRICT_PARITY_BATTERY = {
@@ -448,6 +774,10 @@ STRICT_PARITY_BATTERY = {
     'qwen_fused_bad_mode': [
         'invalid_qwen_fused_projections',
     ],
+    'qwen_invalid_saved_blocks': [
+        'invalid_qwen_projection_budget_mib',
+        'invalid_qwen_saved_projection_blocks',
+    ],
     'auto_block_swap_adapter': [
         'auto_block_swap_contract',
     ],
@@ -495,11 +825,8 @@ STRICT_PARITY_BATTERY = {
     'pp_krea2': [
         'pipeline_parallel_runtime_unavailable',
     ],
-    'qwen_invalid_saved_blocks': [
-        'invalid_qwen_projection_budget_mib',
-        'invalid_qwen_saved_projection_blocks',
-    ],
 }
+
 
 def _battery() -> dict[str, dict]:
     """Configs used to prove strict-mode parity with origin/dev (2026-11-09)."""
@@ -572,6 +899,7 @@ def _battery() -> dict[str, dict]:
             "weighted_captions": True,
             "layer_start": 3,
             "loss_type": "huber",
+            "huber_schedule": "constant",
             "t_min": 0.1,
             "sampler": "custom",
             "v100_flash_stability": "conservative",
@@ -586,6 +914,7 @@ def _battery() -> dict[str, dict]:
             "discrete_flow_shift": 3.0,
             "weighting_scheme": "cosmap",
             "loss_type": "huber",
+            "huber_schedule": "constant",
         },
         "qwen_c1_only": {
             "model_family": "qwen_image_2_1",
@@ -593,6 +922,7 @@ def _battery() -> dict[str, dict]:
             "mixed_precision": "fp16",
             "masked_loss": True,
             "loss_type": "huber",
+            "huber_schedule": "constant",
             "weighting_scheme": "cosmap",
         },
         "qwen_kitchen_sink": {
@@ -613,6 +943,7 @@ def _battery() -> dict[str, dict]:
             "caption_dropout_rate": 0.1,
             "masked_loss": True,
             "loss_type": "huber",
+            "huber_schedule": "constant",
             "timestep_sampling": "shift",
             "weighting_scheme": "cosmap",
             "sample_at_first": True,
@@ -712,8 +1043,6 @@ def _battery() -> dict[str, dict]:
             "selective_checkpoint": "off",
         },
     }
-
-
 
 
 def test_strict_error_codes_match_origin_dev_battery() -> None:

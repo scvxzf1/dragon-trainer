@@ -1,6 +1,6 @@
 # 未验证类兼容拦截逐条审计（compat_matrix 52 处 out.error）
 
-状态：审计（只读）；实现状态见[降级策略](compat_unverified_policy_20261109.md)（两个恒假死代码站点已在 `codex/compat-unverified-relax` 删除）
+状态：审计（只读）；实现状态见[降级策略](compat_unverified_policy_20261109.md)（两个恒假死代码站点已在 `codex/compat-unverified-relax` 删除）。第 2 轮按 t5 评审补记：本表 `block_swap_cpu_offload` 改判 **A/C2 且与族相关**、`family_plain_lora_only` 标注“必须拆 code 后才允许部分降级”；另新增 3 条审计外硬错误（`loss_type_huber_schedule_unsupported`、`qwen_image_2_1_mixed_precision_flash`、`qwen_image_2_1_mixed_precision_nf4`），详见策略文档 §2.2/§2.3。
 适用版本：2026-11-09，隔离工作树 `krea2-compat-relax`（分支 `codex/compat-unverified-relax`）
 相关代码：`library/training/compat_matrix.py`（984 行，52 个 `out.error` 站点）、
 `library/models/family_registry.py`、`library/models/{krea2_raw,z_image,qwen_image_2_1}/`、
@@ -134,7 +134,7 @@ strict 名单；本轮不动。
 | --- | --- | --- | --- | --- | --- |
 | `invalid_selective_checkpoint`（L407） | 通用 | B 枚举校验 | compat L406-412 白名单 8 项；`library/anima/models.py:2081-2095` 运行时同义 raise | 保留 error（重复门） | — （无直接断言） |
 | `krea2_plain_lora_only`（L466） | krea2_raw | **死代码** | 站点位于 `if family_spec.plain_lora_only:`（L414）内，而 `krea2_raw` 的 `plain_lora_only=False`、`supported_network_specs=None`（`family_registry.py:132-134`）；[多模型支持](../multi_model_support.md) 明确“不再套用非 Anima 仅 plain LoRA 白名单”。实测 `use_lokr/use_ip_adapter/dora_wd` 在 krea2 下均不报错 | 保留 error（**等价 no-op**）；建议删除该分支或改由能力表驱动，并清理 `web/services/config/preflight_compat.py:100` 的孤立文案 | `tests/test_training_compat_matrix.py:267,368`（反向断言“不出现”） |
-| `family_plain_lora_only`（L466） | qwen_image_2_1 / moss_image | C1+C2 混合 | `family_registry.py:195,222`；qwen 放行 `use_lokr/use_loha`（L430），其余 LoRA 变体与 method adapter 被拒。method adapter 侧另有运行时门（`library/training/adapter_resolver.py:41-50`，`supports_method_adapters=False`）→ C2；LoRA 变体侧无实现门 → C1 | 保留 error；若后续要放松，需**按冲突项拆分 code**（method adapter 保留 error，LoRA 变体可 warn） | `tests/test_model_family_registry.py`、`tests/test_training_compat_matrix.py:270-336` |
+| `family_plain_lora_only`（L466） | qwen_image_2_1 / moss_image | C1+C2 混合 | `family_registry.py:195,222`；qwen 放行 `use_lokr/use_loha`（L430），其余 LoRA 变体与 method adapter 被拒。method adapter 侧另有运行时门（`library/training/adapter_resolver.py:41-50`，`supports_method_adapters=False`）→ C2；LoRA 变体侧无实现门 → C1 | 保留 error；**必须拆 code 后才允许部分降级**：method adapter 冲突保留 error，LoRA 变体子项才可挪进 warn 白名单 | `tests/test_model_family_registry.py`、`tests/test_training_compat_matrix.py:270-336` |
 
 ## 5. Krea-2 族门（L492、L534、L541、L548）
 
@@ -175,7 +175,7 @@ strict 名单；本轮不动。
 | `selective_full_gradient_checkpointing`（L720） | 通用 | A 语义互斥 | compat L719-725；`library/anima/models.py:2103-2121` 的 selective 实现**先对每个 block `disable_gradient_checkpointing()`** 再按模式重开，而 `library/training/bootstrap.py:675-680` 在之后统一 `unet.enable_gradient_checkpointing()` 会重新打开全部 block → selective 被静默覆盖 | 保留 error | — （无直接断言） |
 | `selective_cpu_offload`（L727） | 通用 | A 语义互斥 | 同上；selective 重开 block 时硬编码 `cpu_offload=False, unsloth_offload=False`（`models.py:2108-2110`），offload 永不生效 | 保留 error | — |
 | `selective_unsloth_offload`（L733） | 通用 | A 语义互斥 | 同上（unsloth 分支同样被绕过） | 保留 error | — |
-| `block_swap_cpu_offload`（L741） | 通用 | C3 资源策略 | compat L740-746；`bootstrap.py:675-680` 只把 `cpu_offload` 传给 checkpoint 包装，与 swap 的 block 驻留调度叠加会同时占 CPU 激活与 pinned block 缓冲 | 保留 error | — |
+| `block_swap_cpu_offload`（L741） | 通用（族相关） | **A/C2：非 Anima 族放行即 TypeError** | compat L740-746；`bootstrap.py:675-680` 只把 `cpu_offload` 传给 checkpoint 包装。**族相关性**：Anima 的 `unet.enable_gradient_checkpointing(cpu_offload=True)` 存在，属显存资源策略；Qwen/Z-Image 的 Diffusers transformer 不接受 `cpu_offload` 关键字 → 放行即 `TypeError`，与 swap 的 block 驻留调度叠加还会同时占 CPU 激活与 pinned block 缓冲 | 保留 error（任何策略档均不降级） | — |
 | `unsloth_cpu_offload`（L762） | 通用 | A 语义互斥 | compat L761-766；`library/anima/models.py:1412` `self.cpu_offload_checkpointing = cpu_offload if not unsloth_offload else False`——两者在实现层就互相清零 | 保留 error | `tests/test_training_compat_matrix.py:19-30` |
 | `block_swap_unsloth_offload`（L768） | 通用 | C3 资源策略 | compat L767-773；CLI 帮助已声明互斥（`library/training/cli_args.py:2038-2039`） | 保留 error | — |
 | `convrot_block_swap_int8_mutex`（L805） | 通用 | A 双重反量化 | compat L804-811 与 `library/runtime/convrot/checks.py:101-113` 同义硬互斥（double dequant / confused semantics），依据 `docs/experimental/convrot_int8_training.md §G.23`（由 `checks.py:116-140` docstring 引用） | 保留 error（重复门） | `tests/test_training_compat_matrix.py:154,164` |
