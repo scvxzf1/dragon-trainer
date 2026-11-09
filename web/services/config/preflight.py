@@ -168,6 +168,75 @@ def _validate_lokr_config(cfg: dict) -> list[str]:
     return errors
 
 
+def _check_dataset_image_dirs(cfg: dict, add) -> None:
+    """确认训练/预处理图片目录存在且非空。
+
+    WebUI 用 ``config_file`` 覆盖启动时，覆盖文件里通常没有数据目录，会静默
+    继承 ``base.toml`` 的 ``source_image_dir = "image_dataset"``。那个目录若是
+    空的，预处理会生成 0 张缓存，直到 ``train_session`` 才报 ``No data found``
+    ——错误信息指向训练侧，排查成本高。
+
+    这里在预检就把「目录不存在」和「目录存在但没有图片」两种必然失败拦下。
+    只在没有任何可用目录时报错，避免 ``dataset_config`` 指向外部文件、图片由
+    预处理另行生成的合法用法被误伤。
+    """
+    image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".avif"}
+    checked: set[str] = set()
+    missing: list[tuple[str, Path]] = []
+    empty: list[tuple[str, Path]] = []
+
+    # 只读配置里声明的**原始**数据集目录。不要用 dataset_rows：那里已经过
+    # apply_auto_data_dirs 派生（例如 source=.../resized 会派生出
+    # .../resized_resized），预检阶段该派生目录必然还不存在，会全部误报。
+    raw_dirs: list[str] = []
+    for dataset in cfg.get("datasets") or []:
+        if not isinstance(dataset, dict):
+            continue
+        subsets = dataset.get("subsets") or []
+        if subsets:
+            for subset in subsets:
+                if isinstance(subset, dict) and subset.get("image_dir"):
+                    raw_dirs.append(str(subset["image_dir"]))
+        elif dataset.get("image_dir"):
+            raw_dirs.append(str(dataset["image_dir"]))
+    if not raw_dirs and cfg.get("source_image_dir"):
+        raw_dirs.append(str(cfg["source_image_dir"]))
+
+    for raw_in in raw_dirs:
+        raw = raw_in.strip()
+        if not raw or raw in checked:
+            continue
+        checked.add(raw)
+        path = _resolve_project_path(raw)
+        if not path.exists():
+            missing.append((raw, path))
+            continue
+        if not path.is_dir():
+            add("error", "datasets", f"数据集图片目录不是目录: {raw}", path)
+            continue
+        if not any(
+            item.is_file() and item.suffix.lower() in image_suffixes
+            for item in path.iterdir()
+        ):
+            empty.append((raw, path))
+
+    for raw, path in missing:
+        add(
+            "error",
+            "datasets",
+            f"数据集图片目录不存在: {raw}"
+            "（config_file 覆盖启动时容易漏掉数据目录，会静默继承 base.toml 的默认值）",
+            path,
+        )
+
+    if empty and not missing:
+        for raw, path in empty:
+            add("error", "datasets", f"数据集图片目录里没有图片: {raw}", path)
+
+    if checked and not missing and not empty:
+        add("ok", "datasets", f"数据集图片目录可用（{len(checked)} 个）")
+
+
 def preflight_training_config(
     variant: str,
     preset: str,
@@ -441,6 +510,7 @@ def preflight_training_config(
         check_file("vae", "VAE 模型", (".safetensors", ".pt", ".pth", ".ckpt"))
     if cfg.get("pretrained_model_name_or_path"):
         check_mixed_nf4(cfg, _resolve_project_path(str(cfg["pretrained_model_name_or_path"])), add)
+    _check_dataset_image_dirs(cfg, add)
     _check_network_weights(cfg, add, variant, preset, methods_subdir, config_file)
     dataset_config_path = _dataset_config_path_from_cfg(cfg)
     if cfg.get("dataset_config") and (
