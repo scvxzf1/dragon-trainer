@@ -194,9 +194,11 @@ dir1 在**全部量级**上恒定在 `0.235%~0.240%`，与 bf16 持平；裸 fp1
 | 9 | 0.86% | 0.85% | 0.61% | 0.46% |
 | 17 | 1.16% | 1.13% | 0.90% | 2.45% |
 | 24 | 1.34% | 1.33% | 1.03% | 62.58% |
-| 27 | **1.316%** | 1.501% | **0.988%** | 132.263% |
+| 27 | **1.316%** | 1.501% | **0.988%** | 135.315% |
 
 **用 fp16 dequant 权重后，dir1 的末层误差 0.988% 反超 bf16 的 1.316%（好 0.33pp）。**
+固定种子后两次运行逐位相同（`dir1_bench.py` 已加 `torch.manual_seed(0)`；未固定时
+末层误差会在 0.99%~1.37% 之间抖动）。
 这与 §3.2b 的单层权重精度一致（0.021% vs 0.164%），说明 28 层累积没有吃掉这部分优势。
 
 > 若参考臂也用 bf16 dequant（而不是 fp32），bf16 臂会天然零权重误差，比较就不公平。
@@ -206,7 +208,7 @@ dir1 在**全部量级**上恒定在 `0.235%~0.240%`，与 bf16 持平；裸 fp1
 fp16 直接溢出成 NaN。真实模型里 Linear 之后有 LayerNorm 类归一化，所以脚本必须补上，
 否则模拟的不是真实反向链。
 
-## 4. 实现陷阱（三个都踩过）
+## 4. 实现陷阱（四个都踩过）
 
 **① `torch.ldexp` 第二个参数必须是 Tensor**
 
@@ -232,6 +234,27 @@ torch.clamp(+132, min=-126, max=126) # → +126，正确
 `F.linear(x.fp16(), w.fp16().T, bias_bf16)` 会报
 `RuntimeError: self and mat2 must have the same dtype, but got BFloat16 and Half`。
 bias 不能漏。
+
+**④ bnb 0.49.2 的 `out=` 参数不可用**
+
+报错看起来自相矛盾：
+
+```
+RuntimeError: Expected out.shape == [6144, 6144], got torch.Size([6144, 6144])
+```
+
+根因在 bnb cuda kernel 的检查：`torch._check(out.shape == shape)`。`shape` 经
+`torch.ops` 的 `int[]` schema 分发后被转成 **list**，而 `out.shape` 是 `torch.Size`。
+Python 里 `torch.Size` 是 `tuple` 的子类：
+
+```python
+torch.Size([6144,6144]) == torch.Size([6144,6144])  # True
+torch.Size([6144,6144]) == (6144,6144)              # True
+torch.Size([6144,6144]) == [6144,6144]              # False  <-- 这里炸
+```
+
+实测传 `Size` / `tuple` / `list` 三种形式**全部失败**（分发层统一转 list），
+所以改 `qs.shape` 绕不过去。**不要用 `out=`**，用下面的 `qs.dtype` 浅拷贝方案。
 
 ## 5. 精度：与 bf16 持平，用 fp16-dequant 可反超
 
@@ -269,7 +292,34 @@ bf16 的 1.316% 降到 **0.988%**。
 **注意最后一行**：dir1 只在**没有原生 bf16 tensor core**的卡上有价值（V100 / 2080Ti /
 T4 等 sm70/sm75）。在 3080/3090/4090 上做这件事是纯亏损（多一层转换、没有提速）。
 
-## 7. 与其它方案的比较
+## 7. 工程安全性：QuantState 浅拷贝
+
+`dequant_fp16` 的正确实现不是原地改 `quant_state.dtype`，而是浅拷贝：
+
+```python
+import copy
+
+def dequant_fp16(B, quant_state):
+    qs = copy.copy(quant_state)      # 只复制 Python 壳，不复制 GPU 张量
+    qs.dtype = torch.float16
+    return bnb_f.dequantize_4bit(B, qs)
+```
+
+`QuantState` 只是轻量 Python 壳（持有 `absmax` / `code` / `state2` 等 GPU 张量的
+**引用**和几个标量），`copy.copy` 不复制显存、耗时亚微秒。实测验证：
+
+| 检查 | 结果 |
+| --- | --- |
+| 浅拷贝后原 `qs.dtype` | 仍为 `bfloat16`（零改动） |
+| 共享张量是否被复制 | 否（`absmax.data_ptr()` 相同，无额外显存） |
+| 8 线程 × 20 次混合 fp16/bf16 并发 dequant | **0 错误**，原 `qs.dtype` 结束仍为 bf16 |
+| `torch.compile(dir1_core, fullgraph=True)` | **通过**，与 eager 的 rel-L2 = 0.000000% |
+| 端到端性能（copy.copy vs 原地改） | 3.31× vs 3.33×，无损失 |
+
+因为全程 Zero Mutation，多线程并发读无竞争，**不需要锁、不需要预分配 `out=`、
+不需要全局 monkey-patch `dequantize_4bit`**，对模型其他部分完全透明。
+
+## 8. 与其它方案的比较
 
 | 方案 | 精度 | 提速 | 契约改动 | GradScaler | 结论 |
 | --- | --- | --- | --- | --- | --- |
@@ -280,19 +330,19 @@ T4 等 sm70/sm75）。在 3080/3090/4090 上做这件事是纯亏损（多一层
 | **dir1（本提案）** | **bf16 水平** | **2.9×** | **0** | **不需要** | **推荐（限 sm70/sm75）** |
 | 外层 fp32 + 内层 fp16 | 最高 | 有 | 22 处 | 不需要 | 显存翻倍，暂不采用 |
 
-## 8. 落地前还缺什么
+## 9. 落地前还缺什么
 
 1. **端到端基准仍需多次测量**：算子级已用 cuda.Event 取 100 次中位数（§3.2），
    但 9.0s → 3.1s 的端到端数字是单次测量且受运行顺序影响，需交替运行取中位数。
    **注意不要用 M=1 做基准**，那会得出反向结论（见 §3.2）。
 2. **完整训练验证**：≥500 步，确认 14.3% 的 dir1↔bf16 分歧不随训练放大。
-3. **边界测试**：全零梯度、`amax=1e-40`、非连续输入、`bias=None`、
-   block-swap 路径、`torch.compile` 下的行为。
+3. **边界测试**：全零梯度、`amax=1e-40`、非连续输入、`bias=None`、block-swap 路径。
+   （`copy.copy` 的线程安全与 `torch.compile fullgraph` 已验证，见 §7）
 4. **backward 的 `grad_bias`**：当前实现保留了 `grad_output.sum(0)`，但 NF4 Linear 的
    bias 通常 `requires_grad=False`，需要确认。
 5. **与 `torch.compile` 的兼容性**：`frexp`/`ldexp`/`clamp` 在编译图里的支持情况未验证。
 
-## 9. 复现
+## 10. 复现
 
 ```bash
 # 合成矩阵模拟（单层扫描 + 28 层串联 + 边界检查）

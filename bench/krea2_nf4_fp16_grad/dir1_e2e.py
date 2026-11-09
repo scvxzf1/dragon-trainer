@@ -16,6 +16,7 @@ dir1 的实现包含 ``qs.dtype=torch.float16`` 的 dequant 优化：bnb 的 deq
 """
 
 import argparse
+import copy
 import json
 import os
 import statistics
@@ -43,15 +44,26 @@ CUDA = torch.device("cuda")
 
 
 def dequant_fp16(B: torch.Tensor, quant_state) -> torch.Tensor:
-    """按 fp16 直接 dequant：省一次 bf16 写出 + bf16->fp16 拷贝，且保留 10 位尾数。"""
+    """按 fp16 直接 dequant：省一次 bf16 写出 + bf16->fp16 拷贝，且保留 10 位尾数。
+
+    用 ``copy.copy`` 浅拷贝 QuantState 而不是原地改 ``quant_state.dtype``：
+
+    - ``QuantState`` 只是轻量 Python 壳（持有 absmax/code 等 GPU 张量的引用），
+      浅拷贝不复制显存、耗时亚微秒；
+    - 原对象全程零改动（Zero Mutation），多线程并发 dequant 无竞争，不需要锁；
+    - 对全局 ``dequantize_4bit`` 无副作用。
+
+    不用 bnb 的 ``out=`` 参数：0.49.2 的 cuda kernel 里 ``torch._check(out.shape == shape)``
+    中 ``shape`` 经 ``torch.ops`` 的 ``int[]`` schema 被转成 list，而 ``out.shape`` 是
+    ``torch.Size``；``torch.Size == list`` 恒为 False（Size 是 tuple 子类，只与 tuple 相等），
+    所以传 Size/tuple/list 都会报 ``Expected out.shape == [6144, 6144], got
+    torch.Size([6144, 6144])``。这是 bnb 的缺陷，改 ``qs.shape`` 绕不过去。
+    """
     import bitsandbytes.functional as bnb_f
 
-    orig = quant_state.dtype
-    quant_state.dtype = torch.float16
-    try:
-        return bnb_f.dequantize_4bit(B, quant_state)
-    finally:
-        quant_state.dtype = orig
+    qs = copy.copy(quant_state)
+    qs.dtype = torch.float16
+    return bnb_f.dequantize_4bit(B, qs)
 
 
 def install_dir1():

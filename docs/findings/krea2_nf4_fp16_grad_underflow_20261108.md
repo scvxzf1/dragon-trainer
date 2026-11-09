@@ -366,7 +366,15 @@ Krea-2 用 GQA（`kvheads=12`），sm70 的 memory-efficient 内核在 `q_heads 
 即权重精度准 8 倍，28 层累积后反超 bf16 **0.33pp**。端到端 LoRA 梯度之所以看不出这个
 改善，是因为激活流的 bf16 截断是主导项。
 
-端到端交替中位数（3 轮，256²）：bf16 8.911s / dir1 2.679s，**3.33×**（极差 0.03~0.05s）。
+端到端交替中位数（256²）：bf16 8.875s / dir1 2.683s，**3.31×**（原地改 `qs.dtype` 的
+版本是 3.33×，浅拷贝无性能损失）。
+
+实现上必须用 `copy.copy(quant_state)` 再改 `dtype`，而不是原地改共享的 `qs.dtype`：
+`QuantState` 只是轻量 Python 壳，浅拷贝不复制显存；原对象全程零改动，所以多线程并发
+dequant 无竞争（实测 8 线程 × 20 次混合 fp16/bf16 请求，0 错误），也不需要锁。
+bnb 0.49.2 的 `out=` 参数不可用——kernel 里 `torch._check(out.shape == shape)` 的
+`shape` 经 `torch.ops` 的 `int[]` schema 被转成 list，而 `out.shape` 是 `torch.Size`，
+`Size == list` 恒为 False（Size 是 tuple 子类），传 Size/tuple/list 都失败。
 
 合成矩阵模拟（`sim_layer_scaling.py`）给出同样的结论：单层 dY 从 `1e-10` 扫到 `1e-2`，
 dir1 恒定 `0.235%~0.240%`，bf16 恒定 `0.232%~0.238%`，裸 fp16 在 `1e-8` 以下崩到 100%。

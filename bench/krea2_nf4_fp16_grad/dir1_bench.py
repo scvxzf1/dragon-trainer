@@ -19,6 +19,7 @@
 """
 
 import argparse
+import copy
 import os
 import sys
 from pathlib import Path
@@ -118,25 +119,40 @@ def cos_sim(a: torch.Tensor, b: torch.Tensor) -> float:
     ).item()
 
 
-def chain_precision(img_tag: str) -> None:
+def dequant_as(B: torch.Tensor, quant_state, dtype: torch.dtype) -> torch.Tensor:
+    """按指定 dtype dequant（``copy.copy`` 浅拷贝 QuantState，原对象零改动）。
+
+    不用 bnb 的 ``out=``：0.49.2 的 cuda kernel 里 ``torch._check(out.shape == shape)``
+    的 ``shape`` 经 ``torch.ops`` 的 ``int[]`` schema 被转成 list，而 ``out.shape`` 是
+    ``torch.Size``；``torch.Size == list`` 恒为 False，所以传 Size/tuple/list 都报
+    ``Expected out.shape == [6144, 6144], got torch.Size([6144, 6144])``。
+    """
     import bitsandbytes.functional as bnb_f
 
+    qs = copy.copy(quant_state)
+    qs.dtype = dtype
+    return bnb_f.dequantize_4bit(B, qs)
+
+
+def chain_precision(img_tag: str) -> None:
     dit = load_krea2_dit(KREA2_NF4, device=str(DEV), dtype=torch.bfloat16, eval=True)
     layers = [dict(dit.blocks[i].named_modules())["attn.wq"] for i in range(28)]
     k = layers[0].in_features
     print(f"\n=== 真实权重 28 层串联（blocks.*.attn.wq，{k}²，gate={GATE}）===")
 
+    torch.manual_seed(0)  # 固定初始梯度，否则末层误差在 0.99%~1.37% 之间抖动
     g0 = torch.randn(1, k, device=DEV, dtype=torch.float32)
     g0 = g0 / g0.pow(2).mean().sqrt() * 4.4e-3
     cur = {name: g0.clone() for name in ("fp32", "bf16", "dir1", "fp16")}
     hist = {name: [] for name in cur}
 
     for i in range(28):
-        w32 = bnb_f.dequantize_4bit(
-            layers[i].weight.data, layers[i].weight.quant_state
-        ).float()
-        w_bf = w32.to(torch.bfloat16)
-        w16 = w32.to(torch.float16)
+        wq = layers[i].weight
+        # fp32 dequant 作为真值：若参考臂也用 bf16 dequant，bf16 臂天然零权重误差，
+        # 比较不公平（第一版正是踩了这个坑，得出「dir1 略差」的错误结论）。
+        w32 = dequant_as(wq.data, wq.quant_state, torch.float32)
+        w_bf = dequant_as(wq.data, wq.quant_state, torch.bfloat16)
+        w16 = dequant_as(wq.data, wq.quant_state, torch.float16)
         n_ref = cur["fp32"].norm()
         cur["fp32"] = torch.matmul(cur["fp32"], w32)
         cur["bf16"] = torch.matmul(cur["bf16"].to(torch.bfloat16), w_bf).float()
