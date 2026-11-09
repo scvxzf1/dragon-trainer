@@ -127,6 +127,12 @@ qwen_nf4_compile_experiment = false
 # Only beneficial on GPUs without native bf16 tensor cores (sm70/sm75); enabling
 # it on sm80+ raises. Evidence: docs/proposal/krea2_nf4_fp16_layer_scaling.md
 nf4_dir1 = false
+# Krea-2 attention fp16 inner path: GQA expanded to MHA so fp16 can take the
+# EFFICIENT SDPA kernel, plus frexp/ldexp rescaling of the backward dO.
+# Only meaningful on sm<80 (sm70 has no usable bf16 SDPA kernel at all);
+# enabling it on sm80+ raises. compute_dtype stays bfloat16.
+# Evidence: docs/findings/krea2_nf4_fp16_inner_path_20261109.md
+krea2_attn_fp16 = false
 torch_compile = true
 attn_mode = "flash"
 compile_block_scope = "resident"
