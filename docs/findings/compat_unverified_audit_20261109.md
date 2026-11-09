@@ -1,6 +1,6 @@
 # 未验证类兼容拦截逐条审计（compat_matrix 52 处 out.error）
 
-状态：审计（只读）
+状态：审计（只读）；实现状态见[降级策略](compat_unverified_policy_20261109.md)（两个恒假死代码站点已在 `codex/compat-unverified-relax` 删除）
 适用版本：2026-11-09，隔离工作树 `krea2-compat-relax`（分支 `codex/compat-unverified-relax`）
 相关代码：`library/training/compat_matrix.py`（984 行，52 个 `out.error` 站点）、
 `library/models/family_registry.py`、`library/models/{krea2_raw,z_image,qwen_image_2_1}/`、

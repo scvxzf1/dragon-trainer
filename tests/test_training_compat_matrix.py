@@ -264,7 +264,6 @@ def test_matrix_accepts_krea2_plain_lora() -> None:
             "selective_checkpoint": "off",
         }
     )
-    assert "krea2_plain_lora_only" not in _codes(result.errors)
 
 
 @pytest.mark.parametrize(
@@ -365,7 +364,6 @@ def test_matrix_does_not_blanket_reject_model_family_variants(override, family) 
     }
     config.update(override)
     result = check_training_compat(config)
-    assert "krea2_plain_lora_only" not in _codes(result.errors)
     assert "family_plain_lora_only" not in _codes(result.errors)
 
 

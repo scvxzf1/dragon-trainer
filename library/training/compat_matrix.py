@@ -718,8 +718,10 @@ def check_training_compat(
         if functional_loss_weight > 0:
             adapter_conflicts.append("functional_loss_weight")
         if adapter_conflicts:
+            # krea2_raw sets plain_lora_only=False, so the historical
+            # "krea2_plain_lora_only" branch was unreachable dead code.
             out.error(
-                ("krea2_plain_lora_only" if krea2_family else "family_plain_lora_only"),
+                "family_plain_lora_only",
                 "network_module",
                 f"{family_spec.display_name} training supports only "
                 + ("plain LoRA, LoKr, or LoHa" if qwen_image_2_1_family else "plain LoRA")
@@ -1066,16 +1068,9 @@ def check_training_compat(
             "block_swap_transfer_dtype=int8 (double dequant / confused semantics). "
             "Use block_swap_transfer_dtype=bf16 when enabling ConvRot.",
         )
-    # NF4 (Krea-2 QLoRA) 与 ConvRot 互斥: ConvRot 是 anima cross-attn/AdaLN 专属
-    # 量化路径, NF4 是 Krea-2 single-stream 通用 bnb 4-bit, 两者架构假设不同.
-    if nf4_active and convrot_active:
-        out.error(
-            "nf4_convrot_mutex",
-            "base_compute",
-            "base_compute=nf4 is mutually exclusive with ConvRot paths "
-            "(w8a16_convrot/w8a8_convrot). NF4 is the Krea-2 QLoRA path; "
-            "ConvRot is anima-specific. Pick one.",
-        )
+    # NF4 与 ConvRot 的真实互斥由 base_compute 单值枚举保证: convrot_active 与
+    # nf4_active 都从同一个 base_compute 字符串派生, 因此历史上那条
+    # "nf4 + ConvRot" 互斥检查恒假, 已删除 (审计文档 §8/§9).
     # NF4 × block_swap 已验证通过 (方向 A: deepcopy master + Params4bit.to() 整体
     # 搬运, offloading.py isinstance 分流不碰 bf16/int8/fp8 路径). 端到端探针
     # (probe_nf4_blockswap.py, PG199, 1024, swap=4, 30 步): host RAM 18.18GB
