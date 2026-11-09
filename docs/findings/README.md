@@ -189,6 +189,7 @@
 | [krea2_3080_speed_final.md](krea2_3080_speed_final.md) | Krea-2 RTX 3080 速度研究最终审计：根因、生产建议、可选后端、否决路径与证据边界总表 |
 | [krea2_3080_speed_comparison_extended.md](krea2_3080_speed_comparison_extended.md) | Krea-2 PG199/RTX 3080 扩展速度矩阵：step、it/min、显存、冷/热稳态、swap、checkpoint、compile 与 Flash 对比 |
 | [anima_perband_dynamic_seq_20260830.md](anima_perband_dynamic_seq_20260830.md) | Anima per-band dynamic-seq 移植、64GB CMP 170HX 60-step union/per-band A/B 与默认关闭结论 |
+| [nsys_ncu_pytorch_cupti_20261109.md](nsys_ncu_pytorch_cupti_20261109.md) | **nsys 在 PyTorch 上拿不到 CUPTI 活动表的根因与修复**：`libtorch_cuda.so` 硬依赖 `libcupti.so.12`、经 `DT_RUNPATH` 解析到 venv pip 包，CUPTI 是进程级单例且在 `import torch` 时即被占用；因 `DT_RUNPATH` 优先级低于 `LD_LIBRARY_PATH`，用 shim 指向 nsys 自带 CUPTI 12.9 即可共用同一份。含每 rank 单独起 nsys + `--capture-range=cudaProfilerApi` 的多卡配方、6 个踩坑记录（包 torchrun 只抓父进程、`--trace=nccl` 非法、含空格路径、`demangledName` 是整数 id 需 join `StringIds`）、区间并集与「GPU 忙须减去 NCCL」两个分析口径，以及 2 rank PP 的空泡实测（rank1 真空闲 15.4% 集中为步末 1.027 s 排空，rank0 同期在 NCCL 内阻塞 1.049 s，两者是同一空泡两端）。**本地设施路径非仓库依赖** |
 
 ## 方法和研究结论
 
