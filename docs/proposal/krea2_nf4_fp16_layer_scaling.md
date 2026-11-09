@@ -3,7 +3,9 @@
 适用版本：当前 dev（分支 `codex/krea2-fp16-layer-scaling`）
 前置证据：[NF4 fp16 梯度偏差机制溯源](../findings/krea2_nf4_fp16_grad_underflow_20261108.md)
 相关代码：`library/quantization/nf4.py`（唯一介入点）
-探针：`bench/krea2_nf4_fp16_grad/sim_layer_scaling.py`、`bench/krea2_nf4_fp16_grad/dir1_chain.py`
+探针：`bench/krea2_nf4_fp16_grad/sim_layer_scaling.py`（合成模拟）、
+`dir1_chain.py`（真实权重四臂）、`dir1_bench.py`（算子级基准 + 28 层串联）、
+`dir1_e2e.py`（端到端交替中位数）
 
 # Krea-2 NF4 逐层 fp16 缩放（dir1）方案
 
@@ -131,13 +133,14 @@ bnb 的 `dequantize_4bit` 在 CUDA 内核里用 FP32 寄存器查表并乘 absma
 再启动第二个内核做 72 MB 读 + 72 MB 写。把 `dtype` 临时设为 fp16 可以一步写出：
 
 ```python
-orig = qs.dtype
-qs.dtype = torch.float16
-try:
-    w16 = bnb_f.dequantize_4bit(B, qs)   # 直接 10 位尾数 fp16
-finally:
-    qs.dtype = orig
+import copy
+
+qs16 = copy.copy(qs)          # 浅拷贝，原对象零改动（线程安全，见 §7）
+qs16.dtype = torch.float16
+w16 = bnb_f.dequantize_4bit(B, qs16)   # 直接 10 位尾数 fp16
 ```
+
+> 不要原地改共享的 `qs.dtype`——多线程 backward 会竞争。原因与验证见 §7。
 
 实测（6144²，单次 dequant，100 次中位数）：
 
@@ -327,27 +330,34 @@ def dequant_fp16(B, quant_state):
 | 裸 fp16 + GradScaler | 崩溃（114.7%） | 有 | 22 处 | 需要 | 否决 |
 | 全局 loss scaling | 窗口在 >512² 关闭 | 有 | 22 处 | 需要 | 否决 |
 | 按分辨率分档（≤512² 用 fp16） | 可行 | 仅小图 | 22 处 | 需要 | 收益低 |
-| **dir1（本提案）** | **bf16 水平** | **2.9×** | **0** | **不需要** | **推荐（限 sm70/sm75）** |
+| **dir1（本提案）** | **bf16 水平；权重侧 fp16-dequant 可反超** | **3.33×（端到端）/ 5~6.6×（算子级）** | **0** | **不需要** | **推荐（限 sm70/sm75）** |
 | 外层 fp32 + 内层 fp16 | 最高 | 有 | 22 处 | 不需要 | 显存翻倍，暂不采用 |
 
 ## 9. 落地前还缺什么
 
-1. **端到端基准仍需多次测量**：算子级已用 cuda.Event 取 100 次中位数（§3.2），
-   但 9.0s → 3.1s 的端到端数字是单次测量且受运行顺序影响，需交替运行取中位数。
+1. **端到端计时只覆盖 256²**：`dir1_e2e.py` 已完成交替中位数（8.911s → 2.679s，
+   3.33×），但 1024² 的端到端未测（需要 `--expand-gqa`，显存更紧）。
    **注意不要用 M=1 做基准**，那会得出反向结论（见 §3.2）。
 2. **完整训练验证**：≥500 步，确认 14.3% 的 dir1↔bf16 分歧不随训练放大。
 3. **边界测试**：全零梯度、`amax=1e-40`、非连续输入、`bias=None`、block-swap 路径。
    （`copy.copy` 的线程安全与 `torch.compile fullgraph` 已验证，见 §7）
 4. **backward 的 `grad_bias`**：当前实现保留了 `grad_output.sum(0)`，但 NF4 Linear 的
    bias 通常 `requires_grad=False`，需要确认。
-5. **与 `torch.compile` 的兼容性**：`frexp`/`ldexp`/`clamp` 在编译图里的支持情况未验证。
+5. **与 `torch.compile` 的兼容性**：`frexp`/`ldexp`/`clamp` 核心算术已通过
+   `fullgraph=True` 验证（见 §7），仅缺**含 `dequant_fp16` 的整网**编译验证。
 
 ## 10. 复现
 
 ```bash
-# 合成矩阵模拟（单层扫描 + 28 层串联 + 边界检查）
+# 1. 合成矩阵模拟（单层扫描 + 28 层串联 + 边界检查；可 CPU 小维度冒烟）
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/sim_layer_scaling.py
 
-# 真实权重四臂对比（fp32 / bf16 / fp16 / dir1）
+# 2. 真实权重四臂对比（fp32 / bf16 / 裸 fp16 / dir1）
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/dir1_chain.py --img 256
+
+# 3. 算子级基准（M 扫描 + 真实权重 28 层串联，fp32 为真值）
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/dir1_bench.py
+
+# 4. 端到端交替中位数（bf16 vs dir1）
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python bench/krea2_nf4_fp16_grad/dir1_e2e.py --img 256 --repeat 3
 ```
