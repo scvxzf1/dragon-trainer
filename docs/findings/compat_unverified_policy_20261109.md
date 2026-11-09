@@ -26,7 +26,11 @@
   `qwen_image_2_1_edit_*`）在任何档位都保持 `error`，新增检查不会被默认放行。
 - 降级后的 warning 文案带 `[unverified 未验证]` 标记；C1 追加逐条原因（为什么“实现会生效”），
   `allow` 档追加 `该键在本族未接线/会被忽略，或偏离官方配方/显存预算` 说明。
-- `strict` 档消息保持 origin/dev 原文（不追加标记），便于逐条对照审计清单。
+- `strict` 档不追加任何标记，error/warning/mutation 的 code、key 与条数同 origin/dev
+  （已用 `git show origin/dev:library/training/compat_matrix.py` 加载旧模块，对 35 组配置
+  逐条比对 errors/warnings/mutations 三元组）。唯一的消息差异来自 §5 的 4 处文案修正，
+  以及 3 条 C1 消息（原先把已实现的掩码损失/损失类型/权重方案写成 “not implemented” 或
+  “supports … only”），修正对三个档位同时生效。
 
 ## 2. warn 档放行的 7 个 C1 code（严格限定，不得扩大）
 

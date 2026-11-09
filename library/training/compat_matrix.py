@@ -294,9 +294,9 @@ class _CompatBuilder:
     def unverified(self, code: str, key: str, message: str) -> None:
         """Report an audited C1 site: unvalidated but effective implementation.
 
-        ``strict`` keeps the historical error and message verbatim; ``warn``
-        (default) and ``allow`` report a warning carrying the 未验证 marker and
-        the per-code reason.
+        ``strict`` keeps the historical verdict (an error) and the audited
+        message; ``warn`` (default) and ``allow`` report a warning carrying the
+        未验证 marker and the per-code reason.
         """
 
         reason = UNVERIFIED_C1_REASONS[code]
