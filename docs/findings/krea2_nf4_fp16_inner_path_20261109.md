@@ -215,7 +215,79 @@ K2_ATTN_STRICT=1 .venv/bin/python train.py ...（同上）
 #   按 args["External id"] 关联 CPU op 与 CUDA kernel
 ```
 
-## 8. 相关文档
+## 9. WebUI 接线与 Preflight 拦截
+
+两个开关最初只有 CLI 一条入口。要让 Web 用户能安全开启，补齐了三层并加了五类预检。
+
+### 9.1 表单与文案
+
+`FORM_GROUPS["Performance"]` 与 `FIELD_HELP` 补两键，前端 `config-field-catalog.js`
+放进 `group('resources','compute')`，`labels-options.js` 补中文标签（此前
+`fieldCatalog.ts` 的 `FIELD_LABEL_ZH[key] || key` 会直接渲染裸字段 key）。
+
+### 9.2 五类 Preflight 规则
+
+blocker 走普通 `error`（无 `overridable`），`preflight ok=False` 会真正拒绝启动：
+
+| 场景 | 级别 | code |
+|---|---|---|
+| sm80+ 或无 CUDA 时开启 | error | `*_requires_cuda` / `*_requires_pre_ampere` / `*_architecture_unknown` |
+| 非 NF4 开 `nf4_dir1` | warning | `nf4_dir1_ignored` |
+| 非 Krea-2 开 `krea2_attn_fp16` | warning | `krea2_attn_fp16_ignored` |
+| sm70/75 + Krea-2 + NF4 单开其一 | info | `nf4_fp16_inner_pairing` |
+| flash / 非 bf16 下开 `krea2_attn_fp16` | warning | `krea2_attn_fp16_requires_torch_attention` |
+
+第 5 类是实测挖出的真缺陷：`_ATTN_FP16_ENABLED` 唯一消费点是
+`attention_backend._cudnn_attention`，而 Krea-2 出厂默认 `attn_mode=flash`，
+`_flash_varlen_attention` 提前 return——**默认配置下开了等于没开**，而旧的
+compat 还在建议用户双开去拿「完整内层 fp16」。判定前先按运行时口径归一化
+（`sdpa` / `cudnn` / `cudnn_sdpa` → `torch`），未设置 `attn_mode` 不判定。
+
+pairing info 只在**单开**时给（`nf4_dir1 != attn_fp16`）；双开本来就不需要建议。
+
+### 9.3 硬件探针必须按任务真实设备
+
+旧探针固定读 Web 进程 `device 0`。这台机器就是反例：
+
+```
+nvidia-smi 物理序:  index0 = GTX 1050 (6.1)   index1/2 = V100 (7.0)
+torch 序:           device0 = V100 (7,0)
+```
+
+两者顺序相反。训练子进程由 `gpu_whitelist` 重写 `CUDA_VISIBLE_DEVICES`，所以
+预检必须按**物理 index** 解析：`gpu.py::query_gpu_compute_capabilities()` 读
+`nvidia-smi --query-gpu=compute_cap`（老驱动回退名称表）。全部被选设备 sm<80
+放行、任一 sm≥80 阻断并列出被选 `sm_xx`、解析不到降级 warning。6 个
+`preflight_training_config` 调用点全部透传 `gpu_whitelist`，含
+`launcher_start` 预处理完成后的自动启动复检。
+
+`_format_device_label` 用 `(index, capability)` 配对生成文案——部分解析时
+`selected` 与 `capabilities` 长度不等，平行序列 `zip` 会把 capability 安到错误的
+物理 index 上。
+
+### 9.4 WebUI 真实训练与 CLI 持平
+
+用 `save-as → preflight → start` 的完整 HTTP 链路实跑（V100，1 步）：
+
+```
+INFO  NF4 dir1 enabled: inner GEMM runs fp16 ...        bootstrap.py:315
+INFO  Krea-2 attention fp16 enabled: GQA expanded...    bootstrap.py:336
+steps: 1/1 [00:11<00:00, 11.89s/it]  avr_loss=0.212  max_memory_allocated_gb=6.32
+```
+
+对照 CLI 路径：11.80 s/step、6.32 GiB——**持平**。
+
+WebUI 侧有三个易踩的配置语义：
+
+1. `extra_args` 会同时透传给预处理脚本，训练参数放进去会让 `resize_images.py` 报
+   `unrecognized arguments`；训练参数应写进配置。
+2. `configs/gui-methods/` 是系统预设，锁定不可 PATCH，编辑前必须「另存为新配置」。
+3. `config_file` 是**覆盖层**不是完整配置：`datasets` 来自 `variant` 的合并链，
+   而预处理读的是顶层 `source_image_dir`（`base.toml` 默认 `image_dataset`），
+   用 `config_file` 覆盖启动时必须在覆盖文件里同时给出 `source_image_dir` 与
+   `[[datasets]]`，否则训练报 `No data found`。
+
+## 10. 相关文档
 
 - [NF4 fp16 梯度下溢与逐层缩放判据](krea2_nf4_fp16_grad_underflow_20261108.md)——本方案的数值可行性前置
 - [Krea-2 NF4 fp16 逐层缩放提案](../proposal/krea2_nf4_fp16_layer_scaling.md)——设计推导与实现边界
