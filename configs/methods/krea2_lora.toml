@@ -19,6 +19,9 @@
 
 model_family = "krea2_raw"
 pretrained_model_name_or_path = "models/diffusion_models/krea2_raw_bf16.safetensors"
+# Krea-2 用 Qwen3-VL-4B；base.toml 的 qwen3 指向 Anima 的 Qwen3-0.6B，
+# 不覆盖会让 TE 缓存步骤读到不存在的文件。见 preprocess.py 的 krea2 分支。
+qwen3 = "models/text_encoders/qwen3vl_4b_bf16.safetensors"
 
 network_dim = 16
 network_alpha = 8

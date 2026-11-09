@@ -44,6 +44,8 @@
 
 model_family = "krea2_raw"
 pretrained_model_name_or_path = "models/diffusion_models/krea2_raw_bf16.safetensors"
+# Krea-2 用 Qwen3-VL-4B（base.toml 的 qwen3 是 Anima 的 0.6B，必须覆盖）。
+qwen3 = "models/text_encoders/qwen3vl_4b_bf16.safetensors"
 
 # NF4 基座（bf16 master + 4bit 量化权重）。
 base_compute = "nf4"
@@ -60,3 +62,7 @@ torch_compile = false
 
 # NF4 权重常驻 + 1024 分辨率激活的平衡点；实测峰值 6.89 GiB。
 blocks_to_swap = 20
+
+# 训练时长是必填项：base.toml 的 max_train_steps=0 会触发 preflight 的
+# 「未设置有效训练时长」错误。50 步够看清 loss 是否下降，按需改。
+max_train_steps = 50
