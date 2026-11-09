@@ -19,13 +19,23 @@ def _messages(result: dict, key: str) -> list[str]:
     return [item["message"] for item in result["errors"] if item["key"] == key]
 
 
-def test_preflight_plans_anima_but_keeps_launch_blocked(tmp_path: Path, monkeypatch) -> None:
+def test_preflight_releases_anima_pipeline_and_warns_about_the_trainer_gate(tmp_path: Path, monkeypatch) -> None:
+    """Anima PP v0 has a runtime, so the compat layer stops rejecting it.
+
+    The trainer entry still refuses the run (``pp_trainer_path_unavailable``),
+    which the preflight surfaces as a warning so the decision is visible before
+    the launch instead of only in the worker log.
+    """
+
     _write_selected_checkpoint_preflight_config(tmp_path, monkeypatch, ["pipeline_parallel = true"])
     result = _preflight()
-    assert result["ok"] is False
-    messages = _messages(result, "pipeline_parallel")
-    assert any("主训练 loop 的 1F1B 调度尚未接入" in message for message in messages)
-    assert not any("流水线配置无效" in message for message in messages)
+    assert result["ok"] is True
+    assert _messages(result, "pipeline_parallel") == []
+    warnings = [
+        item["message"] for item in result["warnings"] if item["key"] == "pipeline_parallel"
+    ]
+    assert any("pp_trainer_path_unavailable" in message for message in warnings)
+    assert not any("流水线配置无效" in message for message in warnings)
 
 
 def test_preflight_keeps_valid_krea_pipeline_launch_blocked(tmp_path: Path, monkeypatch) -> None:

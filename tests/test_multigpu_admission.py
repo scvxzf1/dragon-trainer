@@ -162,8 +162,15 @@ def test_single_process_keeps_existing_rejections():
     # 单卡侧已有拒绝不得因为多卡工作被放宽：两者都必须仍然报错。
     assert single_codes
     assert multi_codes
-    # 多卡必须保留 PP 运行时未接线的拒绝（不被本次实现顺手打开）。
-    assert "pipeline_parallel_runtime_unavailable" in multi_codes
+    # Anima 的 PP v0 运行时已接入 library.training.pp，compat 层不再拒绝；但主训练
+    # 路径仍必须具名拒绝，绝不能静默回退 DDP。
+    assert "pipeline_parallel_runtime_unavailable" not in multi_codes
+    from library.training.pp.errors import PipelineParallelError
+    from library.training.pp.gate import require_trainer_topology
+
+    with pytest.raises(PipelineParallelError) as excinfo:
+        require_trainer_topology(config, where="test_multigpu_admission")
+    assert excinfo.value.code == "pp_trainer_path_unavailable"
     # native/islands 系列的多进程拒绝也必须仍在。
     assert "adaptive_precision_contract" in multi_codes
 

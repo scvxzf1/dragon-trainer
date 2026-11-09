@@ -13,6 +13,7 @@
 | [adaptive-runtime.md](adaptive-runtime.md) | DiT 自适应精度与 OOM 恢复，实现边界和双卡三模型验证进度 |
 | [adaptive-training-recovery.md](adaptive-training-recovery.md) | 默认关闭的中途 OOM 恢复、sampler/预取与完整状态合同；Anima 90HX 短步验收 |
 | [anima-native-fp16.md](anima-native-fp16.md) | Anima 原生 AMP 配置、自动路由与训练精度报告 |
+| [anima_pipeline_parallel_v0.md](anima_pipeline_parallel_v0.md) | Anima 流水线并行 v0：2 阶段 stage-local 运行时、1F1B、fp16 事务、per-rank checkpoint；主训练入口仍具名 fail-closed |
 | [krea2-native-fp16.md](krea2-native-fp16.md) | Krea-2 显式原生 FP16 窄配置、guard 与验证边界 |
 | [anima-native-fp16-acceptance.md](anima-native-fp16-acceptance.md) | 原生 FP16 集中严格验收与独立训练质量协议 |
 | [anima-mixed-nf4.md](anima-mixed-nf4.md) | Anima 固定 MLP 策略 BF16/NF4 保存与加载实验 |

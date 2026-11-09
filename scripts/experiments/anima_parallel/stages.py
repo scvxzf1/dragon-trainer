@@ -115,8 +115,20 @@ class AnimaOwnedStage(nn.Module):
             adaln = kwargs["adaln_lora_B_T_3D"]
             hidden = self._blocks(hidden, embedding, context, adaln)
             return hidden, embedding, context, adaln
-        hidden = self._blocks(first, second, context, fourth)
-        return finish_model(self.model, hidden, second, fourth)
+        # Receiving-side drop for the frozen conditioning (see
+        # ``library.training.pp.stages.FrozenBoundaryPipelineStage``): torch forces
+        # every receive buffer to ``requires_grad_(True)``, so the cached
+        # conditioning has to be detached here or ``get_bwd_send_ops`` would try to
+        # send a gradient back for a tensor the earlier stage does not accept one
+        # for. ``hidden`` stays connected: it is the only slot that carries a
+        # useful gradient.
+        embedding, frozen_context, adaln = (
+            second.detach(),
+            context.detach(),
+            fourth.detach(),
+        )
+        hidden = self._blocks(first, embedding, frozen_context, adaln)
+        return finish_model(self.model, hidden, embedding, adaln)
 
     def adapter_state(self):
         return {
@@ -154,19 +166,31 @@ def stage_examples(model, inputs):
 def build_schedule(
     module, inputs, boundary, output, *, microbatches: int, schedule: str = "1f1b"
 ):
-    from torch.distributed.pipelining import PipelineStage, Schedule1F1B, ScheduleGPipe
+    from torch.distributed.pipelining import Schedule1F1B, ScheduleGPipe
     from torch.nn import functional as F
 
-    if microbatches < 1 or schedule not in {"1f1b", "gpipe"}:
-        raise ValueError("invalid PP microbatch count or schedule")
+    from library.training.pp.stages import (
+        WIRE_FROZEN_INDICES,
+        FrozenBoundaryPipelineStage,
+    )
+
+    if microbatches < 2 or schedule not in {"1f1b", "gpipe"}:
+        # torch 2.10 enforces ``n_microbatches >= num_stages`` in
+        # ``PipelineScheduleSingle.__init__``, the shared base of Schedule1F1B and
+        # ScheduleGPipe, so microbatches=1 cannot be run on a 2-stage pipeline by
+        # switching schedules.
+        raise ValueError(
+            "PP probe needs microbatches >= 2 for a 2-stage pipeline in torch 2.10 "
+            f"(got {microbatches}) or an unknown schedule {schedule!r}"
+        )
     rank = module.rank
     module.input_shapes = tuple(
         tuple(value.shape) for value in (inputs if rank == 0 else boundary)
     )
-    hidden_grad = torch.empty_like(boundary[0])
-    boundary_grads = (hidden_grad, None, None, None)
 
-    class FrozenConditioningStage(PipelineStage):
+    class RecordingPipelineStage(FrozenBoundaryPipelineStage):
+        """Count the p2p traffic the benchmark reports (measurement only)."""
+
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.communication = {"p2p_calls": 0, "p2p_tensor_bytes": 0}
@@ -190,27 +214,18 @@ def build_schedule(
         def get_bwd_recv_ops(self, chunk_id):
             return self._record_ops(super().get_bwd_recv_ops(chunk_id))
 
-        def _create_grad_send_info(self, args_recv_info):
-            # torch 2.12 assumes every received tensor has a gradient. Cached
-            # conditioning is deliberately frozen and must not be sent back.
-            destinations = super()._create_grad_send_info(args_recv_info)
-            return [
-                destination if info.tensor_meta.requires_grad else None
-                for info, destination in zip(args_recv_info, destinations, strict=True)
-            ]
-
-    stage = FrozenConditioningStage(
+    stage = RecordingPipelineStage(
         module,
         rank,
         2,
         next(module.parameters()).device,
         input_args=inputs if rank == 0 else boundary,
         output_args=boundary if rank == 0 else output,
-        input_grads=(None,) * 4 if rank == 0 else boundary_grads,
-        output_grads=boundary_grads if rank == 0 else torch.empty_like(output),
+        frozen_input_indices=() if rank == 0 else WIRE_FROZEN_INDICES,
+        frozen_output_indices=WIRE_FROZEN_INDICES if rank == 0 else (),
     )
     schedule_type = (
-        ScheduleGPipe if microbatches == 1 or schedule == "gpipe" else Schedule1F1B
+        ScheduleGPipe if microbatches < 3 or schedule == "gpipe" else Schedule1F1B
     )
     return schedule_type(
         stage,

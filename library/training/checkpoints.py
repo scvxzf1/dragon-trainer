@@ -620,6 +620,21 @@ def save_checkpoint_state(
     loader_cursor: Optional[dict] = None,
     rank_digest: Optional[dict] = None,
 ):
+    """Save one state directory through the all-rank bundle protocol.
+
+    The ``pipeline_parallel`` refusal for this path lives **only** in
+    :func:`publish_state_with_bundle` (the choke point in front of
+    ``accelerator.save_state``), which this function calls unconditionally. A
+    second guard here used to duplicate it; it could never fire first in a way
+    that mattered, and a mutation test showed the suite stays green without it.
+    Do not add the check back here -- extend the one in
+    ``publish_state_with_bundle`` instead, so there is a single refusal point.
+
+    Consequence of delegating: for a refused run this function has already
+    logged and run ``os.makedirs(args.output_dir, exist_ok=True)`` (the run root,
+    which the run owns anyway). The state directory itself is only created after
+    the delegated guard, so a refused save still leaves no resumable artifact.
+    """
     state_dir = get_checkpoint_state_dir(args, epoch_no)
 
     logger.info("")
@@ -688,6 +703,14 @@ def publish_state_with_bundle(
     from library.training.multigpu import cursor as cursor_mod
     from library.training.multigpu import rank_digest as rank_digest_mod
     from library.training.multigpu import resume_protocol
+
+    # Choke point for ``accelerator.save_state``: it runs on every rank and the
+    # publish renames the result into one directory. Under pipeline_parallel each
+    # rank owns a different stage, so that directory is not resumable -- fail
+    # closed before any rank writes a shard.
+    from library.training.pp.gate import require_accelerate_checkpoint
+
+    require_accelerate_checkpoint(args, where="checkpoints.publish_state_with_bundle")
 
     tmp_dir = state_dir + ".tmp"
     backup_dir = state_dir + ".backup"

@@ -16,6 +16,13 @@ from library.models.latent_space import (
 
 T = TypeVar("T")
 
+#: Identifier of the only stage-local PP runtime that exists (PP v0).  A family
+#: may only publish it once ``library/training/pp`` can really place, schedule and
+#: checkpoint its stages; ``compat_matrix`` and ``library.training.pp.gate`` read
+#: this same string, so the family switch and the compatibility gate cannot drift
+#: apart.  ``None`` (the default) keeps a family fail-closed.
+PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B = "torch_pipelining_1f1b"
+
 
 class ModelFamilyHandlerError(RuntimeError):
     """Raised when a registered family lacks an operation handler."""
@@ -107,6 +114,9 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             supported_stages=frozenset({2}),
             supported_schedules=frozenset({"1f1b"}),
             supported_splits=frozenset({"balanced"}),
+            # PP v0 switch: only anima has a stage-local runtime today
+            # (``library/training/pp``).  Keep every other family at ``None``.
+            runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
         ),
     ),
     "krea2_raw": ModelFamilySpec(

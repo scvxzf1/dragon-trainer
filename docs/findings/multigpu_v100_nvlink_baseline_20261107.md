@@ -64,7 +64,10 @@ SM70 没有原生 BF16 tensor core，实测 BF16 只有 FP16 的约 9.2%，甚�
    `library/training/gradient_sync.py` 的 16 MiB bucket 与该带宽匹配。
 2. **TP 的主要成本是小消息延迟而非带宽**：单次集合通信有约 0.18 ms 固定延迟。
    历史探针 TP2 每步约 3960 次集合通信，按 0.18 ms 计就是约 0.7 s/步的纯延迟下限，
-   与当时 TP2 3.057 s/步、PP2 1.806 s/步的差距方向一致。TP 若要可行，必须减少
+   与当时 TP2 3.057 s/步、~~PP2 1.806 s/步~~（**DEPRECATED**，见
+   [anima_dual_gpu_parallel_probe_20260904.md](anima_dual_gpu_parallel_probe_20260904.md)；
+   那是手写阻塞 send/recv 的单 microbatch fill-drain，不是 `Schedule1F1B` 基线）的差距
+   方向一致。TP 若要可行，必须减少
    collective 次数（大 fusion/合并通信），不能靠换传输精度。
 3. **真正的弱链路是 H2D（约 5 GB/s）**：PP 阶段切分后的 CPU offload、block swap、
    stage 参数装卸都会撞这条链路，PCIe x8 是硬约束，卡间 NVLink 帮不上忙。

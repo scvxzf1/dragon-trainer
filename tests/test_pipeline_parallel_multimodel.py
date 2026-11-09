@@ -82,7 +82,7 @@ def test_capability_catalog_exposes_all_registered_pipeline_planners() -> None:
     assert catalog["z_image"]["pipeline_parallel"]["block_container"] == "layers"
 
 
-@pytest.mark.parametrize("family", ["anima", "krea2_raw", "z_image"])
+@pytest.mark.parametrize("family", ["krea2_raw", "z_image"])
 def test_compat_matrix_keeps_every_family_runtime_fail_closed(family: str) -> None:
     result = check_training_compat(_pipeline_config(family), world_size=2)
     pipeline_codes = {
@@ -90,6 +90,21 @@ def test_compat_matrix_keeps_every_family_runtime_fail_closed(family: str) -> No
     }
 
     assert pipeline_codes == {"pipeline_parallel_runtime_unavailable"}
+
+
+def test_compat_matrix_releases_only_the_anima_runtime() -> None:
+    """Anima publishes ``torch_pipelining_1f1b``; the compat gate follows it."""
+
+    result = check_training_compat(_pipeline_config("anima"), world_size=2)
+    pipeline_codes = {
+        item.code for item in result.errors if item.key == "pipeline_parallel"
+    }
+
+    assert pipeline_codes == set()
+    warnings = {
+        item.code for item in result.warnings if item.key == "pipeline_parallel"
+    }
+    assert warnings == {"pipeline_parallel_experimental_runtime"}
 
 
 @pytest.mark.parametrize("family", ["krea2", "zimage"])

@@ -116,6 +116,17 @@ def _compat_web_message(item) -> str:
             "当前模型族的流水线分层规划已接入，但主训练 loop 的 1F1B 调度尚未接入；"
             "当前会阻止启动，不会静默回退到 DDP。"
         ),
+        "pipeline_parallel_experimental_runtime": (
+            "Anima 流水线并行已解析到实验性的 stage-local PP v0 运行时"
+            "（2 阶段 / 1F1B / fp16 事务）。它由 library.training.pp 驱动，"
+            "主训练入口遇到 pipeline_parallel 会以 pp_trainer_path_unavailable "
+            "具名拒绝，绝不静默回退 DDP。"
+        ),
+        "pipeline_parallel_microbatches_below_stages": (
+            "pipeline_parallel_microbatches 必须 >= pipeline_parallel_stages；"
+            "torch 2.10 的 Schedule1F1B 与 ScheduleGPipe 都会在构造时拒绝更小的值，"
+            "所以 microbatches=1 不是 2 阶段流水线的 GPipe 替代方案。"
+        ),
         "negative_blocks_to_swap": "blocks_to_swap 不能小于 0。",
         "selective_full_gradient_checkpointing": (
             "selective_checkpoint 是 DiT 选择性检查点模式，不能同时开启完整 "

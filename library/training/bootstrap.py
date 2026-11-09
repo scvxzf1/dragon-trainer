@@ -850,6 +850,13 @@ class TrainingBootstrap:
         collator,
     ) -> OptimizerBuildResult:
         """Build optimizer, dataloaders, and LR scheduler."""
+        # First bootstrap choke point after the datasets: a pipeline_parallel run
+        # must not reach the data-parallel optimizer/dataloader assembly at all.
+        from library.training.pp.gate import require_trainer_topology
+
+        require_trainer_topology(
+            args, where="bootstrap.setup_optimizer_and_dataloader"
+        )
         accelerator.print("prepare optimizer, data loader etc.")
 
         support_multiple_lrs = hasattr(
@@ -1057,6 +1064,15 @@ class TrainingBootstrap:
         cache_latents,
     ) -> AcceleratorPrepareResult:
         """Cast dtypes, run accelerator.prepare, and flip train/eval modes."""
+        # The DDP topology decision lives here (``accelerator.prepare`` wraps the
+        # whole network when ``num_processes > 1``). A pipeline_parallel run that
+        # reached this point would silently become data parallel, so it is refused
+        # with a named pp_* code instead. This is the gate that also covers every
+        # entry which bypasses ``cli_entry`` (WebUI queue / daemon / direct
+        # ``AnimaTrainer().train`` / resume).
+        from library.training.pp.gate import require_trainer_topology
+
+        require_trainer_topology(args, where="bootstrap.prepare_with_accelerator")
         if args.full_fp16:
             assert args.mixed_precision == "fp16", (
                 "full_fp16 requires mixed precision='fp16'"

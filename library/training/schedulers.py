@@ -242,7 +242,14 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         return get_dummy_scheduler(optimizer)
 
     name = args.lr_scheduler
-    num_training_steps = args.max_train_steps * num_processes
+    # Under pipeline_parallel one optimizer step already covers the whole
+    # pipeline, so the LR plan must not be multiplied by the world size (stages=2
+    # would double max_train_steps). The gate owns that decision.
+    from library.training.pp.gate import lr_scheduler_num_processes
+
+    num_training_steps = args.max_train_steps * lr_scheduler_num_processes(
+        args, num_processes
+    )
     num_warmup_steps: Optional[int] = (
         int(args.lr_warmup_steps * num_training_steps)
         if isinstance(args.lr_warmup_steps, float)

@@ -357,17 +357,28 @@ def check_training_compat(
                 str(exc),
             )
         else:
-            # Planning support is not a runtime implementation. Keep every
-            # family fail-closed until stage-local placement, 1F1B, optimizer
-            # ownership, and checkpoint recovery are wired into the trainer.
-            out.error(
-                "pipeline_parallel_runtime_unavailable",
-                "pipeline_parallel",
-                f"{family_spec.display_name} pipeline_parallel has a validated "
-                "stage planner, but the 1F1B schedule is not wired into the "
-                "main trainer; disable pipeline_parallel or use the standalone "
-                "PP probe.",
-            )
+            # The family planner above is static metadata. This is the runtime
+            # gate: it opens only for a family that publishes a stage-local PP
+            # backend *and* whose runtime contract validates in this process
+            # (schedule, microbatches >= stages, world size, no quantized base,
+            # torch.distributed.pipelining importable). Every other family keeps
+            # failing closed with a named code.
+            from library.training.pp.gate import pipeline_parallel_runtime_issue
+
+            issue = pipeline_parallel_runtime_issue(config, world_size=world_size)
+            if issue is not None:
+                out.error(issue.code, "pipeline_parallel", issue.message)
+            else:
+                out.warning(
+                    "pipeline_parallel_experimental_runtime",
+                    "pipeline_parallel",
+                    f"{family_spec.display_name} pipeline_parallel resolves to the "
+                    "experimental stage-local PP v0 runtime (2 stages, 1F1B, fp16 "
+                    "transaction). It is served by library.training.pp, not by the "
+                    "Accelerate trainer: the trainer entry refuses a "
+                    "pipeline_parallel run with pp_trainer_path_unavailable instead "
+                    "of silently falling back to DDP.",
+                )
 
     # Krea-2 gets a family-specific message/mutation below. Avoid emitting a
     # duplicate generic mutation when its fixed-padded gate is the real cause.

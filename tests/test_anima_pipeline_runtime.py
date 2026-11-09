@@ -208,7 +208,13 @@ def _worker(rank, init_path, root, microbatches, checkpoint, split):
 @pytest.mark.integration
 @pytest.mark.probe
 @pytest.mark.parametrize(
-    ("microbatches", "checkpoint", "split"), [(1, True, 2), (2, True, 2), (4, False, 3)]
+    ("microbatches", "checkpoint", "split"),
+    # torch 2.10 rejects ``n_microbatches < num_stages`` in
+    # ``PipelineScheduleSingle.__init__``, which Schedule1F1B *and* ScheduleGPipe
+    # both inherit, so a 2-stage pipeline cannot run microbatches=1 at all.
+    # microbatches=2 is the smallest legal step and issues the GPipe action order;
+    # 3 is the smallest count where 1F1B actually overlaps.
+    [(2, True, 2), (3, True, 2), (4, False, 3)],
 )
 def test_pp_output_gradients_update_and_resume(
     tmp_path, microbatches, checkpoint, split

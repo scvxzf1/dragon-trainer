@@ -332,11 +332,18 @@ def test_compat_matrix_checks_pipeline_world_size_before_runtime_gate() -> None:
     assert "pipeline_parallel_runtime_unavailable" not in _codes(result.errors)
 
 
-def test_compat_matrix_plans_anima_but_keeps_runtime_fail_closed() -> None:
+def test_compat_matrix_plans_anima_through_the_pp_v0_runtime() -> None:
+    """Anima is the one family whose stage-local PP runtime exists.
+
+    The compatibility layer therefore stops rejecting it -- but the trainer entry
+    still refuses a PP run with a named code instead of falling back to DDP (see
+    ``tests/test_anima_pp_wiring.py``).
+    """
+
     result = check_training_compat(_valid_config(model_family="anima"))
 
     assert "pipeline_parallel_config" not in _codes(result.errors)
-    assert "pipeline_parallel_runtime_unavailable" in _codes(result.errors)
+    assert "pipeline_parallel_runtime_unavailable" not in _codes(result.errors)
 
 
 def test_cli_refuses_to_fall_back_to_data_parallel(monkeypatch) -> None:

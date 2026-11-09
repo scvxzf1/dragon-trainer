@@ -77,24 +77,27 @@ def _run_configured_training(args, trainer_factory):
             raise
         raise SystemExit(0 if result["status"] == "ok" else 1)
 
-    from library.models.pipeline_parallel import (
-        PipelineParallelConfig,
-        validate_pipeline_parallel_config,
+    from library.training.pp.gate import (
+        pipeline_parallel_enabled,
+        require_pipeline_runtime,
+        require_trainer_topology,
     )
 
-    pipeline_config = PipelineParallelConfig.from_config(args)
-    if pipeline_config.enabled:
-
+    if pipeline_parallel_enabled(args):
         try:
             world_size = int(os.environ.get("WORLD_SIZE", "1"))
         except ValueError as exc:
             raise ValueError("WORLD_SIZE must be an integer for pipeline_parallel") from exc
-        validate_pipeline_parallel_config(args, world_size=world_size)
-        raise RuntimeError(
-            "Pipeline-parallel stage planning is available for this model "
-            "family, but the 1F1B schedule is not wired into the main trainer "
-            "yet. Refusing to fall back to ordinary Accelerate data parallelism."
-        )
+        # CLI preflight. Named pp_* rejection for a family without a stage-local
+        # runtime, and for microbatches < stages (torch 2.10 refuses that for
+        # Schedule1F1B *and* ScheduleGPipe). Never returns to DDP.
+        require_pipeline_runtime(args, world_size=world_size)
+        # Early refusal (F6/F10): the trainer path is the Accelerate data-parallel
+        # topology, and it would only discover that *after* the DiT/VAE/text
+        # encoder are loaded (bootstrap.prepare_with_accelerator). Refuse here, at
+        # argument-parse time, so a valid-but-unservable PP config costs no model
+        # load. The WebUI preflight deliberately stays a warning.
+        require_trainer_topology(args, where="cli_entry")
 
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility

@@ -617,6 +617,13 @@ def run_training_loop(trainer, state: LoopState) -> None:
     """
     args = state.args
     accelerator = state.accelerator
+    # pipeline_parallel is served by library.training.pp, not by this loop: the
+    # accelerate loop below owns whole-model forwards and the accumulation
+    # boundary. Refuse before the first epoch instead of running a DDP-shaped
+    # step for a pipeline config.
+    from library.training.pp.gate import require_trainer_topology
+
+    require_trainer_topology(args, where="loop.run_training_loop")
     _maybe_apply_stage_schedule(state, force=True)
 
     for epoch in range(state.epoch_to_start, state.num_train_epochs):
@@ -1161,6 +1168,11 @@ def _run_microbatch(
     """
     from library.training.auto_block_swap.online import before_microstep, after_microstep
 
+    # ``trainer.process_batch`` below is one whole-model single-GPU forward; a
+    # pipeline_parallel config must never get there (see run_training_loop).
+    from library.training.pp.gate import require_trainer_topology
+
+    require_trainer_topology(state.args, where="loop._run_microbatch")
     adaptive_notify(trainer, "forward")
     before_microstep(state, batch)
     args = state.args
