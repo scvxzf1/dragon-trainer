@@ -366,6 +366,14 @@ def _compat_web_message(
             "（GQA 展开为 MHA）。当前只开启其中一个，建议两个同时开启，"
             "以获得完整的内层 fp16 收益。"
         ),
+        "nf4_fp16_inner_available": (
+            "当前设备无原生 BF16 Tensor Core（sm70/sm75），bf16 GEMM 会落到软件模拟路径"
+            "（V100 实测 44.8 vs 11.06 s/step）。两个内层 fp16 开关都未开启。"
+            "开启 nf4_dir1 可把 NF4 Linear 内层 GEMM 切到 fp16（该类 GEMM 约 4×）；"
+            "若注意力后端是 torch/sdpa，krea2_attn_fp16 还可把内层 SDPA 也切到 fp16"
+            "（attn_mode=flash 下该开关不生效）。两者都保持 compute_dtype=bfloat16，"
+            "不要把 mixed_precision 改成 fp16——那条路径因梯度下溢已被否决。"
+        ),
     }
     if item.code == "block_swap_compile_mode_cudagraphs":
         value = getattr(item, "value", None)

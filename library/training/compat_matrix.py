@@ -390,7 +390,15 @@ def _check_fp16_inner_path_flags(
     """
     nf4_dir1 = _bool_value(_get(config, "nf4_dir1", False), False)
     attn_fp16 = _bool_value(_get(config, "krea2_attn_fp16", False), False)
-    if not nf4_dir1 and not attn_fp16:
+    # 双关也不是无事可做：Krea-2 + NF4 在 sm<80 上用默认 bf16 时，每个 bf16 GEMM
+    # 都落到 MAGMA 软件模拟（V100 实测 44.8 vs 11.06 s/step），需要一条 info 告诉
+    # 用户有可开的内层 fp16 路径。其它组合仍然早退，避免为一条提示让所有训练都去
+    # 探测 GPU。
+    if (
+        not nf4_dir1
+        and not attn_fp16
+        and (family_name != "krea2_raw" or not nf4_active)
+    ):
         return
     capability = _normalized_capability(device_capability)
     selected_capabilities = tuple(
@@ -514,6 +522,45 @@ def _check_fp16_inner_path_flags(
             "fp16 and --krea2_attn_fp16 covers the attention inner SDPA in fp16 "
             f"(GQA expanded to MHA); only --{enabled_flag} is enabled. Enable "
             "both for the complete inner-fp16 path.",
+        )
+
+    # 双关：Krea-2 + NF4 在 sm<80 上用默认 bf16，两个内层 fp16 开关都没开。
+    # 这不是错误（bf16 数值正确），但每个 bf16 GEMM 都会落到 MAGMA 软件模拟，
+    # V100 实测 44.8 vs 11.06 s/step。只做 info，不做 warning：bf16 是 base.toml
+    # 的生产默认，把它标成"有问题的配置"会制造噪音。
+    # 也绝不建议把 compute 改成 fp16 —— 那条路已被
+    # krea2_nf4_fp16_grad_underflow_20261108.md 的 35.65% 梯度偏差否决。
+    if (
+        supported_architecture
+        and family_name == "krea2_raw"
+        and nf4_active
+        and not nf4_dir1
+        and not attn_fp16
+        # 只在 bf16 compute 下提示：两个开关都要求 compute=bf16，用户已经是
+        # fp16/fp32 时建议开启它们同样不生效，属于误导。
+        and str(_get(config, "mixed_precision", "bf16") or "bf16").strip().lower()
+        == "bf16"
+    ):
+        device_detail = "/".join(
+            f"sm{major}{minor}" for major, minor in selected_capabilities
+        ) or f"sm{(offending or capability or (0, 0))[0]}{(offending or capability or (0, 0))[1]}"
+        attention_hint = (
+            " --krea2_attn_fp16 additionally moves the attention inner SDPA to "
+            "fp16 (GQA expanded to MHA) and needs attn_mode=torch/sdpa; it is "
+            "inert under attn_mode=flash."
+            if inert_reason is None
+            else ""
+        )
+        out.info(
+            "nf4_fp16_inner_available",
+            "nf4_dir1",
+            f"Training devices {device_detail} have no native BF16 tensor "
+            "cores, so every bf16 GEMM falls back to a software emulation path "
+            "(V100 measured 44.8 vs 11.06 s/step). Neither inner-fp16 switch is "
+            "enabled. Enabling --nf4_dir1 moves the NF4 Linear inner GEMM to "
+            f"fp16 (about 4x on those GEMMs).{attention_hint} Both keep "
+            "compute_dtype=bfloat16; do not switch mixed_precision to fp16 "
+            "instead — that path is rejected for gradient underflow.",
         )
 
 

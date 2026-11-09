@@ -226,7 +226,68 @@ def test_no_pairing_hint_when_both_or_neither_switch_is_on() -> None:
     both = _compat({"attn_mode": "torch", "nf4_dir1": True, "krea2_attn_fp16": True})
     neither = _compat({"attn_mode": "torch"})
 
-    assert not both.infos and not neither.infos
+    # 双开：内层 fp16 已完整启用，无需任何建议。
+    assert not both.infos
+    # 双关：不再是「再开一个」的 pairing 建议，而是提示存在可开的内层 fp16 路径
+    # —— sm<80 上默认 bf16 的每个 GEMM 都落到软件模拟（V100 44.8 vs 11.06 s/step）。
+    assert {item.code for item in neither.infos} == {"nf4_fp16_inner_available"}
+
+
+def test_inner_available_hint_only_for_krea2_nf4_on_pre_ampere() -> None:
+    """双关提示只在 Krea-2 + NF4 + sm<80 + bf16 下出现，且绝不建议改用 fp16。"""
+    def codes(**overrides):
+        return {item.code for item in _compat(overrides).infos}
+
+    base = {"attn_mode": "torch"}
+    assert codes(**base) == {"nf4_fp16_inner_available"}
+
+    # 任一开关已开 → 不再是「双关」场景
+    assert "nf4_fp16_inner_available" not in codes(nf4_dir1=True, **base)
+    assert "nf4_fp16_inner_available" not in codes(krea2_attn_fp16=True, **base)
+
+    # 非 bf16 compute：两个开关都要求 bf16，建议开它们是误导
+    for precision in ("fp16", "fp32", "no"):
+        assert "nf4_fp16_inner_available" not in codes(
+            mixed_precision=precision, **base
+        )
+
+    # sm80+ 有原生 bf16 tensor core，不存在这个问题
+    assert not {
+        item.code
+        for item in check_training_compat(
+            dict(BASE_CONFIG, **base), cuda_available=True, device_capability=SM86
+        ).infos
+    }
+
+    # 非 Krea-2 / 非 NF4 不适用（两个开关都不会被消费）
+    assert "nf4_fp16_inner_available" not in codes(
+        model_family="anima", **base
+    )
+    assert "nf4_fp16_inner_available" not in codes(
+        base_compute="bf16", **base
+    )
+
+    # 文案必须点明 bf16 GEMM 走软件模拟，并明确禁止改用 fp16 compute
+    message = next(
+        item.message
+        for item in _compat(base).infos
+        if item.code == "nf4_fp16_inner_available"
+    )
+    assert "software emulation" in message
+    assert "do not switch mixed_precision to fp16" in message
+
+    # Web 层必须有中文文案，不能回退英文原文
+    from web.services.config.preflight_compat import _compat_web_message
+
+    web_message = _compat_web_message(
+        next(
+            item
+            for item in _compat(base).infos
+            if item.code == "nf4_fp16_inner_available"
+        )
+    )
+    assert "软件模拟" in web_message
+    assert "不要把 mixed_precision 改成 fp16" in web_message
 
 
 # ---------------------------------------------------------------------------
