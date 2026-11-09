@@ -15,7 +15,6 @@ from .constants import STATE_KEYS
 #: 本开关**不改变** ``compute_dtype``（始终 bfloat16），因此不触碰
 #: ``weights.py`` / ``quantize.py`` 的 BF16 fail-closed 契约，也不是"全局 FP16 NF4"。
 _DIR1_ENABLED = False
-_DIR1_STATS = {"dir1": 0, "stock": 0}
 
 
 def dir1_supported() -> bool:
@@ -145,9 +144,7 @@ class BF16AutocastLinear4bit(Linear4bit):
 
     def forward(self, x: torch.Tensor):
         if _DIR1_ENABLED and x.device.type == "cuda":
-            _DIR1_STATS["dir1"] += 1
             return self._forward_dir1(x)
-        _DIR1_STATS["stock"] += 1
         if (
             x.device.type == "cuda"
             and x.dtype in (torch.float32, torch.float16)
