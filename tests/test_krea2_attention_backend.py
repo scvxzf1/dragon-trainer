@@ -261,3 +261,50 @@ def test_single_stream_dit_switches_all_attention_modules() -> None:
     ]
     assert model.attn_mode == "flash"
     assert attention_modes == ["flash", "flash"]
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] >= 8,
+    reason="attention fp16 只对 sm<80 有意义（sm80+ 有原生 bf16 内核）",
+)
+def test_fp16_attention_sdpa_survives_bf16_autocast() -> None:
+    """autocast(bf16) 不得把 _fp16_attention 的 SDPA 输入/输出转回 bf16。
+
+    回归 e783f584：训练跑在 ``torch.autocast(dtype=bfloat16)`` 里，sm70 又
+    没有 bf16 内核，autocast 会把 SDPA 的调度上下文设成 bf16，EFFICIENT 对
+    fp16 输入直接 ``No available kernel`` 并静默回退 MATH——4864 tokens 单层
+    就要 ``48 × 4864² × 4 bytes ≈ 4.23 GiB``，训练直接 OOM。
+
+    autocast 的强转发生在 aten::scaled_dot_product_attention 的 C++ 分发层，
+    只检查入参看不出问题，必须断言内核实际吐出的 dtype。
+    """
+    from unittest import mock
+
+    q = torch.randn(1, 4, 64, 32, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(1, 2, 64, 32, device="cuda", dtype=torch.bfloat16)
+    v = torch.randn(1, 2, 64, 32, device="cuda", dtype=torch.bfloat16)
+
+    seen: list[tuple[torch.dtype, torch.dtype, torch.dtype, torch.dtype]] = []
+    real_sdpa = torch.nn.functional.scaled_dot_product_attention
+
+    def spy(query, key, value, **kwargs):
+        out = real_sdpa(query, key, value, **kwargs)
+        seen.append((query.dtype, key.dtype, value.dtype, out.dtype))
+        return out
+
+    with mock.patch.object(
+        torch.nn.functional, "scaled_dot_product_attention", spy
+    ), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        attention_backend._fp16_attention(
+            q, k, v, mask=None, scale=None, gqa=True
+        )
+
+    assert seen, "SDPA 未被调用，fp16 attention 路径没生效"
+    q_dtype, k_dtype, v_dtype, out_dtype = seen[0]
+    assert q_dtype == torch.float16, f"q 被 autocast 转成了 {q_dtype}"
+    assert k_dtype == torch.float16, f"k 被 autocast 转成了 {k_dtype}"
+    assert v_dtype == torch.float16, f"v 被 autocast 转成了 {v_dtype}"
+    assert out_dtype == torch.float16, (
+        f"SDPA 输出被 autocast(bf16) 转成了 {out_dtype}；"
+        "必须包在 torch.autocast(device_type='cuda', enabled=False) 里"
+    )
