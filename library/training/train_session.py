@@ -25,6 +25,7 @@ from library.training.loop import build_loop_state, loader_cursor_payload, run_t
 from library.log import setup_logging
 from library.runtime.peak_probe import PeakProbe
 from library.training.cli_args import verify_training_args
+from library.training.extra_args import recheck_compat_after_precision_resolve
 from library.training.gradient_flow_probe import GradientFlowProbe
 from library.training.anima_block_freeze import apply_anima_block_freeze
 from library.training.memory_probe import MemoryProbe
@@ -215,6 +216,15 @@ def _run_training_session(trainer, args) -> None:
     # strategy and Accelerator share the finalized autocast dtype. Accelerator()
     # bakes the autocast dtype at construction time.
     resolve_mixed_precision(args)
+
+    # P0-1: ``assert_extra_args`` above ran ``check_training_compat`` against
+    # the *pre-rewrite* ``mixed_precision``. On sm<80 the resolver above turns
+    # bf16 into fp16 in place (NF4 exempt), which silently defeats every
+    # fail-closed rule keyed on the original value -- ``z_image_bf16_only`` and
+    # ``qwen_image_2_1_mixed_precision_flash`` never fire, and the failure only
+    # surfaces later at model load or first forward. Re-check once, reporting
+    # only what the rewrite introduced (the original config was already clean).
+    recheck_compat_after_precision_resolve(args)
 
     # Set the text-encoder-outputs caching strategy now (before the model
     # load) so the cache-completeness probe below can use it to decide

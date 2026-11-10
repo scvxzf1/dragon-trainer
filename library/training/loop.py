@@ -1354,11 +1354,11 @@ def _run_microbatch(
             )
             if _will_log_after and hasattr(net_unwrapped, "capture_up_grad_stats"):
                 net_unwrapped.capture_up_grad_stats()
-            if args.max_grad_norm != 0.0:
-                params_to_clip = accelerator.unwrap_model(
-                    network
-                ).get_trainable_params()
-                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+            # NOTE: gradient clipping deliberately does NOT happen here. See the
+            # ``drop_update`` block below. Clipping calls ``unscale_gradients()``
+            # (a local, non-collective ``scaler.unscale_()``), and a rank that
+            # clips before the multi-process drop agreement would be left with
+            # its GradScaler stage stuck at UNSCALED when the step is dropped.
 
         if state.profile_started:
             torch.cuda.nvtx.range_push("optimizer")
@@ -1389,6 +1389,29 @@ def _run_microbatch(
             # 三类原因并留痕），此处不再额外发起一次父级 MAX 归约，避免同一边界上
             # 出现两组用途重叠的集体调用。
             agreed_drop = drop_update
+            # Clip only once every rank has agreed to apply the update.
+            #
+            # ``accelerator.clip_grad_norm_`` first calls ``unscale_gradients()``,
+            # which is a plain local ``scaler.unscale_()`` (no collective), and
+            # moves that optimizer's GradScaler stage to UNSCALED. If a rank
+            # clips while its peers still hold a non-finite loss/grad, the
+            # agreement above makes everyone drop -- but the rank that already
+            # clipped never reaches ``AcceleratedOptimizer.step()``, so
+            # ``scaler.step()``/``update()`` are never called and its stage stays
+            # UNSCALED. The next ``unscale_()`` then raises
+            # ``RuntimeError: unscale_() has already been called``.
+            #
+            # Clipping after ``agree_step`` keeps the stage at READY on every
+            # dropped step. It is safe to skip on dropped ranks: the norm is
+            # computed from already all-reduced gradients, so no collective is
+            # involved and the remaining ranks do not block. ``drop_update`` is
+            # identical on every rank (that is what ``agree_step`` negotiates),
+            # so this branch is symmetric by construction.
+            if accelerator.sync_gradients and not agreed_drop and args.max_grad_norm != 0.0:
+                params_to_clip = accelerator.unwrap_model(
+                    network
+                ).get_trainable_params()
+                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
             if drop_update:
                 state.update_skipped = True
                 # Nothing applied: clear the (possibly poisoned) gradients here so a

@@ -249,3 +249,33 @@ def assert_training_extra_args(
     )  # WanVAE spatial downscale = 8 and patch size = 2
     if val_dataset_group is not None:
         val_dataset_group.verify_bucket_reso_steps(16)
+
+
+def recheck_compat_after_precision_resolve(args) -> None:
+    """在 ``resolve_mixed_precision`` 改写之后复跑一次兼容检查（P0-1）。
+
+    ``assert_training_extra_args`` 里的 ``check_training_compat`` 跑在
+    ``resolve_mixed_precision`` **之前**，而 ``precision_policy`` 会在 sm<80 上
+    把 ``bf16`` 就地改写成 ``fp16``（NF4 路径豁免）。于是所有以原始
+    ``mixed_precision`` 为条件的 fail-closed 规则都被绕过：
+
+    - ``z_image_bf16_only`` 看见 bf16 放行，实际以 fp16 运行；
+    - ``qwen_image_2_1_mixed_precision_flash`` 同理，本该在启动期报错的硬 code
+      从未生效，问题推迟到首次 forward 才由 attention backend 抛出。
+
+    走到这里的调用点已经通过了一次检查（有 error 早在那时抛了），所以**任何**
+    新增 error 都是改写引入的，不会出现「原配置错一遍、改写后又错一遍」的重复
+    报错。这里只复检 error，不重复应用 mutation（第一次已应用）。
+    """
+    compat = check_training_compat(args)
+    if not compat.errors:
+        return
+    details = "\n".join(f"  - [{issue.code}] {issue.message}" for issue in compat.errors)
+    raise ValueError(
+        "mixed_precision 被自动改写后触发了模型族限制：当前 GPU 不支持原生 bf16"
+        "（sm<80），bfloat16 已被 precision_policy 降级为 float16，而该模型族不允许"
+        "当前的 fp16 组合。\n"
+        "原配置在改写前已通过兼容检查，以下冲突由自动降级引入：\n"
+        f"{details}\n"
+        "请改用支持原生 bf16 的硬件（sm80+），或按上述提示调整配置。"
+    )

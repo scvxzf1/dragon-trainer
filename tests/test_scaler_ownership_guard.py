@@ -353,3 +353,147 @@ def test_skipped_step_does_not_enter_step_time_samples():
     _record_recent_step_seconds(state, 3, now=103.0)  # 真实更新：只量这一步
     assert list(state.recent_step_seconds) == [2.0]
     assert _recent_step_seconds(state) == 2.0
+
+
+def test_dropped_step_never_clips_so_scaler_stage_stays_ready(monkeypatch):
+    """P0-3 回归：协商丢弃的步不得触发 clip，否则 GradScaler stage 卡在 UNSCALED。
+
+    场景是「rank 本地完全干净、对端非有限」：本 rank 的 loss 与梯度都有限，所以旧的
+    ``clip_grad_norm_`` 门（只判 rank 本地）会放行；``accelerator.clip_grad_norm_``
+    内部先调 ``unscale_gradients()``（纯本地 ``scaler.unscale_()``，非集合通信），把
+    stage 推到 UNSCALED 后才发现多进程协商决定 drop——而 drop 分支不调
+    ``optimizer.step()``，于是 ``scaler.step()``/``update()`` 双双被跳过，stage 停在
+    UNSCALED。下一个边界再 ``unscale_()`` 就抛
+    ``RuntimeError: unscale_() has already been called``。
+
+    修复把 clip 移到 ``agree_step`` 之后：drop 的步根本不 unscale，stage 保持 READY。
+    """
+    from library.training import loop as training_loop
+
+    events: list[str] = []
+
+    class Network(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(1, 1))
+            # 本地梯度是有限的——旧的门只看本地，所以会放行 clip。
+            self.weight.grad = torch.ones_like(self.weight)
+
+        def get_trainable_params(self):
+            return [self.weight]
+
+    parameter = Network().weight
+
+    class Accelerator:
+        sync_gradients = True
+        mixed_precision = "fp16"
+        scaler = object()  # 非 None 即可：我们断言的是 clip 根本没被调用
+        num_processes = 2
+        device = torch.device("cpu")
+
+        @staticmethod
+        def accumulate(model):
+            del model
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        @staticmethod
+        def unwrap_model(model):
+            return model
+
+        @staticmethod
+        def backward(loss):
+            del loss
+            events.append("backward")
+
+        @staticmethod
+        def clip_grad_norm_(params, max_norm):
+            del params, max_norm
+            # 真实实现会先 unscale；这里只记录，是否被调用就是被测行为。
+            events.append("clip")
+            raise AssertionError("协商丢弃的步不得触发 clip")
+
+    class Optimizer:
+        def __init__(self) -> None:
+            self.param_groups = [{"params": [parameter]}]
+
+        @staticmethod
+        def step():
+            events.append("optimizer")
+
+        @staticmethod
+        def zero_grad(set_to_none):
+            del set_to_none
+            events.append("zero")
+
+    class Scheduler:
+        @staticmethod
+        def step():
+            events.append("scheduler")
+
+    class _Agreement:
+        def __init__(self) -> None:
+            self.drop_update = True
+            self.reasons: tuple[str, ...] = ("peer_gradient_nonfinite",)
+
+    def _fake_agree_step(accelerator, **_kwargs):
+        del accelerator
+        events.append("agree")
+        return _Agreement()
+
+    trainer = SimpleNamespace(
+        memory_probe=None,
+        peak_probe=None,
+        _cudagraph_mark_step=False,
+        _state=SimpleNamespace(personalization_observer={}),
+        on_step_start=lambda *_args, **_kwargs: events.append("step_start"),
+        process_batch=lambda *_args, **_kwargs: (
+            events.append("forward") or torch.tensor(1.0, requires_grad=True)
+        ),
+        run_after_backward=lambda *_args, **_kwargs: events.append("after_hook"),
+    )
+
+    def _new_state():
+        network = Network()
+        return SimpleNamespace(
+            args=SimpleNamespace(max_grad_norm=1.0, log_every_n_steps=1, max_train_steps=2),
+            accelerator=Accelerator(),
+            network=network,
+            training_model=network,
+            optimizer=Optimizer(),
+            lr_scheduler=Scheduler(),
+            text_encoder=None,
+            unet=None,
+            train_ctx=object(),
+            on_step_start_for_network=lambda *_args: None,
+            profile_started=False,
+            global_step=0,
+            is_tracking=True,
+            nonfinite_grad_skips=0,
+        )
+
+    monkeypatch.setattr(training_loop, "precision_observe", lambda *_a, **_k: None)
+    monkeypatch.setattr(training_loop, "debug_finite_enabled", lambda _args: False)
+    monkeypatch.setattr(
+        training_loop, "synchronize_optimizer_gradients", lambda *_a: events.append("sync")
+    )
+    # 对端非有限 → 协商结果是「本 rank 也丢弃」
+    monkeypatch.setattr(training_loop.multigpu, "agree_step", _fake_agree_step)
+    monkeypatch.setattr(training_loop.multigpu, "negotiate_boundary_error", lambda *_a, **_k: None)
+
+    state = _new_state()
+    training_loop._run_step(trainer, state, batch=object())
+    first = list(events)
+
+    # 第二个边界：同样的丢弃。若第一步残留了 UNSCALED，真实的 scaler.unscale_()
+    # 就会在这里抛 RuntimeError；修复后 clip 从未被调用，也就无从残留。
+    events.clear()
+    state.global_step = 1
+    training_loop._run_step(trainer, state, batch=object())
+
+    assert "clip" not in first, "协商丢弃的步不得调用 clip（否则 scaler stage 残留 UNSCALED）"
+    assert "clip" not in events, "第二个丢弃步同样不得调用 clip"
+    assert "optimizer" not in first and "optimizer" not in events, "丢弃的步不得更新参数"
+    assert "agree" in first, "多进程路径必须经过 agree_step"
+    assert state.update_skipped is True
