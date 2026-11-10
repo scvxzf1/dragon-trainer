@@ -499,7 +499,7 @@ moss（无 NF4 宿主，0 可嫁接）**。krea2 自身不在象限三的可拓�
 | 缺口 | 现状 | 补齐方式 |
 | --- | --- | --- |
 | z_image / qwen / moss 的逐层 dY 下溢测量 | **未测**（只有 krea2 与 anima 有；机制可类推、数字不可） | 按 `bench/krea2_nf4_fp16_grad` 口径做只读离线探针 |
-| krea2 基座（`mixed_precision=fp16` 非 NF4）的梯度偏差 | **未测**（现有数字全是 NF4 fp16 内层 GEMM；`capture_real.set_compute_dtype` 只作用于 `Linear4bit`，不适用 bf16 基座） | 需新探针：25 GB bf16 基座 + `enable_block_swap`，成本远超 3~5 分钟 |
+| krea2 基座（`mixed_precision=fp16` 非 NF4）的梯度偏差 | **硬件受限未测**（2026-11-10 实跑两次均 OOM，详见 §6.2） | 需 24 GB+ 卡；探针 `/tmp/probe_base_fp16.py` 已就绪可复用 |
 | **dir1 单开耗时** | ✅ **已补测（L2，2026-11-10）** | 见下方 2×2 消融表 |
 | 真实权重下的 dir1 → Anima | **未测**（t5 用合成随机权重、单/双层；只证明 dtype 语义与量级） | 真实 Anima + 真实 mixed-NF4 权重 |
 | moss 1024² fp16 行为 | **未测** | 1024² fp16 vs bf16 对照 |
@@ -538,6 +538,63 @@ moss（无 NF4 宿主，0 可嫁接）**。krea2 自身不在象限三的可拓�
    一致——它是**长序列的止损**，不是短序列的提速。
 
 峰值显存四格都在 8.57~8.96 GiB，差异在噪声范围内；256² 下两种优化都不改变显存曲线。
+
+### 6.2 krea2 基座 fp16 梯度偏差：硬件受限未测（2026-11-10 实测记录）
+
+这一格从「未测」升级为「**硬件受限未测**」——不是没试，是 16 GB 卡上物理跑不通。
+两次失败都是 OOM，但根因不同，记录如下以免后人重踩。
+
+**为什么要单独测**：现有全部梯度数字（`krea2_nf4_fp16_grad_underflow_20261108.md` 的
+dY rms 6.5e-9~1.7e-7、LoRA rel-L2 114.741%/4.58%/40.974%）都来自 **NF4 内层 GEMM**。
+`--base_compute nf4` 让外层保持 bf16、只把 GEMM 切 fp16（dir1），而
+`mixed_precision=fp16` 的非量化基座是另一条完全不同的路径：**权重和所有中间量都是
+fp16**，没有 bf16 的 8 位指数兜底。两者不能互相外推。
+
+**为什么不能复用现有探针**：`bench/krea2_nf4_fp16_grad/capture_real.py::set_compute_dtype`
+只遍历 `Linear4bit` 修改 `compute_dtype`，对 bf16 基座的普通 `nn.Linear` 完全无效。
+所以必须走「整模 dtype 转换」的独立探针。
+
+**第一次 OOM —— GPU 上做 dtype 转换**：
+
+```
+dit.to(dtype)   # 在已经 swap 上卡的模型上调用
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 72.00 MiB.
+GPU 0 has a total capacity of 15.77 GiB of which 68.25 MiB is free.
+of the allocated memory 15.24 GiB is allocated by PyTorch
+```
+
+转换时 swap 常驻的 block 会同时持有新旧两份 dtype 的权重，峰值直接翻倍。
+
+**第二次 OOM —— swap 加载流程本身的峰值**：改成在 CPU 上做 dtype 转换后，
+swap 建立时只占 **1.24 GiB**（看起来很有希望），但一跑 forward 就 OOM 到 15.30 GiB。
+根因在 `library/runtime/offloading.py:2280-2290`：
+
+```python
+for block_index in range(self.num_blocks - self.blocks_to_swap, self.num_blocks):
+    b = blocks[block_index]
+    b.to(self.device)                    # ← 整块（含权重）先搬上 GPU
+    _bind_captured_cpu_weights(b, self._cpu_weight_masters[block_index], allow_cuda=True)
+    weighs_to_device(b, torch.device("cpu"), include_trainable=False)   # ← 再把权重搬回 CPU
+```
+
+**每个 swap block 都要经历「整块上卡 → 绑 CPU master → 权重搬回」**。基座 24.5 GiB /
+28 blocks ≈ 0.87 GiB/block，22 个 swap block 的瞬时峰值约 **19 GiB**；即使把 swap 拉到
+上限 26 也是 22.6 GiB。16 GB 卡无解。
+
+**结论**：
+
+- 这不是参数调错，是 `ModelOffloader` 加载流程的**结构性峰值**，任何 swap 档位都绕不开。
+- 「降标准用 bf16 作参考」也救不了：**bf16 臂本身就是 24.5 GiB 权重**，它连基线都跑不起来。
+  没有参考系，fp16 臂单独跑出来也没有比较意义。
+- 要实测只有两条路：**24 GB+ 卡**（3090/4090），或改 offloader 的加载流程让权重不必整块上卡
+  ——后者是为探针做重构，不划算。
+- 探针脚本 `/tmp/probe_base_fp16.py` 逻辑已验证（含 CPU 侧 dtype 转换的修复），
+  在有 24 GB+ 卡时可直接跑。
+
+**机制上的旁证（非实测，不能替代测量）**：`mixed_precision=fp16` 让所有权重与中间量进
+fp16，比「外层 bf16 + 内层 fp16（dir1）」严格更差——后者至少保留了跨层的 bf16 指数范围。
+生产上 `--base_compute nf4` + `--nf4_dir1` 已是更优路径，基座 fp16 没有实际使用者，
+所以这条缺口的优先级低于其余七项。
 
 另有两项口径提醒：
 
