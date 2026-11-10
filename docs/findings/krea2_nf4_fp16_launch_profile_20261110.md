@@ -35,15 +35,26 @@ launch 不是瓶颈」的结论，该结论**已撤回**。`nvidia-smi` 的 `uti
 
 ### launch 规模（img=256，2 步，warmup 1）
 
+凡是 `torch.profiler` 产出的表，**launch 计数可信，时间列不可信**：
+
 ```
-CUDA launch (cudaLaunchKernel)   42,416    → 21,208 / step
-GPU kernel 实例                  100,826    → 50,413 / step
+CUDA launch (cudaLaunchKernel)   42,416    → 21,208 / step    ← 可信
+GPU kernel 实例                  100,826    → 50,413 / step   ← 可信
 不同 kernel 种类                 192
-kernel GPU 时间合计              9,846 ms   → 4,923 ms / step
+kernel GPU 时间合计              9,846 ms   → 4,923 ms / step  ← 不可信
 ```
 
-dir1 相比 bf16 基线增加约 **27%** 的 launch（16,696 → 21,208/step），
-换来 GEMM 时间从 4,919 ms/step 降到 1,452 ms/step。
+时间列的问题见下文：`self_device_time_total` 在此路径重复累加约 2.08 倍，
+nsys/CUPTI 实测同一路径为 2,361 ms/step。**任何基于这一列推算的「GEMM 占多少
+毫秒」都不成立。**
+
+`GPU kernel 实例 50,413/step` 与 nsys 的 21,917 也有 2.3 倍差异——前者把 CPU
+算子行一并计入，后者只数真 kernel。**以 nsys 的 21,917 为准。**
+
+launch 计数本身不受影响：dir1 相比 bf16 基线增加约 **27%**（16,696 →
+21,208/step）。但这个增幅的代价**无法用同一份 profiler 报告的毫秒列衡量**。
+dir1 的真实收益要看 nsys 里 `magma_sgemmEx`（bf16 fallback）与 cutlass fp16
+tensorop 的占比变化。
 
 ### GPU 利用率：三种口径的差异
 
@@ -85,12 +96,14 @@ GPU 忙 / 墙钟          84.8%
 aten::_local_scalar_dense   786 次 / step
 ```
 
-每次 `.item()` / 标量提取都是一次 GPU→CPU 同步。786 次/step 是个不小的数，
-但在 2.6–2.9 s 的步长上仍未造成利用率损失——说明它们大多发生在步末的
-loss 汇总/日志路径，而不是散布在 28 个 block 的 forward 里。
+每次 `.item()` / 标量提取都是一次 GPU→CPU 同步。786 次/step 是个不小的数。
 
-调用栈未能采集（此 torch 版本的 `evt.stack` 为空），所以**无法证伪**「同步点
-集中在步末」这个推断，它只是与 100% 利用率一致的解释。
+**它们与那 424 ms 空泡的关系未知。** 一种可能是同步点集中在步末的 loss 汇总/
+日志路径，与空泡无关；另一种可能是部分同步点散布在 28 个 block 的 forward 里，
+每次都要排空队列。调用栈未能采集（此 torch 版本的 `evt.stack` 为空），**两种
+可能都无法排除**。
+
+（早期版本这里写「未造成利用率损失」，那是基于错误的 100% 口径，已撤回。）
 
 ## 空泡来源未定，有两种可能
 
@@ -116,13 +129,27 @@ GPU 侧 kernel 起始时刻：若 GPU 在等 CPU，间隙落在 CPU 侧；若 CP
 口径。现在只确定 424 ms 空泡存在，成因待归因。在归因完成前，减少 launch
 的收益上限是那 424 ms 的一部分，而不是全部。
 
-**该看的是 GEMM 效率。** kernel 时间分布里 `aten::mm` 占 1,452 ms/step，
-是绝对大头；elementwise 和 copy 加起来约 500 ms/step。原 findings
-`krea2_nf4_fp16_inner_path_20261109.md` 里 elementwise 占 2.065 s / 11.06 s
-的观察，在 256 分辨率下同样成立。
+**该看的是 GEMM 效率。** nsys 的真实 kernel 分布（CUPTI 口径）：
 
-**CUDA graph 的收益预期要放低。** 既然 launch 不是瓶颈，用 graph 压缩
-launch 只能省下 CPU 侧那 2–4%，不会带来数量级改善。
+```
+519.3 ms   784 次   magma_sgemmEx_kernel<float, bf16, bf16, ...>
+447.1 ms   462 次   cutlass_70_tensorop_f16_s884gemm_relu_f16_128x128_tn_align8
+214.3 ms   240 次   cutlass_70_tensorop_f16_s884gemm_relu_f16_128x128_nn_align8
+193.3 ms   392 次   magma_sgemmEx_kernel<float, bf16, bf16, ...>
+133.2 ms   752 次   kDequantizeBlockwise<half, 512, 64, 8, 2>
+```
+
+**注意 `magma_sgemmEx` 仍占 22%（约 712 ms）**——bf16 GEMM 还在走 magma
+fallback；cutlass fp16 tensorop 合计约 661 ms，是内层 fp16 真正起作用的部分。
+这两块加起来 1,373 ms，在全步 2,361 ms 的 kernel 时间里占 58%，是绝对大头。
+
+（早期版本这里引用 `aten::mm 1,452 ms/step`，那是 torch.profiler 的重复累加
+值，不可用。）
+
+**CUDA graph 的收益取决于空泡归因，暂无法定论。** 若有相当一部分 19 μs 间隙
+来自 CPU 分发，graph 能吃掉这部分，上限是 424 ms 中的相应份额；若间隙主要是
+kernel 尾部排空，graph 帮助有限。在归因完成前既不该宣称它会带来数量级改善，
+也不该断言它无效。
 
 ## 未验证
 
