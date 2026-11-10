@@ -28,7 +28,7 @@
 | PCIe 链路 | **Gen3 ×16**（`gen.max=3`, `width.max=16`, current 同为 3/16） |
 | 运行环境 | `.venv-v100`：torch **2.10.0+cu129**（cu130 无 sm_70 kernel） |
 | 精度路径 | 配置 `bf16` → `precision_policy` 自动切 **fp16** + VAE **fp32**（与 sm_75 完全一致） |
-| 注意力 / 编译 | `attn_mode="torch"`（MOSS/Anima 实际走 `F.scaled_dot_product_attention` 的 math 后端）、`torch_compile=false` |
+| 注意力 / 编译 | `attn_mode="torch"`（MOSS/Anima 实际走 `F.scaled_dot_product_attention` 的 math 后端；**注（2026-11-10 追加）：此描述已被 [全族 FP16 普查 §3.2](model_families_fp16_audit_20261109.md) 的 sm70 实测修正——V100 上 fp16 实测走 EFFICIENT（16.0 MiB/层），2.4 GiB 的 MATH 实为 `autocast(bf16)` 态；该测量很可能早于/绕过了 `precision_policy` 的 bf16→fp16 改写**）、`torch_compile=false` |
 
 算力实测（`bench/gpu_precision_probe.py --size 4096`）：
 
