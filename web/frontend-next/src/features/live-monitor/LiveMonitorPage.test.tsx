@@ -18,10 +18,10 @@ beforeEach(() => vi.stubGlobal("ResizeObserver", class {
 }));
 
 it.each([
-  ["interrupted", "已中断", "error", false],
-  ["failed", "失败", "error", false],
-  ["error", "异常", "error", false],
-  ["unavailable", "不可用", "error", false],
+  ["interrupted", "已结束", "finished", false],
+  ["failed", "已结束", "finished", false],
+  ["error", "已结束", "finished", false],
+  ["unavailable", "已结束", "finished", false],
   ["running", "运行中", "running", true],
 ])("renders %s as the correct non-running/running state", async (status, label, dataState, canStop) => {
   vi.stubGlobal("WebSocket", class {
@@ -40,7 +40,8 @@ it.each([
   const state = await screen.findByRole("status", { name: "当前任务状态" });
   await waitFor(() => expect(state).toHaveTextContent(label));
   expect(state).toHaveAttribute("data-state", dataState);
-  expect(screen.getByRole("button", { name: "停止训练" })).toHaveProperty("disabled", !canStop);
+  if (canStop) expect(screen.getByRole("button", { name: "停止训练" })).toHaveProperty("disabled", false);
+  else expect(screen.queryByRole("button", { name: "停止训练" })).not.toBeInTheDocument();
 });
 
 it("pauses hidden polling and refreshes a stale snapshot on resume without leaking an in-flight refresh", async () => {

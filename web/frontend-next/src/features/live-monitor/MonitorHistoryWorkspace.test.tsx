@@ -105,7 +105,8 @@ it("offers a retry after a history read fails and then displays an empty list", 
   let reads = 0;
   const { user } = setup(() => ++reads === 1 ? jsonResponse({ error: "读取失败" }, 500) : jsonResponse({ tasks: [] }));
   await user.click(screen.getByRole("button", { name: "最近训练" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("无法读取最近训练");
-  await user.click(screen.getByRole("button", { name: "重新读取" }));
-  expect(await screen.findByText("暂无历史任务")).toBeInTheDocument();
+  const sidebar = await screen.findByRole("complementary", { name: "最近训练" });
+  await waitFor(() => expect(within(sidebar).getByRole("alert")).toHaveTextContent("无法读取最近训练"));
+  await user.click(within(sidebar).getByRole("button", { name: "重新读取" }));
+  expect(await within(sidebar).findByText("暂无历史任务")).toBeInTheDocument();
 });
