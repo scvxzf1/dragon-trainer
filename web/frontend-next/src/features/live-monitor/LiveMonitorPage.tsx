@@ -1,8 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Activity, ArrowRight, Cpu, Radio, Square, Terminal } from "lucide-react";
-import { fetchGpus, fetchTrainingLogs, fetchTrainingMetrics, fetchTrainingStatus, liveMonitorKeys, stopTraining, type GpuInventory, type TrainingStatus } from "./api";
+import {
+  fetchGpus, fetchHistoryResultMeta, fetchTrainingLogs, fetchTrainingMetrics, fetchTrainingStatus,
+  liveMonitorKeys, monitorResultKeys, stopTraining,
+  type GpuInventory, type TrainingStatus,
+} from "./api";
 import { TrainingMetricsCharts } from "../../components/TrainingMetricsCharts";
 import { LogViewer } from "../../components/LogViewer";
 import { QueryFeedback } from "../../components/QueryFeedback";
@@ -10,15 +14,12 @@ import { InlineConfirmDialog } from "../../components/InlineConfirmDialog";
 import { MonitorSummary, GpuDetails } from "./MonitorSummary";
 import { useMonitorRefresh } from "./useMonitorRefresh";
 import { MonitorHistoryWorkspace } from "./MonitorHistoryWorkspace";
+import { MonitorSamplePreview } from "./MonitorSamplePreview";
+import { MonitorResultPanel } from "./MonitorResultPanel";
+import { monitorPhase, monitorStateText, retainedResult, outcomeFromHistoryMeta } from "./monitorState";
 import "./LiveMonitorPage.css";
 
 const RUNNING_STATES = new Set(["running", "training", "compiling", "caching", "saving"]);
-const ERROR_STATES = new Set(["error", "failed", "interrupted", "unavailable"]);
-const STATE_LABELS: Record<string, string> = {
-  idle: "空闲", running: "运行中", training: "训练中", compiling: "编译中",
-  caching: "缓存中", saving: "保存中", error: "异常", failed: "失败",
-  interrupted: "已中断", unavailable: "不可用",
-};
 
 export function LiveMonitorPage() {
   const [params] = useSearchParams();
@@ -38,35 +39,42 @@ export function LiveMonitorPage() {
     retry: false,
   });
   const status = statusQuery.data;
-  // Idle snapshots retain the previous run's identity and latest_* fields for history.
-  const taskId = status?.status === "idle" ? undefined : status?.task_id;
+  const { terminalEvent, ...connection } = useMonitorRefresh();
+  const disconnected = Boolean(statusQuery.error);
+  // A confirmed task identity must come from a successful status read.
+  const confirmedTaskId = !statusQuery.error && status?.task_id ? status.task_id : undefined;
+  const running = !disconnected && RUNNING_STATES.has(status?.status || "");
+  // Finished snapshots keep the last task's identity, so the workspace stays
+  // mounted read-only instead of collapsing to the empty state.
+  const workspaceTaskId = confirmedTaskId;
   const metricsQuery = useQuery({
-    queryKey: [...liveMonitorKeys.metrics, taskId || "none"],
-    queryFn: ({ signal }) => fetchTrainingMetrics(taskId, signal),
-    enabled: Boolean(taskId) && !statusQuery.error, refetchInterval: visible ? 5000 : false, retry: false,
+    queryKey: [...liveMonitorKeys.metrics, workspaceTaskId || "none"],
+    queryFn: ({ signal }) => fetchTrainingMetrics(workspaceTaskId, signal),
+    enabled: Boolean(workspaceTaskId) && !disconnected, refetchInterval: visible && running ? 5000 : false, retry: false,
   });
   const logsQuery = useQuery({
-    queryKey: [...liveMonitorKeys.logs, taskId || "none"],
-    queryFn: ({ signal }) => fetchTrainingLogs(300, taskId, signal),
-    enabled: Boolean(taskId) && !statusQuery.error, refetchInterval: visible ? 2000 : false, retry: false,
+    queryKey: [...liveMonitorKeys.logs, workspaceTaskId || "none"],
+    queryFn: ({ signal }) => fetchTrainingLogs(300, workspaceTaskId, signal),
+    enabled: Boolean(workspaceTaskId) && !disconnected, refetchInterval: visible && running ? 2000 : false, retry: false,
   });
   const gpusQuery = useQuery({
     queryKey: liveMonitorKeys.gpus,
     queryFn: ({ signal }) => fetchGpus(signal),
-    refetchInterval: visible ? RUNNING_STATES.has(status?.status || "") ? 2000 : 10000 : false, retry: false,
+    refetchInterval: visible ? running ? 2000 : 10000 : false, retry: false,
   });
   const stop = useMutation({
     mutationFn: (clickedTaskId: string) => stopTraining(clickedTaskId),
     onSettled: () => client.invalidateQueries({ queryKey: liveMonitorKeys.status }),
     retry: false,
   });
-  const connection = useMonitorRefresh();
-  const running = RUNNING_STATES.has(status?.status || "");
-  const errorState = ERROR_STATES.has(status?.status || "");
-  const state = statusQuery.error ? "状态待确认" : !status ? "读取中" : STATE_LABELS[status.status || ""] || "未知";
+  const phase = monitorPhase({
+    statusQueryPending: statusQuery.isPending, statusQueryError: disconnected,
+    hasStatus: Boolean(status), status: status?.status, taskId: confirmedTaskId,
+  });
+  const state = monitorStateText(phase);
   useEffect(() => {
-    if (stopTarget && (stopTarget !== taskId || !running || statusQuery.error)) setStopTarget(null);
-  }, [stopTarget, taskId, running, statusQuery.error]);
+    if (stopTarget && (stopTarget !== confirmedTaskId || !running || disconnected)) setStopTarget(null);
+  }, [stopTarget, confirmedTaskId, running, disconnected]);
 
   return <MonitorHistoryWorkspace>{(recentToggle) => <main className="monitor-page">
     <header className="monitor-header">
@@ -75,15 +83,15 @@ export function LiveMonitorPage() {
           <h1>当前监控</h1>
           <span className="monitor-telemetry-tag">Telemetry</span>
         </div>
-        {taskId ? <p className="monitor-identity"><Link to={`/history/${encodeURIComponent(taskId)}`}>{taskId}</Link>
+        {workspaceTaskId ? <p className="monitor-identity"><Link to={`/history/${encodeURIComponent(workspaceTaskId)}`}>{workspaceTaskId}</Link>
           {status?.variant ? ` · ${status.variant}` : ""}{status?.preset ? ` · ${status.preset}` : ""}
           {status?.latest_progress?.label ? ` · ${String(status.latest_progress.label)}` : ""}
         </p> : null}
       </div>
       <div className="monitor-header-actions">
-        <span className="monitor-state" role="status" aria-label="当前任务状态" data-state={statusQuery.error ? "unknown" : running ? "running" : errorState ? "error" : "idle"}>{state}</span>
-        {taskId ? <button type="button" className="monitor-stop" disabled={!running || Boolean(statusQuery.error) || stop.isPending}
-          onClick={() => setStopTarget(taskId)}><Square size={14} />{stop.isPending ? "正在停止" : "停止训练"}</button> : null}
+        <span className="monitor-state" role="status" aria-label="当前任务状态" data-state={state.dataState}>{state.label}</span>
+        {workspaceTaskId && running ? <button type="button" className="monitor-stop" disabled={disconnected || stop.isPending}
+          onClick={() => setStopTarget(workspaceTaskId)}><Square size={14} />{stop.isPending ? "正在停止" : "停止训练"}</button> : null}
         {recentToggle}
       </div>
     </header>
@@ -93,34 +101,167 @@ export function LiveMonitorPage() {
       {statusQuery.dataUpdatedAt > 0 ? <span>任务状态最近成功读取 <time dateTime={new Date(statusQuery.dataUpdatedAt).toISOString()}>{new Date(statusQuery.dataUpdatedAt).toLocaleTimeString()}</time></span> : null}
     </div>
     {(statusQuery.error || statusQuery.isPending) ? <QueryFeedback query={statusQuery} label="任务状态" hasData={Boolean(status)} /> : null}
-    {statusQuery.error && taskId ? <p className="monitor-stale" role="status">
+    {disconnected && status ? <p className="monitor-stale" role="status">
       任务状态未确认。以下为上次成功读取的任务快照，停止操作暂不可用。
     </p> : null}
-    {sourceTask && status && !statusQuery.error && sourceTask !== taskId && <p className="data-scope" role="status">
-      来源任务 {sourceTask} 已不是当前监控对象。{taskId ? `当前显示 ${taskId}。` : "当前没有已确认的任务。"}
+    {sourceTask && status && !disconnected && sourceTask !== workspaceTaskId && <p className="data-scope" role="status">
+      来源任务 {sourceTask} 已不是当前监控对象。{workspaceTaskId ? `当前显示 ${workspaceTaskId}。` : "当前没有已确认的任务。"}
       <Link to={`/history/${encodeURIComponent(sourceTask)}`}>返回来源任务</Link>
     </p>}
     {stop.error ? <section className="monitor-error" role="alert"><h2>停止训练失败</h2>
       <p>目标任务：{stop.variables}</p><p>{stop.error.message}</p>
     </section> : null}
-    {status && taskId ? <MonitorSummary status={status} /> : status ? <section className="monitor-idle" aria-label="空闲状态">
+    {workspaceTaskId
+      ? <MonitorWorkspace taskId={workspaceTaskId} status={status} statusConfirmed={!disconnected} running={running}
+        phase={phase} terminalEvent={terminalEvent} finalSyncError={finalSyncErrorOf(metricsQuery, logsQuery, running)}
+        metricsQuery={metricsQuery} logsQuery={logsQuery} gpusQuery={gpusQuery} />
+      : <IdlePanel phase={phase} hasStatus={Boolean(status)} status={status} gpusQuery={gpusQuery}
+        confirmed={!disconnected && Boolean(status)} />}
+    {stopTarget && stopTarget === confirmedTaskId && running && !disconnected ? <InlineConfirmDialog
+      title="停止训练"
+      message={`确定停止任务 ${stopTarget} 吗？`}
+      confirmLabel="停止训练"
+      danger
+      onCancel={() => setStopTarget(null)}
+      onConfirm={() => {
+        if (confirmedTaskId === stopTarget && running && !stop.isPending) stop.mutate(stopTarget);
+        setStopTarget(null);
+      }}
+    /> : null}
+  </main>}</MonitorHistoryWorkspace>;
+}
+
+function finalSyncErrorOf(metricsQuery: UseQueryResult<Record<string, unknown>[], Error>, logsQuery: UseQueryResult<{ records: unknown[] }, Error>, running: boolean) {
+  if (running) return undefined;
+  if (metricsQuery.error && !metricsQuery.data) return metricsQuery.error.message;
+  if (logsQuery.error && !logsQuery.data) return logsQuery.error.message;
+  return undefined;
+}
+
+function MonitorWorkspace({ taskId, status, statusConfirmed, running, phase, terminalEvent, finalSyncError, metricsQuery, logsQuery, gpusQuery }: {
+  taskId: string;
+  status?: TrainingStatus;
+  statusConfirmed: boolean;
+  running: boolean;
+  phase: string;
+  terminalEvent: { taskId: string; state?: string; message?: string } | null;
+  finalSyncError?: string;
+  metricsQuery: UseQueryResult<Record<string, unknown>[], Error>;
+  logsQuery: UseQueryResult<{ records: { id?: number; line?: string; type?: string; level?: string }[] }, Error>;
+  gpusQuery: UseQueryResult<GpuInventory, Error>;
+}) {
+  const finished = phase === "finished";
+  // A retained result must show a confirmed identity and a real end message.
+  const broadcastRetention = useMemo(() => {
+    if (!finished) return undefined;
+    if (terminalEvent && terminalEvent.taskId === taskId && terminalEvent.message) {
+      return retainedResult({
+        taskId,
+        message: terminalEvent.message,
+        finishedAt: status?.last_output_at ? Number(status.last_output_at) : undefined,
+      });
+    }
+    return undefined;
+  }, [finished, terminalEvent, taskId, status]);
+  // Hooks must run unconditionally; the history fallback decides internally
+  // whether it is active (only when no broadcast retention exists).
+  const historyRetention = useRetainedResultFromHistory(finished ? taskId : undefined, broadcastRetention);
+  const retentionShown = broadcastRetention ?? historyRetention;
+  const isTrainingJob = status?.job === "training";
+  return <>
+    {retentionShown ? <MonitorResultPanel retention={retentionShown} finalSyncError={finalSyncError} /> : null}
+    <div className="monitor-workspace" data-has-charts={Boolean(isTrainingJob)}>
+      <div className="monitor-primary-column">
+        {status ? <MonitorSummary status={status} /> : null}
+        {isTrainingJob ? <section className="monitor-chart-panel" aria-label="训练趋势">
+          <header className="monitor-panel-header">
+            <div className="monitor-panel-title">
+              <Activity size={16} className="monitor-panel-icon" />
+              <h2>训练趋势</h2>
+            </div>
+          </header>
+          <QueryFeedback query={metricsQuery} label="指标" hasData={metricsQuery.data !== undefined} />
+          {metricsQuery.data ? <TrainingMetricsCharts key={taskId} points={metricsQuery.data} total={status?.metric_count} /> : null}
+        </section> : null}
+        <MonitorSamplePreview taskId={taskId} active={running && statusConfirmed} />
+      </div>
+      <GpuPanel query={gpusQuery} status={status} confirmed={statusConfirmed} />
+      <section className="monitor-log-panel" aria-label="实时日志">
+        <header className="monitor-panel-header">
+          <div className="monitor-panel-title">
+            <Terminal size={16} className="monitor-panel-icon" />
+            <h2>{finished ? "本次日志" : "实时日志"}</h2>
+          </div>
+          <Link className="monitor-log-history-link" to={`/history/${encodeURIComponent(taskId)}?view=logs`}>完整历史日志</Link>
+        </header>
+        <QueryFeedback query={logsQuery} label="日志" hasData={Boolean(logsQuery.data)} />
+        {logsQuery.data ? <LogViewer key={taskId} lines={logsQuery.data.records} total={status?.log_count} /> : null}
+      </section>
+    </div>
+  </>;
+}
+
+/**
+ * When the terminal broadcast was missed (page reload after the process
+ * exited, disconnect recovery or a refresh), read the persisted history meta
+ * once and rebuild the real end outcome from its state + message. An "idle"
+ * state still needs a parseable message; unknown states stay unconfirmed.
+ */
+function useRetainedResultFromHistory(taskId: string | undefined, existing: unknown) {
+  const shouldQuery = Boolean(taskId) && !existing;
+  const metaQuery = useQuery({
+    queryKey: monitorResultKeys.meta(taskId || "none"),
+    queryFn: ({ signal }) => fetchHistoryResultMeta(taskId!, signal),
+    enabled: shouldQuery,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const meta = metaQuery.data?.task;
+  return useMemo(() => {
+    if (!taskId || existing || !meta) return undefined;
+    const outcome = outcomeFromHistoryMeta(meta.state, meta.message);
+    if (outcome === "unconfirmed") return undefined;
+    return retainedResult({
+      taskId,
+      message: meta.message,
+      finishedAt: meta.finished_at,
+      finishedAtText: meta.finished_at_text,
+      historyOutcome: outcome,
+    });
+  }, [taskId, existing, meta]);
+}
+
+function IdlePanel({ phase, hasStatus, status, gpusQuery, confirmed }: {
+  phase: string;
+  hasStatus: boolean;
+  status?: TrainingStatus;
+  gpusQuery: UseQueryResult<GpuInventory, Error>;
+  confirmed: boolean;
+}) {
+  const headings: Record<string, string> = {
+    disconnected: "任务状态待确认。",
+    "identity-unknown": hasStatus ? "任务身份未确认，控制暂不可用。" : "正在读取任务状态。",
+    "no-task": "暂无当前任务。",
+  };
+  const subtitles: Record<string, string> = {
+    disconnected: "无法连接到训练服务，请检查网络或服务状态；不会把未知状态当作任务结果。",
+    "identity-unknown": "正在同步任务元数据，确认身份前不会读取任务数据。",
+    "no-task": "训练系统处于空闲就绪状态，硬件与工作流就绪。您可直接配置新作业或在队列中查看任务。",
+  };
+  const key = headings[phase] ? phase : "no-task";
+  return <div className="monitor-idle-device">
+    <section className="monitor-idle" aria-label="空闲状态">
       <div className="monitor-idle-card">
         <div className="monitor-idle-hero">
           <div className="monitor-idle-icon" aria-hidden="true">
             <Radio size={24} />
           </div>
           <div className="monitor-idle-content">
-            <h2>{statusQuery.error ? "任务状态待确认。" : running ? "任务身份未确认，控制暂不可用。" : "暂无当前任务。"}</h2>
-            <p className="monitor-idle-subtitle">
-              {statusQuery.error
-                ? "无法连接到训练守护进程，请检查网络或服务状态。"
-                : running
-                ? "正在同步任务元数据，请稍候。"
-                : "训练系统处于空闲就绪状态，硬件与工作流就绪。您可直接配置新作业或在队列中查看任务。"}
-            </p>
+            <h2>{headings[key]}</h2>
+            <p className="monitor-idle-subtitle">{subtitles[key]}</p>
           </div>
         </div>
-        {!running && !statusQuery.error ? <nav aria-label="空闲时操作" className="monitor-idle-nav">
+        {phase === "no-task" ? <nav aria-label="空闲时操作" className="monitor-idle-nav">
           <Link to="/training" className="monitor-idle-action-card">
             <div className="monitor-idle-action-text">
               <strong>训练配置</strong>
@@ -137,42 +278,9 @@ export function LiveMonitorPage() {
           </Link>
         </nav> : null}
       </div>
-    </section> : null}
-    {taskId ? <div className="monitor-workspace" data-has-charts={status?.job === "training"}>
-      {status?.job === "training" ? <section className="monitor-chart-panel" aria-label="训练趋势">
-        <header className="monitor-panel-header">
-          <div className="monitor-panel-title">
-            <Activity size={16} className="monitor-panel-icon" />
-            <h2>训练趋势</h2>
-          </div>
-        </header>
-        <QueryFeedback query={metricsQuery} label="指标" hasData={metricsQuery.data !== undefined} />
-        {metricsQuery.data ? <TrainingMetricsCharts key={taskId} points={metricsQuery.data} total={status?.metric_count} /> : null}
-      </section> : null}
-      <GpuPanel query={gpusQuery} status={status} confirmed={Boolean(status) && !statusQuery.error} />
-      <section className="monitor-log-panel" aria-label="实时日志">
-        <header className="monitor-panel-header">
-          <div className="monitor-panel-title">
-            <Terminal size={16} className="monitor-panel-icon" />
-            <h2>实时日志</h2>
-          </div>
-        </header>
-        <QueryFeedback query={logsQuery} label="日志" hasData={Boolean(logsQuery.data)} />
-        {logsQuery.data ? <LogViewer key={taskId} lines={logsQuery.data.records} total={status?.log_count} /> : null}
-      </section>
-    </div> : <div className="monitor-idle-device"><GpuPanel query={gpusQuery} status={status} confirmed={Boolean(status) && !statusQuery.error} /></div>}
-    {stopTarget && stopTarget === taskId && running && !statusQuery.error ? <InlineConfirmDialog
-      title="停止训练"
-      message={`确定停止任务 ${stopTarget} 吗？`}
-      confirmLabel="停止训练"
-      danger
-      onCancel={() => setStopTarget(null)}
-      onConfirm={() => {
-        if (taskId === stopTarget && running && !stop.isPending) stop.mutate(stopTarget);
-        setStopTarget(null);
-      }}
-    /> : null}
-  </main>}</MonitorHistoryWorkspace>;
+    </section>
+    <GpuPanel query={gpusQuery} status={status} confirmed={confirmed} />
+  </div>;
 }
 
 function GpuPanel({ query, status, confirmed }: {

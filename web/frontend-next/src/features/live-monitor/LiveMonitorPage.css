@@ -351,6 +351,8 @@
 .monitor-idle-device {
   max-width: 620px;
   margin-top: 16px;
+  display: grid;
+  gap: 20px;
 }
 
 .next-content .monitor-page .monitor-progress-card {
@@ -525,6 +527,33 @@
 
 .monitor-workspace[data-has-charts="false"] {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.monitor-primary-column {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  align-content: start;
+}
+
+.monitor-workspace[data-has-charts="false"] .monitor-primary-column {
+  grid-column: 1 / -1;
+}
+
+.monitor-log-history-link {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+
+.monitor-log-history-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .monitor-chart-panel, .monitor-log-panel, .monitor-gpu-panel {

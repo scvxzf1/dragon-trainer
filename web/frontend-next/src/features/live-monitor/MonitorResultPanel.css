@@ -1,0 +1,108 @@
+.monitor-result-panel {
+  margin-top: 16px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.monitor-result-panel[data-tone="success"] {
+  border-left-color: var(--success);
+}
+
+.monitor-result-panel[data-tone="warning"] {
+  border-left-color: var(--warning);
+}
+
+.monitor-result-panel[data-tone="danger"] {
+  border-left-color: var(--danger);
+}
+
+.monitor-result-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.monitor-result-panel[data-tone="success"] .monitor-result-head > svg {
+  color: var(--success);
+}
+
+.monitor-result-panel[data-tone="warning"] .monitor-result-head > svg,
+.monitor-result-panel[data-tone="muted"] .monitor-result-head > svg {
+  color: var(--warning);
+}
+
+.monitor-result-panel[data-tone="danger"] .monitor-result-head > svg {
+  color: var(--danger);
+}
+
+.monitor-result-text {
+  min-width: 0;
+}
+
+.monitor-result-text h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.monitor-result-text p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.monitor-result-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-result-sync-warning {
+  margin-top: 6px !important;
+  color: var(--warning) !important;
+  font-weight: 500;
+}
+
+.monitor-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.monitor-result-link {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+
+.monitor-result-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.monitor-result-live-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .monitor-result-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .monitor-result-link {
+    text-align: center;
+  }
+}

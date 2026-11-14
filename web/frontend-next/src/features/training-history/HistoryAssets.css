@@ -85,3 +85,4 @@
   .weight-list > div > button { grid-column: 2; grid-row: 3; }
   .weight-list > div > .history-weight-apply { grid-column: 3 / -1; grid-row: 3; justify-self: end; }
 }
+.history-asset-heading .toolbar { margin: 0; }

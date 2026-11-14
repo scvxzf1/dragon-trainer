@@ -1,4 +1,5 @@
 import { apiRequest } from "../../api/client";
+import { fetchHistoryImages, type HistoryLogRecord, type HistoryTaskSummary } from "../training-history/api";
 
 export type TrainingStatus = {
   status?: string;
@@ -29,6 +30,9 @@ export type TrainingStatus = {
   };
   error_hint?: string;
   anomaly_message?: string;
+  // Present only on the final "status" broadcast after the process exits.
+  state?: string;
+  message?: string;
 };
 
 export type LogRecord = {
@@ -94,4 +98,31 @@ export function stopTraining(taskId: string) {
     body: JSON.stringify({ task_id: taskId }),
     headers: { "Content-Type": "application/json" },
   });
+}
+
+// History endpoints reuse the training-history feature's typed clients; the
+// monitor keeps a dedicated query key family so caches never mix by task.
+export const monitorResultKeys = {
+  meta: (taskId: string) => ["live-monitor", "result-meta", taskId] as const,
+  images: (taskId: string) => ["live-monitor", "result-images", taskId] as const,
+  logs: (taskId: string) => ["live-monitor", "result-logs", taskId] as const,
+};
+
+export function fetchHistoryResultMeta(taskId: string, signal?: AbortSignal) {
+  return apiRequest<{ task?: HistoryTaskSummary }>(
+    `/api/training/history/${encodeURIComponent(taskId)}`,
+    { signal },
+  );
+}
+
+export function fetchResultSampleImages(taskId: string, signal?: AbortSignal) {
+  return fetchHistoryImages(taskId, signal, 60);
+}
+
+export function fetchResultHistoryLogs(taskId: string, after = 0, limit = 1000, signal?: AbortSignal) {
+  const query = new URLSearchParams({ offset: String(after), limit: String(limit) });
+  return apiRequest<{ ok?: boolean; total?: number; records: HistoryLogRecord[] }>(
+    `/api/training/history/${encodeURIComponent(taskId)}/logs?${query.toString()}`,
+    { signal },
+  );
 }

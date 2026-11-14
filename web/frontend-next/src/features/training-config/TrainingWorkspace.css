@@ -829,7 +829,7 @@
 [id^="training-field-"] {
   scroll-margin-top: 130px;
 }
-[id^="training-field-"]:focus {
+[id^="training-field-"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

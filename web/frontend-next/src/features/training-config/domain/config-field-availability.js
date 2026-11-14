@@ -179,15 +179,18 @@ export function configFieldAvailability(key, context = {}) {
     }
 
     if (key === 'moss_te_quantization' && modelFamily !== 'moss_image') {
-        return unavailable('仅用于 MOSS-Image 的冻结文本编码器。', 'moss-te-family');
+        return {
+            ...unavailable('仅用于 MOSS-Image 的冻结文本编码器。', 'moss-te-family'),
+            visible: false,
+        };
     }
-    // MOSS stores real-length text states, so the token cap changes the cache
-    // identity; other families pad to a fixed shape and have no such knob.
+    // This token-cap field controls MOSS real-length states and cache identity;
+    // other families use their own tokenizer length settings.
     if (key === 'max_token_length' && modelFamily !== 'moss_image') {
-        return unavailable(
-            '文本编码上限仅用于 MOSS-Image（其它模型族按固定 padding 缓存）。',
-            'moss-token-cap-family',
-        );
+        return {
+            ...unavailable('文本编码上限仅用于 MOSS-Image。', 'moss-token-cap-family'),
+            visible: false,
+        };
     }
     if (modelFamily === 'moss_image') {
         const fixed = {
