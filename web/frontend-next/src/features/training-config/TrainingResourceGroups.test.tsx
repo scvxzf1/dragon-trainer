@@ -194,6 +194,55 @@ it("keeps disabled conflicts visible in the default field view", () => {
   expect(availability.enabled).toBe(false);
 });
 
+it.each([
+  { key: "max_token_length", label: "文本编码上限（token）", value: 1024, initial: 4096, code: "moss-token-cap-family" },
+  { key: "moss_te_quantization", label: "MOSS 文本编码器精度", value: "nf4", initial: "bf16", code: "moss-te-family" },
+])("only renders the MOSS-specific $key for MOSS in every field view", ({ key, label, value, initial, code }) => {
+  const source = { model_family: "moss_image", [key]: value, network_dim: 16 };
+  const baseline = { ...source, [key]: initial };
+  const fields = fieldsForConfig(source).filter((field) => [key, "network_dim"].includes(field.key));
+  const onChange = vi.fn();
+  const editor = (draft: TrainingDraft) => (
+    <TrainingFieldEditor
+      fields={filterTrainingFields(fields, draft, baseline, "", "all", "lora")}
+      draft={draft}
+      baseline={baseline}
+      ownKeys={new Set(["network_dim"])}
+      disabled={false}
+      onChange={onChange}
+    />
+  );
+  const view = render(editor(source));
+  const card = screen.getByLabelText(label).closest(".training-field-card")!;
+  expect(screen.getByLabelText(label)).toHaveValue(value);
+  expect(screen.getByLabelText(label)).toBeEnabled();
+  expect(card).toHaveAttribute("data-available", "true");
+  expect(card).toHaveAttribute("data-dirty", "true");
+  expect(card.querySelector(".field-availability-reason")).toBeNull();
+
+  for (const model_family of ["anima", "krea2_raw", "z_image", "qwen_image_2_1", "unknown"]) {
+    const other = { ...source, model_family };
+    expect(fieldAvailability(key, other, "lora")).toMatchObject({
+      visible: false, enabled: false, code,
+    });
+    for (const fieldView of ["applicable", "all", "changed"]) {
+      expect(filterTrainingFields(fields, other, baseline, "", fieldView, "lora").map((field) => field.key))
+        .not.toContain(key);
+      expect(filterTrainingFields(fields, other, baseline, key, fieldView, "lora"))
+        .toEqual([]);
+      expect(filterTrainingFields(fields, source, baseline, key, fieldView, "lora"))
+        .toHaveLength(1);
+    }
+    view.rerender(editor(other));
+    expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    expect(document.getElementById(`training-field-${key}`)).toBeNull();
+    expect(screen.getByLabelText("LoRA rank")).toBeEnabled();
+  }
+  view.rerender(editor(source));
+  expect(screen.getByLabelText(label)).toHaveValue(value);
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 it("disables a field when its value is controlled by another field", () => {
   const field = fieldsForConfig({ max_train_steps: 1600 }).find(
     (candidate) => candidate.key === "max_train_steps",

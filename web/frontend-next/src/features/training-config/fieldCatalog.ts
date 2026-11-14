@@ -158,6 +158,8 @@ export function filterTrainingFields(
     const availability = fieldAvailability(field.key, draft, method);
     const matches = !query || `${field.label} ${field.key}`.toLowerCase().includes(query);
     if (!matches) return false;
+    // MOSS-only controls must not become disabled cards in audit views.
+    if (availability.code === "moss-token-cap-family" || availability.code === "moss-te-family") return false;
     if (availability.code === "auto-block-swap-disabled") return false;
     if (view === "all") return true;
     if (view === "changed") return changed;
