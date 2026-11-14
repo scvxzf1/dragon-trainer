@@ -119,6 +119,31 @@ gpu-gate，600s 上限，均 exit0）：
 影子逐位等价；A/A 证明轨迹级差异是基线噪声。候选收益：延迟 -2.29%、吞吐
 +2.34%、显存 -430MiB（V100、NF4 双开、768×1344 单图六步口径，非长期 bench）。
 
+### 2026-11-14 nsys 复测（应用户要求旧数字作废、全部重测）
+
+同日、同方法（1 预热 + 1 采样步、capture-range=cudaProfilerApi、只读分析）重采。
+**reference-v6（原实现路径，经 production_probe reference 臂）exit0**：
+
+| 指标 | 11-12 基线（作废留存） | 11-14 reference-v6 |
+| --- | ---: | ---: |
+| NVTX 步窗口 | 10834.792 ms | 11021.361 ms |
+| kernel union 忙时 | 10764.617 ms | 10955.325 ms |
+| **kernel 忙时占比** | 99.352% | **99.400%** |
+| kernel 数 | 19294 | 19294 |
+
+两次独立采集的忙时占比一致（±0.05 个百分点），口径可复现；11-14 数字为当前参照。
+热点构成（v6）：cutlass f16 GEMM 2040.9+1422.6ms、fmha backward 1767.4ms、
+fmha forward 1128.5ms、magma_sgemmEx 746.1ms——大矩阵与 attention 占绝对主导。
+
+**候选剖面未能直接采集**：nsys 2025.1.3 CUPTI 附加 + 候选 Triton kernel 的组合
+在本机稳定挂起（首步内 0 GPU/近 0 CPU，`futex_do_wait`），四次尝试
+（v5/v5b/v5c/v7）同签名；同期无 nsys 的候选运行已成功 5 次（ABBA×4 + 影子×1），
+reference 剖面正常完成——变量锁定为候选 kernel × CUPTI。挂起与清理记录保留在
+`candidate-v5*.log`、`candidate-v7*.log`。因此**候选版本的忙时占比与 kernel 数
+只有 L0 投影**：融合把 528 次 3-kernel 链各减为 1，预计 kernel 数 ≈19294-1056，
+忙时占比仍 ~99.4%（饱和型），步窗口按实测步时缩短约 2.3%；此为投影，
+不得当作测量结论。
+
 ### 当前状态与保留资产
 
 - 研究分支 `codex/krea2-nf4-perf-research` 工作树当前**已重新应用候选补丁**
