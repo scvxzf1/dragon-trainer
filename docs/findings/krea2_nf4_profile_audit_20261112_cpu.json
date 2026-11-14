@@ -1,0 +1,66 @@
+{
+  "probe": "optimizer scalar-device audit, NOT training performance",
+  "torch_version": "2.10.0+cu129",
+  "device": "cpu",
+  "gpu_name": null,
+  "cuda_visible_devices": "",
+  "cuda_device_order": null,
+  "rows": [
+    {
+      "arm": "default",
+      "optimizer_kwargs": {},
+      "parameter_tensors": 392,
+      "elements_per_tensor": 2,
+      "dtype": "torch.float32",
+      "step_state_devices": [
+        "cpu"
+      ],
+      "profile_scalar_events": 392,
+      "separate_dispatch_scalar_devices": {
+        "cpu": 392
+      },
+      "finite_after_three_updates": true
+    },
+    {
+      "arm": "foreach",
+      "optimizer_kwargs": {
+        "foreach": true
+      },
+      "parameter_tensors": 392,
+      "elements_per_tensor": 2,
+      "dtype": "torch.float32",
+      "step_state_devices": [
+        "cpu"
+      ],
+      "profile_scalar_events": 784,
+      "separate_dispatch_scalar_devices": {
+        "cpu": 784
+      },
+      "finite_after_three_updates": true
+    },
+    {
+      "arm": "single_tensor",
+      "optimizer_kwargs": {
+        "foreach": false
+      },
+      "parameter_tensors": 392,
+      "elements_per_tensor": 2,
+      "dtype": "torch.float32",
+      "step_state_devices": [
+        "cpu"
+      ],
+      "profile_scalar_events": 392,
+      "separate_dispatch_scalar_devices": {
+        "cpu": 392
+      },
+      "finite_after_three_updates": true
+    }
+  ],
+  "peak_allocated_mib": null,
+  "elapsed_seconds_excluding_import": 3.611607628999991,
+  "limitations": [
+    "No Krea-2 model, attention, NF4, or real parameter shapes exercised.",
+    "No CUPTI timeline; counts do not measure GPU busy time or speedup.",
+    "Historical 786 events lack device provenance; this is a counterexample, not a recovered trace."
+  ]
+}

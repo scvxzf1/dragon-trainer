@@ -116,11 +116,13 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
     def backward(ctx, grad_output):
         if ctx.is_empty:
             return torch.zeros_like(ctx.tensors[1]), None, None, None, None
+        from ._scaled_cast import scaled_cast
+
         _, B = ctx.tensors
         w = dequant_fp16(B, ctx.state)
         exp = torch.frexp(grad_output.abs().max())[1]
         shift = torch.clamp(-exp, min=-126, max=126)
-        g16 = torch.ldexp(grad_output.float(), shift).to(torch.float16)
+        g16 = scaled_cast(grad_output, shift, torch.float16)
         # Backward normally runs outside any autocast region, so this guard is
         # defensive: if a caller ever drives backward inside ``autocast(bf16)``
         # (custom training loop, hook, or an inner forward that re-enters), the
@@ -128,7 +130,7 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
         # double work and lose precision at the same time.
         with torch.autocast(device_type="cuda", enabled=False):
             out = torch.matmul(g16, w.t())
-        grad_A = torch.ldexp(out.float(), -shift).to(ctx.dtype_A)
+        grad_A = scaled_cast(out, -shift, ctx.dtype_A)
         grad_bias = None
         if ctx.bias is not None and ctx.needs_input_grad[3]:
             grad_bias = grad_output.sum(0, dtype=ctx.bias.dtype)
