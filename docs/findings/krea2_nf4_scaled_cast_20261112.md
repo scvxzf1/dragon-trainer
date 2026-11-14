@@ -144,6 +144,13 @@ reference 剖面正常完成——变量锁定为候选 kernel × CUPTI。挂起
 忙时占比仍 ~99.4%（饱和型），步窗口按实测步时缩短约 2.3%；此为投影，
 不得当作测量结论。
 
+### 2026-11-14 合并 dev（用户批准）
+
+本验证链已 cherry-pick 进本地 `dev`（`4f8ef803`/`20813e42`/`ed16cca5`，基于
+origin/dev=6610f710，领先 3 提交）。dev checkout 复跑接线回归：
+**27 passed、exit0、峰值 allocated 18.551 MiB**（物理 GPU2，gate exit0）。
+未推送；推送与主树接入另行由用户决定。
+
 ### 当前状态与保留资产
 
 - 研究分支 `codex/krea2-nf4-perf-research` 工作树当前**已重新应用候选补丁**
