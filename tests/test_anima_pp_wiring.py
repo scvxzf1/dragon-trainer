@@ -455,22 +455,23 @@ def _run_cli(monkeypatch, config: dict[str, object], *, created: list[object] | 
     return created
 
 
-def test_cli_preflight_rejects_a_valid_anima_pipeline_config(monkeypatch) -> None:
-    """A valid PP config is refused at argument-parse time (F6/F10).
+def test_cli_preflight_admits_wired_families_and_refuses_others(monkeypatch) -> None:
+    """A wired family (anima) passes the CLI preflight (t2 generalization).
 
-    The compat layer releases anima (warning only), so the CLI is where the run
-    has to stop -- and it must stop *before* the trainer is created, because
+    The unwired families keep the historical pre-trainer refusal: the run must
+    stop *before* the trainer is created, because
     ``bootstrap.prepare_with_accelerator`` only refuses after the DiT / VAE /
     text encoder are loaded. ``trainer_factory`` is the first model-loading step,
     so "not called" is the observable proof that no model was loaded.
     """
 
+    created: list[object] = []
     with pytest.raises(PipelineParallelError) as excinfo:
-        _run_cli(monkeypatch, {**_config(), "attn_mode": "torch"})
-
-    assert excinfo.value.code == "pp_trainer_path_unavailable"
-    assert "cli_entry" in str(excinfo.value)
-    assert "Refusing to fall back to DDP" in str(excinfo.value)
+        _run_cli(monkeypatch, {**_config("krea2_raw"), "attn_mode": "torch"}, created=created)
+    # krea2_raw has no 1F1B runtime at all: the shared runtime gate refuses one
+    # step earlier than the trainer-path admission, still fail-closed.
+    assert excinfo.value.code == "pp_runtime_unavailable"
+    assert "Refusing to fall back" in str(excinfo.value)
 
 
 def test_cli_preflight_never_reaches_the_trainer_for_a_pipeline_config(monkeypatch) -> None:
@@ -478,7 +479,7 @@ def test_cli_preflight_never_reaches_the_trainer_for_a_pipeline_config(monkeypat
 
     created: list[object] = []
     try:
-        _run_cli(monkeypatch, {**_config(), "attn_mode": "torch"}, created=created)
+        _run_cli(monkeypatch, {**_config("krea2_raw"), "attn_mode": "torch"}, created=created)
     except PipelineParallelError:
         pass
     assert created == []

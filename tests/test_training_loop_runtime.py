@@ -179,12 +179,12 @@ class _FakeSaver:
     def __init__(self, events: list[str]) -> None:
         self.events = events
 
-    def maybe_save_epoch(self, _network, global_step, epoch, num_train_epochs) -> None:
+    def maybe_save_epoch(self, _network, global_step, epoch, num_train_epochs, *, loader_cursor=None, digest_context=None) -> None:
         assert (global_step, epoch, num_train_epochs) == (6, 5, 6)
         self.events.append("save_epoch")
 
     def maybe_save_resumable(
-        self, _network, global_step, epoch, num_train_epochs
+        self, _network, global_step, epoch, num_train_epochs, *, loader_cursor=None, digest_context=None
     ) -> None:
         assert (global_step, epoch, num_train_epochs) == (6, 5, 6)
         self.events.append("save_resumable")

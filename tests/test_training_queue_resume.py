@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from tests import training_resume_test_support as _training_resume_support
 
+from web.services.training import resume_pipeline_gate as _resume_pipeline_gate
+
 globals().update(
     {
         name: value
@@ -57,6 +59,11 @@ def test_queue_resume_rejects_pipeline_world_size_mismatch(tmp_path, monkeypatch
     _patch_queue_storage(monkeypatch, tmp_path)
     svc = TrainingService(web.Application())
     svc._schedule_queue_dispatch = lambda: None
+    # t9 UUID guard is orthogonal here; stub it so this test keeps exercising
+    # the world-size refusal (index 0 is the GTX 1050 on this host).
+    monkeypatch.setattr(
+        _resume_pipeline_gate, "ensure_gpu_whitelist_authorized", lambda *_a, **_k: None
+    )
 
     with pytest.raises(ValueError, match="distributed world size"):
         asyncio.run(

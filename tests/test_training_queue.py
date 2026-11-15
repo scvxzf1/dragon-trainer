@@ -779,18 +779,18 @@ def test_start_queue_item_applies_multi_gpu_launch_to_child_env(tmp_path, monkey
         "runtime_config_file": runtime["runtime_config_file"],
         "source_config_file": "configs/imported/source.toml",
         "extra_args": [],
-        "gpu_whitelist": [1, 0],
+        "gpu_whitelist": [2, 1],
         "continue_info": {},
         "resume_info": {},
     }))
 
     assert captured["env"]["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
-    assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "1,0"
+    assert captured["env"]["CUDA_VISIBLE_DEVICES"] == "2,1"
     assert captured["env"]["ANIMA_ACCELERATE_LAUNCH"] == "1"
     assert captured["env"]["ANIMA_ACCELERATE_NUM_PROCESSES"] == "2"
     assert "accelerate.commands.accelerate_cli" in captured["cmd"]
     assert captured["cmd"][captured["cmd"].index("--num_processes") + 1] == "2"
-    assert captured["kwargs"]["gpu_whitelist"] == [1, 0]
+    assert captured["kwargs"]["gpu_whitelist"] == [2, 1]
     assert captured["kwargs"]["queue_item_id"] == "q-gpu"
 
 
@@ -925,7 +925,7 @@ def test_queue_retry_clones_frozen_runtime_config(tmp_path, monkeypatch):
             "runtime_config_file": runtime["runtime_config_file"],
             "source_config_file": "configs/imported/source.toml",
             "extra_args": [],
-            "gpu_whitelist": [0],
+            "gpu_whitelist": [1],
             "continue_info": {},
             "resume_info": {},
             "history_task_ids": ["old-history"],
@@ -1008,7 +1008,7 @@ def test_queue_retry_training_clones_dataset_cache_before_old_runtime_delete(tmp
             "runtime_config_file": runtime["runtime_config_file"],
             "source_config_file": "configs/imported/source.toml",
             "extra_args": [],
-            "gpu_whitelist": [0],
+            "gpu_whitelist": [1],
             "continue_info": {},
             "resume_info": {},
             "history_task_ids": ["old-history"],
@@ -1588,7 +1588,7 @@ def test_handle_queue_start_uses_enqueue_service(monkeypatch):
             "methods_subdir": "imported",
             "config_file": "output/runs/demo/config.runtime.toml",
             "confirmed": True,
-            "gpu_whitelist": [0],
+            "gpu_whitelist": [1],
         },
         {"training_service": svc},
     )
@@ -1600,7 +1600,7 @@ def test_handle_queue_start_uses_enqueue_service(monkeypatch):
     args, kwargs = svc.calls[0]
     assert args[:3] == ("demo", "default", "imported")
     assert kwargs["requires_preprocess"] is False
-    assert kwargs["gpu_whitelist"] == [0]
+    assert kwargs["gpu_whitelist"] == [1]
 
 
 def test_handle_queue_batch_start_validates_and_uses_enqueue_service(monkeypatch):
@@ -1624,7 +1624,7 @@ def test_handle_queue_batch_start_validates_and_uses_enqueue_service(monkeypatch
         {
             "preset": "default",
             "start_paused": True,
-            "gpu_whitelist": [0],
+            "gpu_whitelist": [1],
             "items": [
                 {
                     "variant": "first",
@@ -1656,7 +1656,7 @@ def test_handle_queue_batch_start_validates_and_uses_enqueue_service(monkeypatch
     assert entries[1]["variant"] == "nested/second"
     assert entries[1]["preset"] == "low_vram"
     assert kwargs["default_preset"] == "default"
-    assert kwargs["gpu_whitelist"] == [0]
+    assert kwargs["gpu_whitelist"] == [1]
     assert kwargs["start_paused"] is True
 
 
@@ -1874,7 +1874,7 @@ def test_queue_auto_retry_clones_until_max_attempts(tmp_path, monkeypatch):
             "runtime_config_file": runtime["runtime_config_file"],
             "source_config_file": "configs/imported/source.toml",
             "extra_args": [],
-            "gpu_whitelist": [0],
+            "gpu_whitelist": [1],
             "continue_info": {},
             "resume_info": {},
             "history_task_ids": ["h1"],

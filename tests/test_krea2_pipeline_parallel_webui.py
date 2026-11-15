@@ -20,11 +20,10 @@ def _messages(result: dict, key: str) -> list[str]:
 
 
 def test_preflight_releases_anima_pipeline_and_warns_about_the_trainer_gate(tmp_path: Path, monkeypatch) -> None:
-    """Anima PP v0 has a runtime, so the compat layer stops rejecting it.
+    """Anima PP v0 has a runtime and a wired trainer path (t2 generalization).
 
-    The trainer entry still refuses the run (``pp_trainer_path_unavailable``),
-    which the preflight surfaces as a warning so the decision is visible before
-    the launch instead of only in the worker log.
+    The preflight stays green and surfaces the wired dedicated PP trainer
+    session instead of the historical trainer-path refusal.
     """
 
     _write_selected_checkpoint_preflight_config(tmp_path, monkeypatch, ["pipeline_parallel = true"])
@@ -34,7 +33,7 @@ def test_preflight_releases_anima_pipeline_and_warns_about_the_trainer_gate(tmp_
     warnings = [
         item["message"] for item in result["warnings"] if item["key"] == "pipeline_parallel"
     ]
-    assert any("pp_trainer_path_unavailable" in message for message in warnings)
+    assert any("专用 PP 训练会话" in message for message in warnings)
     assert not any("流水线配置无效" in message for message in warnings)
 
 

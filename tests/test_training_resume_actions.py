@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from tests import training_resume_test_support as _training_resume_support
 
+from web.services.training import resume_pipeline_gate as _resume_pipeline_gate
+
 globals().update(
     {
         name: value
@@ -119,6 +121,11 @@ def test_resume_from_history_rejects_pipeline_world_size_mismatch(
         encoding="utf-8",
     )
     monkeypatch.setattr(training_service, "HISTORY_DIR", history_dir)
+    # t9 UUID guard is orthogonal here; stub it so this test keeps
+    # exercising the pipeline refusal (index 0 is the GTX 1050 here).
+    monkeypatch.setattr(
+        _resume_pipeline_gate, "ensure_gpu_whitelist_authorized", lambda *_a, **_k: None
+    )
     output_root = _patch_resume_runtime_output_root(monkeypatch, tmp_path)
     svc = TrainingService(web.Application())
     started = False
@@ -154,6 +161,11 @@ def test_resume_from_history_rejects_pipeline_with_unknown_model_family(
         encoding="utf-8",
     )
     monkeypatch.setattr(training_service, "HISTORY_DIR", history_dir)
+    # t9 UUID guard is orthogonal here; stub it so this test keeps
+    # exercising the pipeline refusal (index 0 is the GTX 1050 here).
+    monkeypatch.setattr(
+        _resume_pipeline_gate, "ensure_gpu_whitelist_authorized", lambda *_a, **_k: None
+    )
     output_root = _patch_resume_runtime_output_root(monkeypatch, tmp_path)
     svc = TrainingService(web.Application())
     started = False

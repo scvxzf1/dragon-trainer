@@ -286,7 +286,10 @@ from library.training.pp import (
 )
 from library.training.pp import numerics
 
-assert len(pp.__all__) == 85, len(pp.__all__)
+# 118: the 111 above plus the 7 t2 trainer-adapter generalization exports
+# (anima/family admission, adapter resolution, per-family resume format stamp,
+# family step-input engine, and the two trainer runtime builders).
+assert len(pp.__all__) == 118, len(pp.__all__)
 assert mini_forward.resolve_use_fp32.__module__ == "library.anima.mini_forward"
 assert numerics.resolve_use_fp32 is mini_forward.resolve_use_fp32, (
     "library.training.pp.numerics must re-export the single authority"
