@@ -1,0 +1,12 @@
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]                                                                                                                    [Gloo] Rank 0 is connected to 1[Gloo] Rank  peer ranks. Expected number of connected peer ranks is : 11 is connected to 
+1 peer ranks. Expected number of connected peer ranks is : 1
+Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]                                                                                                                    .
+=============================== warnings summary ===============================
+../krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: 14 warnings
+  /mnt/SD_Dataset/训练器相关/krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 14 warnings in 33.35s

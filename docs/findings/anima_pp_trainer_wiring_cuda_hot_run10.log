@@ -1,0 +1,139 @@
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+2026-11-15 16:05:08 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+2026-11-15 16:05:08 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                                                                                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+Process SpawnProcess-2:
+Traceback (most recent call last):
+Process SpawnProcess-1:
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 313, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 166, in _cuda_session_worker
+    run_pp_trainer_session(_trainer(), args, _handoff(args))
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 586, in run_pp_trainer_session
+    _report_progress(accelerator, runtime, counters, scheduler, total_steps)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 493, in _report_progress
+    accelerator.print(
+    ^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'print'
+Traceback (most recent call last):
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 313, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 166, in _cuda_session_worker
+    run_pp_trainer_session(_trainer(), args, _handoff(args))
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 586, in run_pp_trainer_session
+    _report_progress(accelerator, runtime, counters, scheduler, total_steps)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 493, in _report_progress
+    accelerator.print(
+    ^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'print'
+F
+=================================== FAILURES ===================================
+______________________ test_two_rank_cuda_trainer_resume _______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-43/test_two_rank_cuda_trainer_res0')
+
+    def test_two_rank_cuda_trainer_resume(tmp_path):
+        """Straight + resume on the real entry over two CUDA ranks (§6 budget).
+    
+        The GPU acceptance task launches this nodeid with
+        ``CUDA_VISIBLE_DEVICES=<the two V100 UUIDs>`` and ``timeout 60`` after
+        ``gpu-gate.sh --count 2 --json`` reports both cards free; a GTX 1050 in
+        the visibility set is a hard stop, not a fallback.
+        """
+    
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        for uuid in V100_UUIDS:
+            assert uuid in cuda_visible or not cuda_visible, (
+                "the hot test must be launched with the two authorized V100 UUIDs"
+            )
+        from tests.anima_pp_trainer_hot_support import run_cuda_session_pair
+    
+>       run_cuda_session_pair(tmp_path)
+
+tests/test_anima_pp_trainer_hot.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+workdir = PosixPath('/tmp/pytest-of-scv/pytest-43/test_two_rank_cuda_trainer_res0')
+
+    def run_cuda_session_pair(workdir) -> dict:
+        """Spawn the two CUDA ranks; return the straight/resume digest verdict."""
+    
+        assert _authorized_devices(), (
+            "the Anima PP hot test requires exactly the two authorized V100s; the "
+            "GTX 1050 must never be visible to this process"
+        )
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        init_path = str(workdir / "init")
+        context = get_context("spawn")
+        processes = [
+            context.Process(target=_cuda_session_worker, args=(rank, init_path, str(workdir)))
+            for rank in range(2)
+        ]
+        try:
+            for process in processes:
+                process.start()
+            for process in processes:
+                process.join(timeout=JOIN_TIMEOUT_SECONDS)
+            errors = "\n".join(path.read_text() for path in sorted(workdir.glob("hot.rank*.error")))
+>           assert all(process.exitcode == 0 for process in processes), (
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                f"Anima PP CUDA hot worker failed:\n{errors}"
+            )
+E           AssertionError: Anima PP CUDA hot worker failed:
+E           Traceback (most recent call last):
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 166, in _cuda_session_worker
+E               run_pp_trainer_session(_trainer(), args, _handoff(args))
+E               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 586, in run_pp_trainer_session
+E               _report_progress(accelerator, runtime, counters, scheduler, total_steps)
+E               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 493, in _report_progress
+E               accelerator.print(
+E               ^^^^^^^^^^^^^^^^^
+E           AttributeError: 'types.SimpleNamespace' object has no attribute 'print'
+E           
+E           Traceback (most recent call last):
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 166, in _cuda_session_worker
+E               run_pp_trainer_session(_trainer(), args, _handoff(args))
+E               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 586, in run_pp_trainer_session
+E               _report_progress(accelerator, runtime, counters, scheduler, total_steps)
+E               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 493, in _report_progress
+E               accelerator.print(
+E               ^^^^^^^^^^^^^^^^^
+E           AttributeError: 'types.SimpleNamespace' object has no attribute 'print'
+
+tests/anima_pp_trainer_hot_support.py:215: AssertionError
+1 failed in 10.20s

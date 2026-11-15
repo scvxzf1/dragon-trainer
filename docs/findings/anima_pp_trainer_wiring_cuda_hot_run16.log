@@ -1,0 +1,235 @@
+[Gloo] Rank [Gloo] Rank 01 is connected to  is connected to 11 peer ranks.  peer ranks. Expected number of connected peer ranks is : Expected number of connected peer ranks is : 11
+
+2026-11-15 16:52:53 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+2026-11-15 16:52:53 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                                                                                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+pp step 1/6 (effective 1, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 1/6 (effective 1, skipped 0) loss=3.903442 lr=0.001 scale=65536.0
+pp step 2/6 (effective 2, skipped 0) loss=3.171469 lr=0.001 scale=65536.0pp step 2/6 (effective 2, skipped 0) loss=None lr=0.001 scale=65536.0
+
+2026-11-15 16:52:54 INFO     PP bundle saved:             trainer_session.py:341
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step2 (step 2)                                  
+pp step 3/6 (effective 3, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 3/6 (effective 3, skipped 0) loss=3.754150 lr=0.001 scale=65536.0
+pp step 4/6 (effective 4, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 4/6 (effective 4, skipped 0) loss=3.858021 lr=0.001 scale=65536.0
+                    INFO     PP bundle saved:             trainer_session.py:341
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step4 (step 4)                                  
+pp step 5/6 (effective 5, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 5/6 (effective 5, skipped 0) loss=3.963945 lr=0.001 scale=65536.0
+pp step 6/6 (effective 6, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 6/6 (effective 6, skipped 0) loss=3.695797 lr=0.001 scale=65536.0
+                    INFO     PP bundle saved:             trainer_session.py:341
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step6 (step 6)                                  
+2026-11-15 16:52:54 INFO     PP bundle for step 6 already trainer_session.py:318
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step6; skipping                                 
+                    INFO     PP bundle for step 6 already trainer_session.py:318
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step6; skipping                                 
+
+saving checkpoint: /tmp/pytest-of-scv/pytest-82/test_two_rank_cuda_trainer_res0/straight/anima-pp-session-test.safetensors
+                    INFO     model saved.                    checkpoints.py:1382
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                            INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                            INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                            INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                            INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+pp step 1/4 (effective 1, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 1/4 (effective 1, skipped 0) loss=3.903442 lr=0.001 scale=65536.0
+pp step 2/4 (effective 2, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 2/4 (effective 2, skipped 0) loss=3.171469 lr=0.001 scale=65536.0
+                    INFO     PP bundle saved:             trainer_session.py:341
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/split/pp_runs/3dad111a7                       
+                             64cfffc97d923b34dbf19b597da2                       
+                             1fb450066109f1b0d8670cfa3a4-                       
+                             step2 (step 2)                                     
+pp step 3/4 (effective 3, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 3/4 (effective 3, skipped 0) loss=3.754150 lr=0.001 scale=65536.0
+pp step 4/4 (effective 4, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 4/4 (effective 4, skipped 0) loss=3.858021 lr=0.001 scale=65536.0
+                    INFO     PP bundle for step 4 already trainer_session.py:318
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/split/pp_runs/3dad111a7                       
+                             64cfffc97d923b34dbf19b597da2                       
+                             1fb450066109f1b0d8670cfa3a4-                       
+                             step4; skipping                                    
+                    INFO     PP bundle saved:             trainer_session.py:341
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/split/pp_runs/3dad111a7                       
+                             64cfffc97d923b34dbf19b597da2                       
+                             1fb450066109f1b0d8670cfa3a4-                       
+                             step4 (step 4)                                     
+                    INFO     PP bundle for step 4 already trainer_session.py:318
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/split/pp_runs/3dad111a7                       
+                             64cfffc97d923b34dbf19b597da2                       
+                             1fb450066109f1b0d8670cfa3a4-                       
+                             step4; skipping                                    
+
+saving checkpoint: /tmp/pytest-of-scv/pytest-82/test_two_rank_cuda_trainer_res0/split/anima-pp-session-test.safetensors
+                    INFO     model saved.                    checkpoints.py:1382
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                                                                            INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                                                                            INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+2026-11-15 16:52:55 INFO     PP exact resume from         trainer_session.py:559
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/split/pp_runs/3dad111a7                       
+                             64cfffc97d923b34dbf19b597da2                       
+                             1fb450066109f1b0d8670cfa3a4-                       
+                             step4 at global_step=4                             
+                             epoch=0 batch_index=4                              
+2026-11-15 16:52:55 INFO     PP exact resume from         trainer_session.py:559
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/split/pp_runs/3dad111a7                       
+                             64cfffc97d923b34dbf19b597da2                       
+                             1fb450066109f1b0d8670cfa3a4-                       
+                             step4 at global_step=4                             
+                             epoch=0 batch_index=4                              
+pp step 5/6 (effective 5, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 5/6 (effective 5, skipped 0) loss=3.963945 lr=0.001 scale=65536.0
+pp step 6/6 (effective 6, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 6/6 (effective 6, skipped 0) loss=3.695797 lr=0.001 scale=65536.0
+                    INFO     PP bundle for step 6 already trainer_session.py:318
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/resumed/pp_runs/3dad111                       
+                             a764cfffc97d923b34dbf19b597d                       
+                             a21fb450066109f1b0d8670cfa3a                       
+                             4-step6; skipping                                  
+                    INFO     PP bundle saved:             trainer_session.py:341
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/resumed/pp_runs/3dad111                       
+                             a764cfffc97d923b34dbf19b597d                       
+                             a21fb450066109f1b0d8670cfa3a                       
+                             4-step6 (step 6)                                   
+                    INFO     PP bundle for step 6 already trainer_session.py:318
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-82                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/resumed/pp_runs/3dad111                       
+                             a764cfffc97d923b34dbf19b597d                       
+                             a21fb450066109f1b0d8670cfa3a                       
+                             4-step6; skipping                                  
+
+saving checkpoint: /tmp/pytest-of-scv/pytest-82/test_two_rank_cuda_trainer_res0/resumed/anima-pp-session-test.safetensors
+                    INFO     model saved.                    checkpoints.py:1382
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                                                                                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+.
+1 passed in 11.10s

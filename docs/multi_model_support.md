@@ -23,6 +23,20 @@ family、未注册推理模式或 sampler 都应失败，不得静默回退 Anim
 | `qwen_image_2_1` | T2I/Edit 训练与训练预览；CMP 90HX torch/Flash 指定组合各 60 步短测通过 | T2I plain LoRA；T2I 实验 LoKr/LoHa；Edit 仅 plain LoRA | `single` + `euler`（T2I/Edit、plain LoRA） | `torch` / `sdpa` / `flash`（BF16） |
 | `moss_image` | 普通文生图 plain LoRA 首版；真机质量与性能仍需按硬件验收 | plain LoRA | 尚未注册；mode/sampler 集合为空 | `torch` / `sdpa` |
 
+实验性 pipeline_parallel：`moss_image` 与 `anima` 已发布共用 stage-local PP v0
+backend（见 `docs/experimental/moss_image_pipeline_parallel_v0.md`、
+[anima_pipeline_parallel_v0.md](experimental/anima_pipeline_parallel_v0.md) 与
+[moss_image_pp_trainer_wiring.md](experimental/moss_image_pp_trainer_wiring.md)）；
+两个族均已接线专用 PP 训练会话（PP=2/1F1B/FP16/plainLoRA/完整缓存范围；Anima 侧经
+族适配器复用 `build_anima_pipeline_runtime`，WebUI/队列的 `pipeline_parallel` 与
+`model_family` 键必须成对进入 runtime config；gpu_whitelist 守卫已放开为解析级
+fail-closed：GPU 全卡可选，唯一具名拒绝 `gpu_whitelist_unauthorized_gpu` 的条件是
+显式选卡索引在 nvidia-smi 中解析不到物理卡；不适配卡（如 GTX 1050）改为分布式
+诊断端点的建议级警告，不再阻断 enqueue/start），
+其余族与 DDP 内部路径维持 `pp_trainer_path_unavailable` 具名拒绝，不构成通用
+PP 训练支持。CPU/Gloo 与双 V100 CUDA tiny 热测均已独立验收（rc=0）；真实
+大模型权重训练未验收。
+
 WebUI 能选择五个模型族，但这不扩大 registry 的能力集合。尤其是 Z-Image 的训练 sample
 preview 只服务训练流程，不代表生图测试、独立 CLI 推理、batch 或 interactive 已可用。
 

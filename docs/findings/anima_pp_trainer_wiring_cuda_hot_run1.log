@@ -1,0 +1,4 @@
+s
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_anima_pp_trainer_hot.py:54: the anima PP trainer hot test runs only on the two authorized V100s (GPU-b4b014b2…/GPU-379b8c19…); CPU/Gloo coverage lives in tests/test_anima_pp_trainer_checkpoint.py
+1 skipped in 1.85s

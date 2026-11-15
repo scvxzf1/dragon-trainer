@@ -1,0 +1,28 @@
+AttributeError: '_CudaDatasetGroup' object has no attribute 'datasets'
+Traceback (most recent call last):
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/moss_pp_test_support.py", line 205, in _run_worker
+    worker(rank, init_path, *args, output_dir)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 177, in _cuda_worker
+    _phase_straight(rank, args, handoff, workdir)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 249, in _phase_straight
+    run_pp_trainer_session(_HotTrainer(), args, handoff)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 520, in run_pp_trainer_session
+    metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
+                                 ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 441, in _build_metadata
+    add_dataset_metadata(
+    ~~~~~~~~~~~~~~~~~~~~^
+        metadata,
+        ^^^^^^^^^
+    ...<6 lines>...
+        total_batch_size=int(getattr(args, "train_batch_size", 1)),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/metadata.py", line 252, in add_dataset_metadata
+    _build_dataset_metadata_user_config(train_dataset_group.datasets)
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: '_CudaDatasetGroup' object has no attribute 'datasets'

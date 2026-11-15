@@ -1,0 +1,179 @@
+[Gloo] Rank [Gloo] Rank 10 is connected to  is connected to 11 peer ranks.  peer ranks. Expected number of connected peer ranks is : Expected number of connected peer ranks is : 11
+
+2026-11-15 16:06:03 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+2026-11-15 16:06:03 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+                                                        Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                                                                            INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+pp step 1/6 (effective 1, skipped 0) loss=None lr=0.001 scale=65536.0pp step 1/6 (effective 1, skipped 0) loss=115193.851562 lr=0.001 scale=65536.0
+
+pp step 2/6 (effective 2, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 2/6 (effective 2, skipped 0) loss=109375.679688 lr=0.001 scale=65536.0
+2026-11-15 16:06:04 INFO     PP bundle saved:             trainer_session.py:334
+                             /tmp/pytest-of-scv/pytest-45                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step2 (step 2)                                  
+pp step 3/6 (effective 3, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 3/6 (effective 3, skipped 0) loss=119046.968750 lr=0.001 scale=65536.0
+pp step 4/6 (effective 4, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 4/6 (effective 4, skipped 0) loss=122903.609375 lr=0.001 scale=65536.0
+                    INFO     PP bundle saved:             trainer_session.py:334
+                             /tmp/pytest-of-scv/pytest-45                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step4 (step 4)                                  
+pp step 5/6 (effective 5, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 5/6 (effective 5, skipped 0) loss=124936.695312 lr=0.001 scale=65536.0
+pp step 6/6 (effective 6, skipped 0) loss=None lr=0.001 scale=65536.0
+pp step 6/6 (effective 6, skipped 0) loss=129612.960938 lr=0.001 scale=65536.0
+2026-11-15 16:06:05 INFO     PP bundle saved:             trainer_session.py:334
+                             /tmp/pytest-of-scv/pytest-45                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step6 (step 6)                                  
+2026-11-15 16:06:05 INFO     PP bundle for step 6 already trainer_session.py:311
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-45                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step6; skipping                                 
+                    INFO     PP bundle for step 6 already trainer_session.py:311
+                             exists at                                          
+                             /tmp/pytest-of-scv/pytest-45                       
+                             /test_two_rank_cuda_trainer_                       
+                             res0/straight/pp_runs/3dad11                       
+                             1a764cfffc97d923b34dbf19b597                       
+                             da21fb450066109f1b0d8670cfa3                       
+                             a4-step6; skipping                                 
+
+saving checkpoint: /tmp/pytest-of-scv/pytest-45/test_two_rank_cuda_trainer_res0/straight/anima-pp-session-test.safetensors
+                    INFO     model saved.                    checkpoints.py:1382
+Process SpawnProcess-2:
+Traceback (most recent call last):
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 313, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 168, in _cuda_session_worker
+    run_pp_trainer_session(_trainer(), args, _handoff(args))
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 596, in run_pp_trainer_session
+    accelerator.end_training()
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'end_training'
+Process SpawnProcess-1:
+Traceback (most recent call last):
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 313, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 168, in _cuda_session_worker
+    run_pp_trainer_session(_trainer(), args, _handoff(args))
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 596, in run_pp_trainer_session
+    accelerator.end_training()
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'types.SimpleNamespace' object has no attribute 'end_training'
+F
+=================================== FAILURES ===================================
+______________________ test_two_rank_cuda_trainer_resume _______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-45/test_two_rank_cuda_trainer_res0')
+
+    def test_two_rank_cuda_trainer_resume(tmp_path):
+        """Straight + resume on the real entry over two CUDA ranks (§6 budget).
+    
+        The GPU acceptance task launches this nodeid with
+        ``CUDA_VISIBLE_DEVICES=<the two V100 UUIDs>`` and ``timeout 60`` after
+        ``gpu-gate.sh --count 2 --json`` reports both cards free; a GTX 1050 in
+        the visibility set is a hard stop, not a fallback.
+        """
+    
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        for uuid in V100_UUIDS:
+            assert uuid in cuda_visible or not cuda_visible, (
+                "the hot test must be launched with the two authorized V100 UUIDs"
+            )
+        from tests.anima_pp_trainer_hot_support import run_cuda_session_pair
+    
+>       run_cuda_session_pair(tmp_path)
+
+tests/test_anima_pp_trainer_hot.py:69: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+workdir = PosixPath('/tmp/pytest-of-scv/pytest-45/test_two_rank_cuda_trainer_res0')
+
+    def run_cuda_session_pair(workdir) -> dict:
+        """Spawn the two CUDA ranks; return the straight/resume digest verdict."""
+    
+        assert _authorized_devices(), (
+            "the Anima PP hot test requires exactly the two authorized V100s; the "
+            "GTX 1050 must never be visible to this process"
+        )
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        init_path = str(workdir / "init")
+        context = get_context("spawn")
+        processes = [
+            context.Process(target=_cuda_session_worker, args=(rank, init_path, str(workdir)))
+            for rank in range(2)
+        ]
+        try:
+            for process in processes:
+                process.start()
+            for process in processes:
+                process.join(timeout=JOIN_TIMEOUT_SECONDS)
+            errors = "\n".join(path.read_text() for path in sorted(workdir.glob("hot.rank*.error")))
+>           assert all(process.exitcode == 0 for process in processes), (
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                f"Anima PP CUDA hot worker failed:\n{errors}"
+            )
+E           AssertionError: Anima PP CUDA hot worker failed:
+E           Traceback (most recent call last):
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 168, in _cuda_session_worker
+E               run_pp_trainer_session(_trainer(), args, _handoff(args))
+E               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 596, in run_pp_trainer_session
+E               accelerator.end_training()
+E               ^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'types.SimpleNamespace' object has no attribute 'end_training'
+E           
+E           Traceback (most recent call last):
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/anima_pp_trainer_hot_support.py", line 168, in _cuda_session_worker
+E               run_pp_trainer_session(_trainer(), args, _handoff(args))
+E               ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E             File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 596, in run_pp_trainer_session
+E               accelerator.end_training()
+E               ^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'types.SimpleNamespace' object has no attribute 'end_training'
+
+tests/anima_pp_trainer_hot_support.py:217: AssertionError
+1 failed in 10.52s

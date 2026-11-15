@@ -1,0 +1,179 @@
+[Gloo] Rank [Gloo] Rank 1 is connected to 01 is connected to  peer ranks. 1Expected number of connected peer ranks is :  peer ranks. 1Expected number of connected peer ranks is : 1
+
+Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]                                                                                                                    Process SpawnProcess-2:
+Process SpawnProcess-1:
+Traceback (most recent call last):
+Traceback (most recent call last):
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 313, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/moss_pp_test_support.py", line 205, in _run_worker
+    worker(rank, init_path, *args, output_dir)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 174, in _cuda_worker
+    _phase_straight(rank, args, handoff, workdir)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 247, in _phase_straight
+    run_pp_trainer_session(_HotTrainer(), args, handoff)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 520, in run_pp_trainer_session
+    metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
+                                 ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 441, in _build_metadata
+    add_dataset_metadata(
+    ~~~~~~~~~~~~~~~~~~~~^
+        metadata,
+        ^^^^^^^^^
+    ...<6 lines>...
+        total_batch_size=int(getattr(args, "train_batch_size", 1)),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/metadata.py", line 258, in add_dataset_metadata
+    assert len(train_dataset_group.datasets) == 1, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: There should be a single dataset but 0 found. This seems to be a bug.
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 313, in _bootstrap
+    self.run()
+    ~~~~~~~~^^
+  File "/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/moss_pp_test_support.py", line 205, in _run_worker
+    worker(rank, init_path, *args, output_dir)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 174, in _cuda_worker
+    _phase_straight(rank, args, handoff, workdir)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 247, in _phase_straight
+    run_pp_trainer_session(_HotTrainer(), args, handoff)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 520, in run_pp_trainer_session
+    metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
+                                 ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 441, in _build_metadata
+    add_dataset_metadata(
+    ~~~~~~~~~~~~~~~~~~~~^
+        metadata,
+        ^^^^^^^^^
+    ...<6 lines>...
+        total_batch_size=int(getattr(args, "train_batch_size", 1)),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/metadata.py", line 258, in add_dataset_metadata
+    assert len(train_dataset_group.datasets) == 1, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: There should be a single dataset but 0 found. This seems to be a bug.
+F
+=================================== FAILURES ===================================
+______________________ test_two_rank_cuda_trainer_resume _______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-49/test_two_rank_cuda_trainer_res0')
+
+    @pytest.mark.skipif(
+        not _hot_enabled() or not _two_cuda_devices(),
+        reason=(
+            f"hot node needs {HOT_ENABLE_ENV}=1 and two idle CUDA devices; the "
+            "implementer runs CPU-only and the independent verifier runs this on "
+            "the authorized fixed two-V100 node"
+        ),
+    )
+    def test_two_rank_cuda_trainer_resume(tmp_path):
+        """Two real CUDA processes: train 2 steps, save, restart, resume, verify."""
+        import time
+    
+        from tests.moss_pp_test_support import run_pair
+    
+        # run_pair takes an ABSOLUTE monotonic() endpoint (see
+        # moss_pp_test_support._spawn_pair); passing the 60s budget as a relative
+        # value used to expire immediately and spawn zero ranks. The outer budget
+        # stays 60s wall clock from now; the phase logic itself must stay inside
+        # the 45s internal budget.
+        outer = time.monotonic() + 60.0
+>       run_pair(tmp_path, _cuda_worker, "straight", str(tmp_path), deadline=outer)
+
+tests/test_moss_image_pp_trainer_hot.py:86: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-49/test_two_rank_cuda_trainer_res0')
+worker = <function _cuda_worker at 0x7f16c8039f80>, deadline = 13708.803110577
+args = ('straight', '/tmp/pytest-of-scv/pytest-49/test_two_rank_cuda_trainer_res0')
+
+    def run_pair(tmp_path, worker, *args, deadline=None) -> None:
+        """Both ranks must succeed; previous calls' error files are irrelevant."""
+        exitcodes, errors = _spawn_pair(tmp_path, worker, args, deadline=deadline)
+>       assert exitcodes == [0, 0] and not errors, (
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+            f"pair exit codes: {exitcodes}\n" + "\n".join(errors)
+        )
+E       AssertionError: pair exit codes: [1, 1]
+E       AssertionError: There should be a single dataset but 0 found. This seems to be a bug.
+E       Traceback (most recent call last):
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/moss_pp_test_support.py", line 205, in _run_worker
+E           worker(rank, init_path, *args, output_dir)
+E           ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 174, in _cuda_worker
+E           _phase_straight(rank, args, handoff, workdir)
+E           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 247, in _phase_straight
+E           run_pp_trainer_session(_HotTrainer(), args, handoff)
+E           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 520, in run_pp_trainer_session
+E           metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
+E                                        ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 441, in _build_metadata
+E           add_dataset_metadata(
+E           ~~~~~~~~~~~~~~~~~~~~^
+E               metadata,
+E               ^^^^^^^^^
+E           ...<6 lines>...
+E               total_batch_size=int(getattr(args, "train_batch_size", 1)),
+E               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           )
+E           ^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/metadata.py", line 258, in add_dataset_metadata
+E           assert len(train_dataset_group.datasets) == 1, (
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: There should be a single dataset but 0 found. This seems to be a bug.
+E       
+E       AssertionError: There should be a single dataset but 0 found. This seems to be a bug.
+E       Traceback (most recent call last):
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/moss_pp_test_support.py", line 205, in _run_worker
+E           worker(rank, init_path, *args, output_dir)
+E           ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 174, in _cuda_worker
+E           _phase_straight(rank, args, handoff, workdir)
+E           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/tests/test_moss_image_pp_trainer_hot.py", line 247, in _phase_straight
+E           run_pp_trainer_session(_HotTrainer(), args, handoff)
+E           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 520, in run_pp_trainer_session
+E           metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
+E                                        ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/pp/trainer_session.py", line 441, in _build_metadata
+E           add_dataset_metadata(
+E           ~~~~~~~~~~~~~~~~~~~~^
+E               metadata,
+E               ^^^^^^^^^
+E           ...<6 lines>...
+E               total_batch_size=int(getattr(args, "train_batch_size", 1)),
+E               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           )
+E           ^
+E         File "/mnt/SD_Dataset/训练器相关/krea2-pp-moss/library/training/metadata.py", line 258, in add_dataset_metadata
+E           assert len(train_dataset_group.datasets) == 1, (
+E                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: There should be a single dataset but 0 found. This seems to be a bug.
+
+tests/moss_pp_test_support.py:283: AssertionError
+=============================== warnings summary ===============================
+../krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: 14 warnings
+  /mnt/SD_Dataset/训练器相关/krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 failed, 14 warnings in 14.67s

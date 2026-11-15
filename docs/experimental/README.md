@@ -13,7 +13,11 @@
 | [adaptive-runtime.md](adaptive-runtime.md) | DiT 自适应精度与 OOM 恢复，实现边界和双卡三模型验证进度 |
 | [adaptive-training-recovery.md](adaptive-training-recovery.md) | 默认关闭的中途 OOM 恢复、sampler/预取与完整状态合同；Anima 90HX 短步验收 |
 | [anima-native-fp16.md](anima-native-fp16.md) | Anima 原生 AMP 配置、自动路由与训练精度报告 |
-| [anima_pipeline_parallel_v0.md](anima_pipeline_parallel_v0.md) | Anima 流水线并行 v0：2 阶段 stage-local 运行时、1F1B、fp16 事务、per-rank checkpoint；主训练入口仍具名 fail-closed |
+| [anima_pipeline_parallel_v0.md](anima_pipeline_parallel_v0.md) | Anima 流水线并行 v0：2 阶段 stage-local 运行时、1F1B、fp16 事务、per-rank checkpoint；trainer 级接线已验收（见下行） |
+| [anima_pp_trainer_wiring.md](anima_pp_trainer_wiring.md) | Anima PP 主训练接线：经族适配器复用库级 runtime，正式入口派发到专用 PP 会话；5D wire / max-padded crossattn / 按族 resume 格式戳；CPU/Gloo 与双 V100 CUDA tiny 热测均已独立验收（rc=0），WebUI/队列/解析级 gpu 守卫已接线；真实权重训练未验收 |
+| [distributed-training-card.md](distributed-training-card.md) | WebUI「分布式训练」三态卡片使用说明：单卡/DDP/PP、GPU 全卡可选＋解析级 fail-closed 守卫、🔴🟡🔵 三档诊断与 `[distributed]` 设置落点 |
+| [moss_image_pipeline_parallel_v0.md](moss_image_pipeline_parallel_v0.md) | MOSS-Image 流水线并行 v0：复用 PP v0 骨架的族专属双 stage、真实文本长度 conditioning 与分 rank checkpoint；CPU/Gloo 已验收，双 V100 CUDA tiny 已独立验收；库级 runtime 文档 |
+| [moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md) | MOSS-Image PP 主训练接线：正式 CLI/train 入口派发到专用 PP 会话、trainer 级保存/恢复与步进语义；CPU/Gloo 与双 V100 CUDA tiny 热测均已独立验收（rc=0），真实权重训练未验收 |
 | [krea2-native-fp16.md](krea2-native-fp16.md) | Krea-2 显式原生 FP16 窄配置、guard 与验证边界 |
 | [anima-native-fp16-acceptance.md](anima-native-fp16-acceptance.md) | 原生 FP16 集中严格验收与独立训练质量协议 |
 | [anima-mixed-nf4.md](anima-mixed-nf4.md) | Anima 固定 MLP 策略 BF16/NF4 保存与加载实验 |

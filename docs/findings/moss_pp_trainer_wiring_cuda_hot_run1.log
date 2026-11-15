@@ -1,0 +1,47 @@
+F
+=================================== FAILURES ===================================
+______________________ test_two_rank_cuda_trainer_resume _______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-42/test_two_rank_cuda_trainer_res0')
+
+    @pytest.mark.skipif(
+        not _hot_enabled() or not _two_cuda_devices(),
+        reason=(
+            f"hot node needs {HOT_ENABLE_ENV}=1 and two idle CUDA devices; the "
+            "implementer runs CPU-only and the independent verifier runs this on "
+            "the authorized fixed two-V100 node"
+        ),
+    )
+    def test_two_rank_cuda_trainer_resume(tmp_path):
+        """Two real CUDA processes: train 2 steps, save, restart, resume, verify."""
+        from tests.moss_pp_test_support import run_pair
+    
+>       run_pair(tmp_path, _cuda_worker, "straight", str(tmp_path), deadline=60.0)
+
+tests/test_moss_image_pp_trainer_hot.py:78: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/moss_pp_test_support.py:282: in run_pair
+    exitcodes, errors = _spawn_pair(tmp_path, worker, args, deadline=deadline)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-42/test_two_rank_cuda_trainer_res0')
+worker = <function _cuda_worker at 0x7f3b4c249e40>
+args = ('straight', '/tmp/pytest-of-scv/pytest-42/test_two_rank_cuda_trainer_res0')
+deadline = 60.0
+
+    def _spawn_pair(tmp_path, worker, args, *, deadline=None):
+        # One shared budget: sequential joins must not each spend the full timeout.
+        end = monotonic() + JOIN_TIMEOUT_SECONDS if deadline is None else deadline
+        if end <= monotonic():
+>           raise TimeoutError("PP pair deadline expired before spawning children")
+E           TimeoutError: PP pair deadline expired before spawning children
+
+tests/moss_pp_test_support.py:240: TimeoutError
+=============================== warnings summary ===============================
+../krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: 14 warnings
+  /mnt/SD_Dataset/训练器相关/krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 failed, 14 warnings in 5.94s

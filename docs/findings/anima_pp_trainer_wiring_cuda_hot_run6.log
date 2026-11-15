@@ -1,0 +1,24 @@
+[Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+2026-11-15 15:50:43 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+2026-11-15 15:50:43 INFO     create LoRA network. base dim        builders.py:99
+                             (rank): 4, alpha: 4.0                              
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+                    INFO     neuron dropout: p=None, rank        builders.py:102
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/8 [00:00<?, ?it/s]                                                                                                                                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     create LoRA for Anima DiT: 8        builders.py:183
+                             modules.                                           
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     enable LoRA for DiT: 8 modules    application.py:55
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:295
+                             True}                                              
+/mnt/qlc/miniconda3/lib/python3.13/multiprocessing/resource_tracker.py:324: UserWarning: resource_tracker: There appear to be 2 leaked semaphore objects to clean up at shutdown: {'/mp-94nxayzr', '/mp-8i40b65v'}
+  warnings.warn(

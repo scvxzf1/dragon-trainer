@@ -1,0 +1,51 @@
+[Gloo] Rank [Gloo] Rank 10 is connected to 1 is connected to  peer ranks. Expected number of connected peer ranks is : 11 peer ranks. 
+Expected number of connected peer ranks is : 1
+Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]                                                                                                                    [Gloo] Rank 0 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+[Gloo] Rank 1 is connected to 1 peer ranks. Expected number of connected peer ranks is : 1
+Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]Creating DiT LoRA:   0%|          | 0/168 [00:00<?, ?it/s]                                                                                                                    F
+=================================== FAILURES ===================================
+______________________ test_two_rank_cuda_trainer_resume _______________________
+
+tmp_path = PosixPath('/tmp/pytest-of-scv/pytest-67/test_two_rank_cuda_trainer_res0')
+
+    @pytest.mark.skipif(
+        not _hot_enabled() or not _two_cuda_devices(),
+        reason=(
+            f"hot node needs {HOT_ENABLE_ENV}=1 and two idle CUDA devices; the "
+            "implementer runs CPU-only and the independent verifier runs this on "
+            "the authorized fixed two-V100 node"
+        ),
+    )
+    def test_two_rank_cuda_trainer_resume(tmp_path):
+        """Two real CUDA processes: train 2 steps, save, restart, resume, verify."""
+        import time
+    
+        from tests.moss_pp_test_support import run_pair
+    
+        # run_pair takes an ABSOLUTE monotonic() endpoint (see
+        # moss_pp_test_support._spawn_pair); passing the 60s budget as a relative
+        # value used to expire immediately and spawn zero ranks. The outer budget
+        # stays 60s wall clock from now; the phase logic itself must stay inside
+        # the 45s internal budget.
+        outer = time.monotonic() + 60.0
+        run_pair(tmp_path, _cuda_worker, "straight", str(tmp_path), deadline=outer)
+        run_pair(tmp_path, _cuda_worker, "resume", str(tmp_path), deadline=outer)
+    
+        straight = json.loads((tmp_path / "straight.rank0.json").read_text())
+        resumed = json.loads((tmp_path / "resumed.rank0.json").read_text())
+        assert resumed["resume_step"] == 2
+        # Real fp16 overflow skip receipts from both phases (the overflow batch is
+        # step 3; the resumed run re-enters exactly there from the step-2 bundle).
+        assert straight["skip_lines"] and "skipped 1)" in straight["skip_lines"][-1], straight["skip_lines"]
+>       assert resumed["skip_lines"] and "skipped 1)" in resumed["skip_lines"][-1], resumed["skip_lines"]
+E       AssertionError: ['pp step 3/4 (effective 2, skipped 0) loss=None lr=0.001 scale=32768.0', 'pp step 4/4 (effective 3, skipped 0) loss=None lr=0.001 scale=32768.0']
+E       assert (['pp step 3/4 (effective 2, skipped 0) loss=None lr=0.001 scale=32768.0', 'pp step 4/4 (effective 3, skipped 0) loss=None lr=0.001 scale=32768.0'] and 'skipped 1)' in 'pp step 4/4 (effective 3, skipped 0) loss=None lr=0.001 scale=32768.0')
+
+tests/test_moss_image_pp_trainer_hot.py:95: AssertionError
+=============================== warnings summary ===============================
+../krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: 14 warnings
+  /mnt/SD_Dataset/训练器相关/krea2-webui/.venv/lib/python3.13/site-packages/torch/jit/_script.py:362: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 failed, 14 warnings in 34.27s

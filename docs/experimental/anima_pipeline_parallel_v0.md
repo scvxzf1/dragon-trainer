@@ -1,16 +1,18 @@
 # Anima 流水线并行 v0（PP v0）
 
-状态：实验
+状态：实验（trainer 级接线已验收，见下方「已知边界」）
 适用版本：当前 dev（torch 2.10）
-入口命令：训练入口不变；PP 配置在训练入口会以具名错误 fail-closed，运行时由
-`library/training/pp` 驱动。真机测量与 microbatch 扫描用
+入口命令：`pipeline_parallel=true` 的主训练由 `train_session` 派发到族适配的专用
+PP 训练会话（Anima 经 `build_anima_trainer_runtime` 复用本模块 runtime；合法
+配置见支持范围表，其余组合在准入处具名拒绝）。真机测量与 microbatch 扫描用
 `scripts/experiments/anima_parallel/pp_v0_bench.py`（见「真机验证结果」节）
 相关代码：`library/training/pp/`、`library/training/pp/gate.py`、
 `library/models/family_registry.py`、`library/training/compat_matrix.py`
 
 一句话：Anima 的两阶段 stage-local 流水线运行时已经落地（stage 放置、Schedule1F1B、
-冻结 conditioning、fp16 事务对称、per-rank checkpoint），但**主训练循环还没有接入 PP**；
-所有训练入口在 `pipeline_parallel=true` 时都会用具名错误拒绝，绝不静默回退 DDP。
+冻结 conditioning、fp16 事务对称、per-rank checkpoint），且 trainer 级 PP 训练
+会话已通过族适配器接入主训练入口；所有未接线的组合仍在 `pipeline_parallel=true`
+时用具名错误拒绝，绝不静默回退 DDP。
 
 ## 支持范围（刻意收窄，不是偶然）
 
@@ -326,11 +328,16 @@ M=32 只再快 1.6% 却多花 0.59 GB，边际性价比掉约 8 倍。
 
 ## 已知边界（待验收项）
 
-- 主训练循环（accelerate loop + `trainer.process_batch`）尚未接入 PP，因此
-  `pipeline_parallel=true` 的正式训练仍会被具名拒绝；PP v0 目前由
-  `library.training.pp.build_anima_pipeline_runtime` 驱动（等价 harness / 有界真机短跑）。
-- WebUI 预检对 anima + 合法 PP 不再报错，改为警告提示「主训练入口会拒绝」。
+- 主训练入口（t2/t3 通用化后）已接线专用 PP 训练会话：`train_session` 分叉点按族
+  派发（Anima 经 `build_anima_trainer_runtime` 复用 `build_anima_pipeline_runtime`），
+  双 V100 tiny CUDA straight+resume 热测已独立验收（rc=0）；真实大模型权重的
+  持续训练仍未验收。
+- WebUI/配置层（t5）：预检对 anima + 合法 PP 保持放行，提示「专用 PP 训练会话」；
+  训练准入的具名拒绝（preview 类字段、compile、router、缓存等）在预检即以
+  `pp_config_invalid` 等代码显形；`pipeline_parallel` 与 `model_family` 必须成对
+  进入队列/runtime config，启动链与续训 gate 都会拒绝只传其一的配置。
 - 真机数值与性能只来自一次 4 步有界短跑（见「真机验证结果」），不外推到持续训练、
   长窗口热降频或其它硬件；绝对时延在 M=4 时 1.788 s/sample 未达 1.60 目标，但 **M=16 起
   1.543 s/sample 已达标**，判定以加速比 ≥ 1.45× 为准。
-- 只做 Anima 族：Krea-2 / Z-Image / Qwen-Image 2.1 / MOSS-Image 的运行时行为未变。
+- 只做 Anima 族：Krea-2 / Z-Image / Qwen-Image 2.1 的运行时行为未变（MOSS-Image
+  由 [moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md) 单独接线）。

@@ -1,0 +1,57 @@
+{
+  "task": "t3",
+  "attempt_id": "4fe52b79-df99-42b6-a4a0-d3533c23a113",
+  "date": "2026-11-15",
+  "verifier": "trainer-verifier",
+  "repo_head": "6610f710fba4f74aab3b3c6e2fd1cab61c6f39c8",
+  "requirements_doc": {
+    "path": "docs/proposal/moss_image_pp_trainer_wiring.md",
+    "version": "v2",
+    "sha256": "50c3e4d0f6737f4cc5d23fcedf0069de7cd0d8421677dc86d0bf651d391fa4c9"
+  },
+  "code_sha256_head16": {
+    "library/training/pp/trainer_admission.py": "df4d36ef423c4326",
+    "library/training/pp/trainer_inputs.py": "b1dddfd8f6488b44",
+    "library/training/pp/trainer_resume.py": "0a556adb8bfe8f97",
+    "library/training/pp/trainer_session.py": "003772022b34c363",
+    "library/training/pp/moss_runtime.py": "243c33140a5b1b62",
+    "library/training/train_session.py": "5039caa281db4080",
+    "library/training/cli_entry.py": "540b2453bc1c7706",
+    "tests/test_pp_import_boundary.py": "a38c6206a0be60ce",
+    "tests/test_training_loop_runtime.py": "8a458c3c0751b34a",
+    "tests/test_moss_image_pp_trainer_hot.py": "c7b57d4a57674ea5"
+  },
+  "cpu_commands": [
+    {"command": "git diff --check", "rc": 0},
+    {"command": "env CUDA_VISIBLE_DEVICES='' PYTHONPATH=. timeout 300 '/mnt/SD_Dataset/训练器相关/krea2-webui/.venv/bin/python' -m pytest -q -rs tests/test_moss_image_pp_trainer.py tests/test_moss_image_pp_trainer_checkpoint.py", "rc": 0, "result": "19 passed, 14 warnings in 78.61s"},
+    {"command": "env CUDA_VISIBLE_DEVICES='' PYTHONPATH=. timeout 300 '/mnt/SD_Dataset/训练器相关/krea2-webui/.venv/bin/python' -m pytest -q -rs tests/test_moss_image_pp_wiring.py tests/test_anima_pp_wiring.py tests/test_krea2_pipeline_parallel.py tests/test_multigpu_admission.py tests/test_pp_import_boundary.py", "rc": 0, "result": "127 passed, 14 warnings in 29.61s"},
+    {"command": "env CUDA_VISIBLE_DEVICES='' PYTHONPATH=. timeout 300 '/mnt/SD_Dataset/训练器相关/krea2-webui/.venv/bin/python' -m pytest -q -rs tests/test_training_bootstrap.py tests/test_training_loop_runtime.py tests/test_training_checkpointing.py", "rc": 0, "result": "79 passed in 6.25s"}
+  ],
+  "gpu_gate_runs": [
+    {"time": "2026-11-15T01:10+08:00", "rc": 3, "file": "moss_pp_trainer_wiring_cuda_gate_20261115t0110.json", "usable": {"index1": "no", "index2": "no"}, "note": "两 V100 各 11792 MiB 驻留，verdict=training；保持 in_progress 未执行 GPU"},
+    {"time": "2026-11-15T02:08+08:00", "rc": 0, "file": "moss_pp_trainer_wiring_cuda_gate_pre-hot.json", "usable": {"index1": "no", "index2": "no"}, "note": "用户明确授权 GPU 使用（单次≤6000s、多次无上限、禁 1050）后执行；驻留进程为用户自己的 vLLM::Worker_TP0/TP1（pid 17816/17817，各 11778 MiB，util 0%），每卡余量 4592 MiB ≥ 2048 需求"}
+  ],
+  "gpu_hot_run": {
+    "run_index": 1,
+    "command": "env MOSS_PP_HOT_ENABLE=1 CUDA_VISIBLE_DEVICES='GPU-b4b014b2-953b-28e8-b8c1-425c4a401165,GPU-379b8c19-d965-f6fa-d70d-8a9b876ff061' PYTHONPATH=. PYTHONUNBUFFERED=1 timeout 60 '/mnt/SD_Dataset/训练器相关/krea2-webui/.venv/bin/python' -u -m pytest -q -rs -s tests/test_moss_image_pp_trainer_hot.py::test_two_rank_cuda_trainer_resume",
+    "rc": 1,
+    "result": "1 failed, 14 warnings in 5.94s",
+    "raw_log": "moss_pp_trainer_wiring_cuda_hot_run1.log",
+    "failure": {
+      "error": "TimeoutError: PP pair deadline expired before spawning children",
+      "call_site": "tests/test_moss_image_pp_trainer_hot.py:78-79 -> tests/moss_pp_test_support.py:240 (via run_pair:282 -> _spawn_pair:239-242)",
+      "root_cause": "_spawn_pair 的 deadline 参数为绝对 monotonic() 端点（end=deadline；既有约定 test_moss_image_pp_runtime.py:954 monotonic()+45，test_moss_image_pp_harness.py:123-131 断言过期不 spawn），hot 测试传入相对 60.0，monotonic() >> 60 立即超时，两个 rank 子进程从未启动",
+      "spawned": false,
+      "gpu_work_done": false,
+      "minimal_fix": "tests/test_moss_image_pp_trainer_hot.py:77-79 改为共享绝对端点（如 outer = time.monotonic() + 60.0，两处 run_pair 共用），对齐 test_moss_image_pp_runtime.py:954-956；不改 moss_pp_test_support.py 语义",
+      "finding_id": "F1",
+      "severity": "blocker"
+    },
+    "rerun_policy": "本轮不重跑（无改动不重跑）；修复 F1 后按同一预算单次重跑取证，阈值不据候选调整"
+  },
+  "unverified": [
+    "hot 真实更新/单侧 overflow 双方 skip/保存/新进程 resume 同窗口对齐",
+    "每阶段 loss/LR/步数/样本与 noise 身份、参数/optimizer/scaler/RNG/cursor/scheduler digest",
+    "每卡 allocated/reserved ≤2GiB 实测"
+  ]
+}

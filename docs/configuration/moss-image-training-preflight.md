@@ -49,7 +49,8 @@
 | 损失 | `loss_type=l2`、`timestep_sampling=uniform`、`weighting_scheme=none`、`discrete_flow_shift=1`、`p2_gamma=0` |
 | Adapter | 只支持 `networks.lora_anima` plain LoRA；`network_train_unet_only=true`、`router_source=none` |
 | caption | `caption_dropout_rate` / `caption_tag_dropout_rate` 在顶层、general、dataset、subset 全为 0；不支持 weighted captions / shuffle |
-| 明确拒绝 | compile（`torch_compile`/`compile_dynamic_seq`/`compile_seq_bands`）、DiT NF4、流水线并行、选择性/卸载 checkpoint、自适应精度、AUTO block swap、TE 训练、`use_ip_adapter`/`use_lokr`/`use_loha`/`add_reft` 等 |
+| 明确拒绝 | compile（`torch_compile`/`compile_dynamic_seq`/`compile_seq_bands`）、DiT NF4、选择性/卸载 checkpoint、自适应精度、AUTO block swap、TE 训练、`use_ip_adapter`/`use_lokr`/`use_loha`/`add_reft` 等 |
+| `pipeline_parallel` | 不再被族 shim 一刀切拒绝：MOSS 发布了 stage-local PP v0 backend（实验，见 `docs/experimental/moss_image_pipeline_parallel_v0.md`）；合法性由共享 compat/gate 判定，MOSS 已接线专用 PP 训练会话（其余族仍以 `pp_trainer_path_unavailable` 具名拒绝）；与 `blocks_to_swap>0`、compile 等组合仍被族契约拒绝 |
 
 补充事实（源码核对）：
 
@@ -118,6 +119,11 @@ ls -la output/ckpt/moss_image_lora*
 - 换档位只改方法配置名（`moss_image_lora_t768` 等），**不要单独改 `resolution`**。
 - 换 `max_token_length` 必须重建 TE 缓存（缓存身份含该值）。
 - 中断续训依赖 `checkpointing_epochs=1` + `checkpointing_last_n_epochs=2` 的状态目录。
+- `pipeline_parallel=true`（实验）：只放行 MOSS PP=2/1F1B/FP16/plainLoRA/完整缓存的
+  已接线形状，其余配置在入口具名拒绝；启动与恢复口径见
+  [moss_image_pp_trainer_wiring.md](../experimental/moss_image_pp_trainer_wiring.md)。
+  PP 续训用 `resume` 指向 `pp_runs/<run>-step<N>` 包根（旧库级 checkpoint 只能
+  显式 weights-only 非精确续训）。
 
 ## 7. 仍未验收的边界
 
