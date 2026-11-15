@@ -82,7 +82,7 @@ def check_moss_training_contract(out, config):
         reject(legacy, value is not None and not _enabled(value), f"requires disk caches ({canonical}=true).")
 
     for key in (
-        "torch_compile", "compile_dynamic_seq", "compile_seq_bands", "pipeline_parallel",
+        "torch_compile", "compile_dynamic_seq", "compile_seq_bands",
         "cpu_offload_checkpointing", "unsloth_offload_checkpointing", "auto_block_swap",
         "network_train_text_encoder_only", "train_llm_adapter", "weighted_captions",
         "use_shuffled_caption_variants", "cache_llm_adapter_outputs", "xformers", "mem_eff_attn",
@@ -95,6 +95,12 @@ def check_moss_training_contract(out, config):
         "qwen_nf4_compile_experiment", "adaptive_oom_retry",
     ):
         reject(key, _enabled(_get(config, key)), f"does not support {key}; disable it.")
+    # ``pipeline_parallel`` is no longer blanket-rejected: MOSS-Image publishes a
+    # stage-local PP v0 runtime backend, so the shared compatibility matrix and
+    # ``library.training.pp.gate`` decide whether the requested PP config is
+    # servable (the trainer entry still refuses any PP run with
+    # ``pp_trainer_path_unavailable``).  Block swap remains MOSS-legal alone and
+    # the PP config validation rejects the combination.
     reject("network_module", _get(config, "network_module", "networks.lora_anima") not in
            {"", "networks.lora_anima"}, "supports networks.lora_anima plain LoRA only.")
     reject("router_source", str(_get(config, "router_source", "none") or "none").lower() != "none",

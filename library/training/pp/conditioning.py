@@ -99,6 +99,13 @@ def timestep_modulation(model, timesteps) -> tuple[Tensor, Optional[Tensor]]:
             CODE_STAGE_CONTRACT,
             f"timesteps must be (B,) or (B, T), got shape {tuple(timesteps.shape)}",
         )
+    # The non-PP forward runs under accelerator.autocast(), which lets the
+    # fp32 timesteps enter the fp16 t_embedder; the stage path has no
+    # autocast, so cast to the embedder's compute dtype here for identical
+    # numerics (t_embedder.forward uses `sample` verbatim as emb_B_T_D).
+    embedder_dtype = next(embedder.parameters()).dtype
+    if timesteps.dtype != embedder_dtype:
+        timesteps = timesteps.to(embedder_dtype)
     embedding, adaln_lora = embedder(timesteps)
     return norm(embedding), adaln_lora
 

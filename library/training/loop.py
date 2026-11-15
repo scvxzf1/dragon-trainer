@@ -320,7 +320,9 @@ def loader_cursor_payload(state: "LoopState") -> Optional[dict]:
     """The committed per-rank cursor, or ``None`` when it cannot be trusted yet."""
     from library.training.multigpu import cursor as cursor_mod
 
-    if not state.batches_per_epoch:
+    # Small hot-file compatibility fix: states built without the field (older
+    # tests / partial namespaces) mean "unknown dataloader length" too.
+    if not getattr(state, "batches_per_epoch", 0):
         # No dataloader length known: reporting a position would be a guess.
         return None
     return cursor_mod.make_cursor(

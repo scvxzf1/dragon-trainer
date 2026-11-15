@@ -1,0 +1,603 @@
+"""The wired MOSS PP trainer session (train_session dispatch target).
+
+This module is the *only* execution entry for a pipeline-parallel training run
+in the production trainer path.  ``train_session._run_training_session`` forks
+here after the shared cache / model / network setup and before
+``setup_optimizer_and_dataloader``; everything below reuses the shared
+skeleton's helpers (dataset strategies, optimizer factory, scheduler builder,
+metadata builder, LoRA saver) instead of copying the 840-line session or the
+1853-line loop.
+
+Step semantics (frozen contract §4):
+
+* ``global_step`` counts **consumed pipeline steps** (skips included);
+* ``effective_step`` advances only on a successful optimizer step;
+* the LR scheduler advances only on a successful step -- never together with
+  ``global_step``;
+* the fp16 skip decision is the PP transaction's unanimous verdict.
+
+Checkpoint semantics:
+
+* per-rank stage weights / optimizer / fp16 state come from
+  :mod:`library.training.pp.checkpoint` (new run root per save, negotiated,
+  never overwriting user artifacts);
+* scheduler / per-rank RNG / data cursor / run identity come from
+  :mod:`library.training.pp.trainer_resume`, validated before apply;
+* ``accelerator.save_state`` / ``load_state`` are never called (the
+  ``pp_accelerate_checkpoint_unsupported`` guard stays armed);
+* the final LoRA is written in the ordinary output format by rank 0 after
+  gathering every stage's adapter state into its own network.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import os
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+
+from library.training.pp.errors import (
+    CODE_BACKEND_MULTIBACKEND_REQUIRED,
+    CODE_CONFIG_INVALID,
+    CODE_WORLD_SIZE_MISMATCH,
+    PipelineParallelError,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PpSessionHandoff:
+    """Everything the shared session setup already prepared for this run."""
+
+    args: Any
+    accelerator: Any
+    network: Any
+    unet: Any
+    vae: Any
+    vae_dtype: Any
+    text_encoders: Any
+    train_dataset_group: Any
+    val_dataset_group: Any
+    collator: Any
+    weight_dtype: torch.dtype
+    save_dtype: Any
+    tokenizers: Any
+    training_started_at: float
+    session_id: int
+    model_version: Any
+    use_user_config: bool
+    use_dreambooth_method: bool
+    text_encoding_strategy: Any
+    tokenize_strategy: Any
+    train_unet: bool
+    train_text_encoder: bool
+    net_kwargs: dict | None = None
+
+
+@dataclass
+class PpLoopCounters:
+    global_step: int = 0
+    effective_step: int = 0
+    skipped: int = 0
+    epoch: int = 0
+    batch_index: int = 0
+    last_loss: float | None = None
+
+
+def _distributed(group=None) -> bool:
+    import torch.distributed as dist
+
+    return bool(dist.is_available() and dist.is_initialized())
+
+
+def validate_pp_process_group(accelerator) -> None:
+    """The shared validator: first init must be the multi-backend PP group."""
+
+    from library.runtime.accelerator import validate_pp_process_group_backend
+
+    validate_pp_process_group_backend(accelerator)
+
+
+def build_pp_train_dataloader(args, dataset_group, collator):
+    """The unsharded, per-epoch-deterministic loader both stages iterate.
+
+    Same dataset, same collator and the same resolve_loader_batch contract as
+    the ordinary path; no ``accelerator.prepare`` (that would install a
+    DistributedSampler and shard the batch between the stages).  The shuffle
+    order is pinned to ``(seed, epoch)`` through a dedicated generator, so the
+    batch identity survives a resume without depending on mid-epoch RNG state.
+    """
+
+    from library.training.dataloader_batch import resolve_loader_batch
+
+    dataset_group.set_current_strategies()
+    batch_plan = resolve_loader_batch(args, dataset_group)
+    args._dataloader_batch_plan = batch_plan.as_dict()
+    n_workers = min(getattr(args, "max_data_loader_n_workers", 0) or 0, os.cpu_count() or 1)
+    kwargs = {
+        "batch_size": batch_plan.loader_batch_size,
+        "collate_fn": collator,
+        "num_workers": n_workers,
+        "pin_memory": getattr(args, "dataloader_pin_memory", False),
+    }
+    if n_workers > 0:
+        kwargs["prefetch_factor"] = getattr(args, "dataloader_prefetch_factor", 2)
+    generator = torch.Generator()
+    generator.manual_seed(int(getattr(args, "seed", 0) or 0))
+    return torch.utils.data.DataLoader(dataset_group, shuffle=True, generator=generator, **kwargs)
+
+
+def derive_run_id(args, family: str = "moss_image") -> str:
+    """A deterministic, identical-on-every-rank run identity."""
+
+    import hashlib
+
+    # Run material only: the identity must survive a resume into a different
+    # output directory while still binding seed / run name / step budget.
+    material = "|".join(
+        str(part)
+        for part in (
+            family,
+            getattr(args, "seed", None),
+            getattr(args, "output_name", None),
+        )
+    )
+    # Full 64-hex digest: the PP checkpoint identity validator accepts
+    # sha256 content digests only.
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def run_identity(run_id: str, args) -> dict[str, str]:
+    """The run identity is one pipeline-wide fact: no rank component."""
+
+    # Identity values must be sha256 content digests (validate_identity);
+    # ``run_id`` already is the full sha256 of the run material.
+    return {"run": run_id}
+
+
+def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens, dtype=None):
+    """Build this rank's stage-local runtime (real MOSS PP runtime only)."""
+
+    import torch.distributed as dist
+
+    from library.training.optimizers import get_optimizer
+    from library.training.pp.contract import PipelineRuntimeConfig
+    from library.training.pp.moss_runtime import build_moss_pipeline_runtime
+
+    # LoRA masters stay FP32; the network moves device-only before the stage
+    # module captures its parameter references (never a full-model dtype cast).
+    network.to(device=accelerator.device)
+    config = PipelineRuntimeConfig.from_config(args)
+    world_size = int(accelerator.num_processes)
+    rank = dist.get_rank() if _distributed() else 0
+    is_last = rank == int(config.stages) - 1
+    device = accelerator.device
+    scaler = _last_stage_scaler(device, is_last)
+    return build_moss_pipeline_runtime(
+        unet,
+        config=config,
+        rank=rank,
+        world_size=world_size,
+        device=device,
+        latent_shape=latent_shape,
+        max_text_tokens=max_text_tokens,
+        dtype=dtype,
+        network=network,
+        scaler=scaler,
+        optimizer_factory=_stage_optimizer_factory(args),
+        max_grad_norm=getattr(args, "max_grad_norm", None),
+    )
+
+
+def _last_stage_scaler(device, is_last: bool):
+    if not is_last:
+        return None
+    try:
+        scaler = torch.amp.GradScaler(device.type)
+    except (TypeError, AttributeError):  # pragma: no cover - older torch
+        scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+    if scaler is None:
+        raise PipelineParallelError(
+            "pp_grad_scaler_missing",
+            "the last PP stage needs a GradScaler for plain fp16 training",
+        )
+    return scaler
+
+
+def _stage_optimizer_factory(args):
+    """Per-stage ``get_optimizer`` over that stage's trainable parameters."""
+
+    from library.training.optimizers import get_optimizer
+
+    return lambda stage_module: get_optimizer(
+        args, list(stage_module.trainable_parameters())
+    )[2]  # get_optimizer returns the (name, args, optimizer) triple
+
+
+def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens=None, dtype=None):
+    """Build this rank's Anima stage-local runtime (library-level, wired).
+
+    The 5D ``(B, C, 1, H, W)`` latent shape, ``build_anima_schedule`` and the
+    shared fp16 transaction all come from the existing library runtime; this
+    wrapper only supplies the trainer-side pieces (per-stage optimizer from
+    ``get_optimizer``, last-stage GradScaler, fp32 LoRA masters).
+    """
+
+    import torch.distributed as dist
+
+    from library.training.pp.contract import PipelineRuntimeConfig
+    from library.training.pp.runtime import build_anima_pipeline_runtime
+
+    network.to(device=accelerator.device)
+    config = PipelineRuntimeConfig.from_config(args)
+    world_size = int(accelerator.num_processes)
+    rank = dist.get_rank() if _distributed() else 0
+    is_last = rank == int(config.stages) - 1
+    scaler = _last_stage_scaler(accelerator.device, is_last)
+    return build_anima_pipeline_runtime(
+        unet,
+        config=config,
+        world_size=world_size,
+        rank=rank,
+        device=accelerator.device,
+        latent_shape=latent_shape,
+        dtype=dtype,
+        network=network,
+        scaler=scaler,
+        optimizer_factory=_stage_optimizer_factory(args),
+        max_grad_norm=getattr(args, "max_grad_norm", None),
+    )
+
+
+def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) -> None:
+    """One whole pipeline step with the frozen §4 semantics (family-blind)."""
+
+    runtime.zero_grad()
+    result = runtime.step(
+        inputs.wire_for(runtime),
+        target=inputs.target if runtime.is_last else None,
+        losses=[],
+        **inputs.step_kwargs(runtime),
+    )
+    # MOSS runtime.step returns (prediction, losses); the Anima library runtime
+    # returns a PpStepResult. Normalize without changing either contract.
+    if hasattr(result, "losses") and hasattr(result, "topology"):
+        prediction, losses = result.prediction, list(result.losses)
+    else:
+        prediction, losses = result
+    outcome = runtime.optimizer_step()
+    counters.global_step += 1
+    counters.skipped += 1 if outcome.skipped else 0
+    if outcome.skipped:
+        counters.last_loss = None
+    else:
+        counters.effective_step += 1
+        if scheduler is not None:
+            scheduler.step()
+        if losses:
+            # Display口径 = the whole-batch mean, not the last microbatch: each
+            # logged loss already carries the schedule's 1/n_microbatches
+            # factor, so summing the (scale-restored) values reproduces the
+            # single-device whole-batch MSE exactly (equal-size microbatches).
+            # Verified on the equivalence fixture: sum(scaled) == full-batch
+            # MSE bit-equal, while losses[-1] alone reads ~0.5x low at m=2.
+            values = [
+                float(value if not torch.is_tensor(value)
+                      else value.detach().float()) / max(outcome.scale, 1.0)
+                for value in losses
+            ]
+            counters.last_loss = float(sum(values))
+    del prediction
+
+
+def _bundle_root(args, run_id: str, step: int):
+    return os.path.join(str(args.output_dir), "pp_runs", f"{run_id}-step{int(step)}")
+
+
+def save_pp_bundle(args, runtime, *, counters: PpLoopCounters, scheduler, run_id: str, accelerator, family: str = "moss_image") -> str:
+    """Save the negotiated PP bundle + trainer-level state; never overwrite."""
+
+    from library.training.pp.checkpoint import save_distributed_checkpoint
+    from library.training.pp.trainer_resume import (
+        capture_trainer_payload,
+        save_trainer_resume,
+    )
+
+    root = _bundle_root(args, run_id, counters.global_step)
+    marker = Path(root) / "pp_checkpoint.json"
+    if marker.is_file():
+        # Same-step periodic + end-of-run double save: the bundle at this step
+        # already exists and was created by this run; skipping is idempotent,
+        # while a *new* root still refuses to overwrite anything.
+        logger.info("PP bundle for step %s already exists at %s; skipping", counters.global_step, root)
+        return str(root)
+    result = save_distributed_checkpoint(
+        root, runtime,
+        step=int(counters.global_step),
+        identity=run_identity(run_id, args),
+    )
+    payload = capture_trainer_payload(
+        rank=runtime.layout.stage_index,
+        run_id=run_id,
+        family=family,
+        global_step=counters.global_step,
+        effective_step=counters.effective_step,
+        epoch=counters.epoch,
+        batch_index=counters.batch_index,
+        lr_scheduler=scheduler,
+        seed=getattr(args, "seed", None),
+    )
+    save_trainer_resume(root, rank=runtime.layout.stage_index, payload=payload)
+    if accelerator.is_main_process:
+        pointer = os.path.join(str(args.output_dir), "pp_runs", "LATEST.json")
+        with open(pointer, "w", encoding="utf-8") as handle:
+            json.dump({"run_id": run_id, "root": str(result.root), "step": int(result.step)}, handle)
+        logger.info("PP bundle saved: %s (step %s)", result.root, result.step)
+    return str(result.root)
+
+
+def resume_pp_bundle(args, runtime, *, scheduler, run_id: str, group=None, family: str = "moss_image"):
+    """Restore stage + trainer state from ``args.resume`` (exact or opt-in)."""
+
+    from library.training.pp.checkpoint import load_distributed_checkpoint
+    from library.training.pp.trainer_resume import (
+        load_trainer_resume,
+        require_exact_resume_or_opt_in,
+    )
+
+    root = str(args.resume)
+    require_exact_resume_or_opt_in(root, args, family=family)
+    identity = run_identity(run_id, args)
+    state = load_distributed_checkpoint(root, runtime, identity=identity, group=group)
+    payload = load_trainer_resume(
+        root,
+        rank=runtime.layout.stage_index,
+        run_id=run_id,
+        family=family,
+        expected_step=int(state.step),
+        lr_scheduler=scheduler,
+        group=group,
+    )
+    return state, payload
+
+
+def _gather_final_adapter_state(runtime) -> dict[str, dict]:
+    """Gather every stage's adapter state onto this rank (CPU tensors)."""
+
+    import torch.distributed as dist
+
+    from library.training.pp.checkpoint_state import stage_adapter_state
+
+    local = stage_adapter_state(runtime.stage_module)
+    if not _distributed():
+        return local
+    gathered: list = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, local)
+    merged: dict[str, dict] = {}
+    for entry in gathered:
+        for name, state in (entry or {}).items():
+            if name in merged:
+                raise PipelineParallelError(
+                    "pp_checkpoint_state_mismatch",
+                    f"adapter {name!r} is claimed by two stages; the full LoRA "
+                    "output cannot be assembled unambiguously",
+                )
+            merged[name] = state
+    return merged
+
+
+def save_final_lora(trainer, args, runtime, handoff, counters, metadata, minimum_metadata) -> str:
+    """Write the ordinary-format LoRA output (rank 0) from gathered states."""
+
+    from library.training.checkpoints import CheckpointSaver, get_last_ckpt_name
+
+    saver = CheckpointSaver(
+        args=args,
+        accelerator=handoff.accelerator,
+        save_dtype=handoff.save_dtype,
+        metadata=metadata,
+        minimum_metadata=minimum_metadata,
+        get_sai_model_spec_fn=trainer.get_sai_model_spec,
+        current_epoch=counters.epoch,
+        current_step=counters.effective_step,
+        progress_sink=None,
+    )
+    network = handoff.network
+    unwrapped = handoff.accelerator.unwrap_model(network)
+    module_by_name = {lora.lora_name: lora for lora in unwrapped.unet_loras}
+    for name, state in _gather_final_adapter_state(runtime).items():
+        module = module_by_name.get(name)
+        if module is None:
+            raise PipelineParallelError(
+                "pp_checkpoint_state_mismatch",
+                f"gathered adapter {name!r} has no module on rank 0's network",
+            )
+        module.load_state_dict(
+            {key: value.float() for key, value in state.items()}, strict=True
+        )
+    saver.save_final(network, counters.effective_step, counters.epoch + 1)
+    return os.path.join(args.output_dir, get_last_ckpt_name(args, "." + args.save_model_as))
+
+
+__all__ = [
+    "PpLoopCounters",
+    "PpSessionHandoff",
+    "build_anima_trainer_runtime",
+    "build_moss_trainer_runtime",
+    "build_pp_train_dataloader",
+    "derive_run_id",
+    "pp_train_step",
+    "resume_pp_bundle",
+    "run_identity",
+    "run_pp_trainer_session",
+    "save_final_lora",
+    "save_pp_bundle",
+    "validate_pp_process_group",
+]
+
+
+def _resolve_max_steps(args, updates_per_epoch: int) -> int:
+    if getattr(args, "max_train_steps", None):
+        return int(args.max_train_steps)
+    epochs = int(getattr(args, "max_train_epochs", None) or 1)
+    args.max_train_steps = epochs * updates_per_epoch
+    return int(args.max_train_steps)
+
+
+def _build_metadata(trainer, args, handoff, counters, loader):
+    from library.training.metadata import (
+        add_dataset_metadata,
+        add_model_hash_metadata,
+        build_training_metadata,
+        finalize_metadata,
+    )
+
+    metadata = build_training_metadata(
+        args,
+        session_id=handoff.session_id,
+        training_started_at=handoff.training_started_at,
+        text_encoder_lr=getattr(args, "text_encoder_lr", None),
+        optimizer_name=str(getattr(args, "optimizer_type", "AdamW8bit")),
+        optimizer_args={},
+        model_version=handoff.model_version,
+        num_train_images=handoff.train_dataset_group.num_train_images,
+        num_val_images=(
+            handoff.val_dataset_group.num_train_images
+            if handoff.val_dataset_group is not None
+            else 0
+        ),
+        num_reg_images=handoff.train_dataset_group.num_reg_images,
+        num_batches_per_epoch=len(loader),
+        num_train_epochs=math.ceil(
+            int(args.max_train_steps) / max(len(loader), 1)
+        ),
+    )
+    trainer.update_metadata(metadata, args)
+    add_dataset_metadata(
+        metadata,
+        handoff.train_dataset_group,
+        args,
+        use_user_config=handoff.use_user_config,
+        use_dreambooth_method=handoff.use_dreambooth_method,
+        # PP: one pipeline step consumes one whole batch; the world is the
+        # stage count, not a data-parallel replication factor.
+        total_batch_size=int(getattr(args, "train_batch_size", 1)),
+    )
+    add_model_hash_metadata(metadata, args)
+    return finalize_metadata(metadata, net_kwargs=handoff.net_kwargs or None)
+
+
+def _report_progress(accelerator, runtime, counters, scheduler, total_steps, *, log_every=1):
+    if counters.global_step % log_every:
+        return
+    loss = counters.last_loss
+    accelerator.print(
+        f"pp step {counters.global_step}/{total_steps} "
+        f"(effective {counters.effective_step}, skipped {counters.skipped}) "
+        f"loss={loss if loss is None else f'{loss:.6f}'} "
+        f"lr={scheduler.get_last_lr()[0] if scheduler is not None else 'n/a'} "
+        f"scale={runtime.scale}"
+    )
+
+
+def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
+    """The dedicated PP training session (dispatched from train_session)."""
+
+    from library.training.optimizers import get_optimizer_train_eval_fn
+    from library.training.pp.trainer_adapters import resolve_trainer_adapter
+    from library.training.pp.trainer_inputs import build_family_step_inputs
+    from library.training.schedulers import get_scheduler_fix
+
+    accelerator = handoff.accelerator
+    adapter = resolve_trainer_adapter(args)
+    adapter.admission(
+        args, world_size=int(accelerator.num_processes),
+        where="train_session.pp_dispatch",
+    )
+    validate_pp_process_group(accelerator)
+    if getattr(args, "gradient_checkpointing", False) and hasattr(handoff.unet, "enable_gradient_checkpointing"):
+        # Real per-block activation checkpointing on the family DiT (the MOSS
+        # contract requires it; Anima opts in the same way).
+        handoff.unet.enable_gradient_checkpointing()
+
+    loader = build_pp_train_dataloader(args, handoff.train_dataset_group, handoff.collator)
+    latent_shape, max_text_tokens = adapter.wire_shape_from_batch(next(iter(loader)))
+    # The LR plan is built from max_train_steps, so the steps budget is
+    # resolved (epochs -> steps when needed) *before* the scheduler exists.
+    total_steps = _resolve_max_steps(args, max(len(loader), 1))
+    run_id = derive_run_id(args, family=adapter.name)
+    runtime = adapter.build_runtime(
+        args, accelerator, handoff.network, handoff.unet,
+        latent_shape=latent_shape, max_text_tokens=max_text_tokens,
+        dtype=handoff.weight_dtype,
+    )
+    scheduler = get_scheduler_fix(args, runtime.optimizer, 1)
+    optimizer_train_fn, optimizer_eval_fn = get_optimizer_train_eval_fn(
+        runtime.optimizer, args
+    )
+
+    counters = PpLoopCounters()
+    resume_step = 0
+    resume_batch_index = 0
+    resume_epoch = 0
+    if getattr(args, "resume", None):
+        state, payload = resume_pp_bundle(
+            args, runtime, scheduler=scheduler, run_id=run_id, family=adapter.name
+        )
+        resume_step = int(state.step)
+        resume_epoch = int(payload.get("epoch", 0))
+        resume_batch_index = int(payload.get("batch_index", 0))
+        counters.global_step = resume_step
+        counters.effective_step = int(payload.get("effective_step", resume_step))
+        counters.epoch = resume_epoch
+        logger.info(
+            "PP exact resume from %s at global_step=%s epoch=%s batch_index=%s",
+            args.resume, resume_step, resume_epoch, resume_batch_index,
+        )
+    metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
+
+    save_every = int(getattr(args, "save_every_n_steps", 0) or 0)
+    save_at_end = bool(getattr(args, "save_state", False) or getattr(args, "save_state_on_train_end", False))
+    optimizer_train_fn()
+    total_steps = int(args.max_train_steps)
+    start_epoch = counters.epoch
+    for epoch in range(start_epoch, math.ceil(total_steps / max(len(loader), 1))):
+        loader.generator.manual_seed(int(getattr(args, "seed", 0) or 0) + epoch)
+        counters.epoch = epoch
+        counters.batch_index = 0
+        for batch in iter(loader):
+            if counters.global_step >= total_steps:
+                break
+            if counters.batch_index < resume_batch_index:
+                counters.batch_index += 1
+                continue
+            inputs = build_family_step_inputs(
+                adapter,
+                trainer, args, batch,
+                accelerator=accelerator,
+                vae=handoff.vae,
+                vae_dtype=handoff.vae_dtype,
+                weight_dtype=handoff.weight_dtype,
+                text_encoding_strategy=handoff.text_encoding_strategy,
+                is_first=runtime.is_first,
+            )
+            pp_train_step(runtime, inputs, counters, scheduler=scheduler)
+            counters.batch_index += 1
+            resume_batch_index = 0
+            _report_progress(accelerator, runtime, counters, scheduler, total_steps)
+            if save_every and counters.global_step % save_every == 0:
+                save_pp_bundle(args, runtime, counters=counters, scheduler=scheduler, run_id=run_id, accelerator=accelerator, family=adapter.name)
+        else:
+            continue
+        break
+    if save_at_end or save_every == 0:
+        save_pp_bundle(args, runtime, counters=counters, scheduler=scheduler, run_id=run_id, accelerator=accelerator, family=adapter.name)
+    save_final_lora(trainer, args, runtime, handoff, counters, metadata, minimum_metadata)
+    optimizer_eval_fn()
+    accelerator.end_training()

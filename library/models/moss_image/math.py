@@ -28,6 +28,20 @@ def _validate_skip_layers(layers, depth, name='skip_layers'):
     return frozenset(layers)
 
 
+def time_sinusoid(times, freq_dim: int, device) -> torch.Tensor:
+    """Training time path: float64 sinusoid, float32 into the MLP.
+
+    Single authority for the production forward and the PP stages, so a PP
+    stage cannot re-derive the precision chain (dit.py: fp64 phase, fp32
+    embedding into ``time_embedding``).
+    """
+    times = torch.as_tensor(times, device=device, dtype=torch.float32).reshape(-1)
+    half = freq_dim // 2
+    freq = 10000 ** (-torch.arange(half, device=times.device, dtype=torch.float64) / half)
+    phase = times.double()[:, None] * freq
+    return torch.cat((phase.cos(), phase.sin()), -1).float()
+
+
 def _rotate(x, rope):
     sin, cos = rope.chunk(2, -1)
     sin = torch.cat((sin, sin), -1).unsqueeze(-2)

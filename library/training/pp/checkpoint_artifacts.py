@@ -43,6 +43,7 @@ from .checkpoint_state import (
     PP_CHECKPOINT_VERSION,
     PpStageSnapshot,
     _validate_step,
+    checkpoint_format_for_family,
     content_hash_file,
     stage_adapter_modules,
     validate_identity,
@@ -197,8 +198,14 @@ def _plan_record(
         "ranges": ranges,
     }
 
-def read_manifest(root: str | Path) -> dict[str, Any]:
-    """Read and schema-check the manifest of a PP run root."""
+def read_manifest(
+    root: str | Path, *, format_name: str = PP_CHECKPOINT_FORMAT
+) -> dict[str, Any]:
+    """Read and schema-check the manifest of a PP run root.
+
+    ``format_name`` is the schema the *caller's family* writes; a foreign
+    artifact is refused before any field beyond ``format``/``version`` is read.
+    """
 
     path = manifest_path(root)
     if not path.is_file():
@@ -217,10 +224,12 @@ def read_manifest(root: str | Path) -> dict[str, Any]:
         raise PipelineParallelError(
             CODE_CHECKPOINT_INCOMPLETE, f"{path} is not a JSON object"
         )
-    if data.get("format") != PP_CHECKPOINT_FORMAT:
+    if data.get("format") != format_name:
         raise PipelineParallelError(
             CODE_CHECKPOINT_INCOMPLETE,
-            f"{path} is not an Anima PP stage checkpoint (format={data.get('format')!r})",
+            f"{path} is not a {format_name!r} PP stage checkpoint (format="
+            f"{data.get('format')!r}); formats are family-specific and never "
+            "cross-read",
         )
     if data.get("version") != PP_CHECKPOINT_VERSION:
         raise PipelineParallelError(
@@ -416,7 +425,9 @@ def _resolve_artifact(
         )
     return live_rank, entry, path
 
-def _read_payload(path: Path) -> dict[str, Any]:
+def _read_payload(
+    path: Path, *, format_name: str = PP_CHECKPOINT_FORMAT
+) -> dict[str, Any]:
     """``torch.load`` plus the payload schema checks (no state is applied)."""
 
     try:
@@ -425,11 +436,12 @@ def _read_payload(path: Path) -> dict[str, Any]:
         raise PipelineParallelError(
             CODE_CHECKPOINT_INCOMPLETE, f"unreadable PP stage artifact {path}: {exc}"
         ) from exc
-    if not isinstance(payload, dict) or payload.get("format") != PP_CHECKPOINT_FORMAT:
+    if not isinstance(payload, dict) or payload.get("format") != format_name:
         raise PipelineParallelError(
             CODE_CHECKPOINT_INCOMPLETE,
-            f"{path} is not an Anima PP stage artifact (format="
-            f"{payload.get('format') if isinstance(payload, dict) else None!r})",
+            f"{path} is not a {format_name!r} PP stage artifact (format="
+            f"{payload.get('format') if isinstance(payload, dict) else None!r}); "
+            "formats are family-specific and never cross-read",
         )
     if payload.get("version") != PP_CHECKPOINT_VERSION:
         raise PipelineParallelError(
@@ -458,7 +470,12 @@ def read_stage_checkpoint(
     """
 
     root_path = Path(root)
-    manifest = read_manifest(root_path)
+    live_family = None
+    topology_probe = getattr(runtime, "topology", None)
+    if callable(topology_probe):
+        live_family = (topology_probe() or {}).get("family")
+    format_name = checkpoint_format_for_family(live_family)
+    manifest = read_manifest(root_path, format_name=format_name)
     live_rank, entry, path = _resolve_artifact(
         root_path, manifest, rank=rank, world_size=world_size, group=group
     )
@@ -478,7 +495,7 @@ def read_stage_checkpoint(
             f"(saved={saved_identity}, live={requested_identity}); the checkpoint "
             "belongs to different content (base weights / dataset / config)",
         )
-    payload = _read_payload(path)
+    payload = _read_payload(path, format_name=format_name)
     payload_identity = dict(payload.get("identity") or {})
     if payload_identity != saved_identity:
         raise PipelineParallelError(

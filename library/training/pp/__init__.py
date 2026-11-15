@@ -51,6 +51,12 @@ _EXPORTS: dict[str, str] = {
     "apply_stage_checkpoint": "checkpoint",
     "load_distributed_checkpoint": "checkpoint",
     "save_distributed_checkpoint": "checkpoint",
+    # .checkpoint_validation
+    "validate_checkpoint_content": "checkpoint_validation",
+    "validate_optimizer_payload": "checkpoint_validation",
+    "validate_pp_growth_tracker": "checkpoint_validation",
+    "validate_pp_scale": "checkpoint_validation",
+    "validate_scaler_state": "checkpoint_validation",
     # .checkpoint_artifacts
     "PpResumeState": "checkpoint_artifacts",
     "create_run_root": "checkpoint_artifacts",
@@ -58,6 +64,8 @@ _EXPORTS: dict[str, str] = {
     "read_stage_checkpoint": "checkpoint_artifacts",
     "save_stage_checkpoint": "checkpoint_artifacts",
     # .checkpoint_state
+    "MOSS_IMAGE_PP_CHECKPOINT_FORMAT": "checkpoint_state",
+    "checkpoint_format_for_family": "checkpoint_state",
     "PP_CHECKPOINT_FORMAT": "checkpoint_state",
     "PP_CHECKPOINT_VERSION": "checkpoint_state",
     "PpStageSnapshot": "checkpoint_state",
@@ -113,6 +121,11 @@ _EXPORTS: dict[str, str] = {
     "layout_from_plan": "placement",
     "release_foreign_blocks": "placement",
     "stage_adapter_modules": "placement",
+    # .moss_runtime
+    "MossPipelineRuntime": "moss_runtime",
+    "MossWireSpec": "moss_runtime",
+    "build_moss_pipeline_runtime": "moss_runtime",
+    "resolve_moss_wire_spec": "moss_runtime",
     # .runtime
     "AnimaPipelineRuntime": "runtime",
     "PpStepResult": "runtime",
@@ -133,6 +146,33 @@ _EXPORTS: dict[str, str] = {
     "WIRE_FROZEN_INDICES": "stages",
     "assert_frozen_boundary_agreement": "stages",
     "frozen_boundary_indices": "stages",
+    # .trainer_admission
+    "require_moss_trainer_admission": "trainer_admission",
+    "require_anima_trainer_admission": "trainer_admission",
+    "require_family_trainer_admission": "trainer_admission",
+    # .trainer_adapters
+    "resolve_trainer_adapter": "trainer_adapters",
+    "trainer_resume_format": "trainer_adapters",
+    # .trainer_resume
+    "load_trainer_resume": "trainer_resume",
+    "require_exact_resume_or_opt_in": "trainer_resume",
+    "save_trainer_resume": "trainer_resume",
+    # .trainer_inputs
+    "build_step_inputs": "trainer_inputs",
+    "build_family_step_inputs": "trainer_inputs",
+    # .trainer_session
+    "PpLoopCounters": "trainer_session",
+    "PpSessionHandoff": "trainer_session",
+    "build_anima_trainer_runtime": "trainer_session",
+    "build_moss_trainer_runtime": "trainer_session",
+    "build_pp_train_dataloader": "trainer_session",
+    "derive_run_id": "trainer_session",
+    "pp_train_step": "trainer_session",
+    "resume_pp_bundle": "trainer_session",
+    "run_pp_trainer_session": "trainer_session",
+    "save_final_lora": "trainer_session",
+    "save_pp_bundle": "trainer_session",
+    "validate_pp_process_group": "trainer_session",
     # .transactions
     "PpFp16Transaction": "transactions",
     "PpStepOutcome": "transactions",
@@ -158,12 +198,18 @@ _SUBMODULES: frozenset[str] = frozenset(
         "errors",
         "gate",
         "layout",
+        "moss_runtime",
         "numerics",
         "placement",
         "runtime",
         "schedule",
         "stages",
         "transactions",
+        "trainer_admission",
+        "trainer_adapters",
+        "trainer_inputs",
+        "trainer_resume",
+        "trainer_session",
     }
 )
 

@@ -505,6 +505,49 @@ def _run_training_session(trainer, args) -> None:
         lokr_factor=getattr(args, "lokr_factor", None),
     )
 
+    # PP dispatch (frozen fork point): a wired MOSS pipeline-parallel run leaves
+    # the shared session here -- after the cache / model / network setup, before
+    # the data-parallel optimizer/dataloader assembly. Everything else keeps the
+    # ordinary path unchanged.
+    from library.training.pp.gate import pipeline_parallel_enabled
+
+    if pipeline_parallel_enabled(args):
+        from library.training.pp.trainer_session import (
+            PpSessionHandoff,
+            run_pp_trainer_session,
+        )
+
+        run_pp_trainer_session(
+            trainer,
+            args,
+            PpSessionHandoff(
+                args=args,
+                accelerator=accelerator,
+                network=network,
+                unet=unet,
+                vae=vae,
+                vae_dtype=vae_dtype,
+                text_encoders=text_encoders,
+                train_dataset_group=train_dataset_group,
+                val_dataset_group=val_dataset_group,
+                collator=collator,
+                weight_dtype=weight_dtype,
+                save_dtype=save_dtype,
+                tokenizers=tokenizers,
+                training_started_at=training_started_at,
+                session_id=session_id,
+                model_version=model_version,
+                use_user_config=use_user_config,
+                use_dreambooth_method=use_dreambooth_method,
+                text_encoding_strategy=text_encoding_strategy,
+                tokenize_strategy=tokenize_strategy,
+                train_unet=train_unet,
+                train_text_encoder=train_text_encoder,
+                net_kwargs=net_kwargs,
+            ),
+        )
+        return
+
     (
         optimizer,
         optimizer_name,

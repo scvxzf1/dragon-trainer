@@ -11,9 +11,32 @@ MOSS_NUM_TRAIN_TIMESTEPS = 1000
 MOSS_TRAINING_SHIFT = 1.0
 
 
-def uniform_grid_sigmas(batch_size, *, device, dtype=torch.float32):
-    indices = torch.randint(MOSS_NUM_TRAIN_TIMESTEPS, (batch_size,), device=device)
+def uniform_grid_sigmas(batch_size, *, device, dtype=torch.float32, generator=None):
+    indices = torch.randint(
+        MOSS_NUM_TRAIN_TIMESTEPS, (batch_size,), device=device, generator=generator
+    )
     return (1.0 - indices.float() / MOSS_NUM_TRAIN_TIMESTEPS).to(dtype=dtype)
+
+
+def sample_moss_flow(latents, *, generator=None):
+    """The MOSS flow-matching training inputs from clean latents.
+
+    Returns ``(noise, sigmas, noisy_input)``. This is the exact input/noise
+    policy of :func:`compute_noise_pred_and_target`, extracted so the PP trainer
+    can reuse it (and synchronize it across stages) without re-implementing the
+    math. With ``generator=None`` the draw comes from the default global RNG in
+    the same order as before, so the non-PP path is unchanged.
+    """
+
+    noise = torch.randn(
+        latents.shape, generator=generator, device=latents.device, dtype=latents.dtype
+    )
+    sigmas = uniform_grid_sigmas(
+        latents.shape[0], device=latents.device, generator=generator
+    )
+    sigma_view = sigmas.to(latents.dtype).view(-1, 1, 1, 1)
+    noisy_input = (1 - sigma_view) * latents + sigma_view * noise
+    return noise, sigmas, noisy_input
 
 
 def forward_for_loss(dit, latents, text_emb, sigmas, **kwargs):
@@ -54,10 +77,8 @@ def compute_noise_pred_and_target(
 ):
     if latents.ndim != 4 or latents.shape[1] != 128:
         raise ValueError("MOSS cached latents must be [B,128,H,W]")
-    noise = torch.randn_like(latents)
-    sigmas = uniform_grid_sigmas(latents.shape[0], device=latents.device)
+    noise, sigmas, noisy_input = sample_moss_flow(latents)
     sigma_view = sigmas.to(latents.dtype).view(-1, 1, 1, 1)
-    noisy_input = (1 - sigma_view) * latents + sigma_view * noise
     from library.training.router_conditioning import apply_router_conditioning
     trainer._hydra_warmup_step = apply_router_conditioning(
         network=ctx.network, noisy_model_input=noisy_input, timesteps=sigmas,

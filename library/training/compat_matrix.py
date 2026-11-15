@@ -1118,17 +1118,26 @@ def check_training_compat(
                 str(exc),
             )
         else:
-            # The family planner above is static metadata. This is the runtime
-            # gate: it opens only for a family that publishes a stage-local PP
-            # backend *and* whose runtime contract validates in this process
-            # (schedule, microbatches >= stages, world size, no quantized base,
-            # torch.distributed.pipelining importable). Every other family keeps
-            # failing closed with a named code.
-            from library.training.pp.gate import pipeline_parallel_runtime_issue
+            from library.training.pp.gate import (
+                pipeline_parallel_runtime_issue,
+                trainer_pp_wired,
+            )
 
             issue = pipeline_parallel_runtime_issue(config, world_size=world_size)
             if issue is not None:
                 out.error(issue.code, "pipeline_parallel", issue.message)
+            elif trainer_pp_wired(config):
+                out.warning(
+                    "pipeline_parallel_experimental_runtime",
+                    "pipeline_parallel",
+                    f"{family_spec.display_name} pipeline_parallel resolves to the "
+                    "experimental stage-local PP v0 runtime (2 stages, 1F1B, fp16 "
+                    "transaction). It is served by the family's dedicated PP trainer "
+                    "session in library.training.pp (train_session dispatches it "
+                    "before the accelerate data-parallel path); unwired families keep "
+                    "the pp_trainer_path_unavailable refusal instead of silently "
+                    "falling back to DDP.",
+                )
             else:
                 out.warning(
                     "pipeline_parallel_experimental_runtime",

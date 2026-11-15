@@ -57,8 +57,26 @@ from .errors import (
 
 #: Payload/manifest schema name; a foreign artifact is refused, not read.
 PP_CHECKPOINT_FORMAT = "anima-pp-stage-checkpoint"
+#: MOSS-Image payload/manifest schema (a distinct format: the Anima loader
+#: refuses it and vice versa, before any field is read).
+MOSS_IMAGE_PP_CHECKPOINT_FORMAT = "moss-image-pp-stage-checkpoint"
 #: Bumped whenever the payload/manifest meaning changes (append-only history).
 PP_CHECKPOINT_VERSION = 1
+
+#: family -> checkpoint format for every family that publishes a stage-local PP
+#: runtime.  Families without a runtime never save one, so the default is the
+#: historical Anima format.
+_CHECKPOINT_FORMATS_BY_FAMILY = {
+    "moss_image": MOSS_IMAGE_PP_CHECKPOINT_FORMAT,
+}
+
+
+def checkpoint_format_for_family(family: str | None) -> str:
+    """The checkpoint schema name a family's PP runtime writes and reads."""
+
+    if family is None:
+        return PP_CHECKPOINT_FORMAT
+    return _CHECKPOINT_FORMATS_BY_FAMILY.get(str(family), PP_CHECKPOINT_FORMAT)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY_KEY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,63}$")
@@ -323,12 +341,14 @@ class PpStageSnapshot:
     scale: float | None
     growth_tracker: int
     last_skip: bool | None
+    #: Schema name written into the payload (family-specific, defaults to Anima).
+    format_name: str = PP_CHECKPOINT_FORMAT
 
     def as_payload(self) -> dict[str, Any]:
         """The on-disk payload for this rank (``torch.save``-able)."""
 
         return {
-            "format": PP_CHECKPOINT_FORMAT,
+            "format": self.format_name,
             "version": PP_CHECKPOINT_VERSION,
             "step": int(self.step),
             "topology": dict(self.topology),
@@ -434,7 +454,17 @@ def capture_stage_snapshot(
         scale=scale,
         growth_tracker=growth_tracker,
         last_skip=last_skip,
+        format_name=checkpoint_format_for_family(
+            getattr(runtime, "topology", lambda: {}).call if False else (
+                _topology_family(runtime)
+            )
+        ),
     )
+
+
+def _topology_family(runtime: Any) -> str | None:
+    topology = runtime.topology()
+    return topology.get("family") if isinstance(topology, Mapping) else None
 
 
 # ---------------------------------------------------------------------------

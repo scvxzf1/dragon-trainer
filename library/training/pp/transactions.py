@@ -365,6 +365,37 @@ class PpFp16Transaction:
         self._growth_tracker = int(growth_tracker)
         self._last_skip = last_skip
 
+    def restore_policy(
+        self,
+        *,
+        growth_factor: float,
+        backoff_factor: float,
+        growth_interval: int,
+        where: str | None = None,
+    ) -> None:
+        """Re-point this stage's fp16 growth policy at restored values.
+
+        The policy is broadcast at *construction* from the last stage's scaler;
+        after a checkpoint load the last stage's scaler carries the checkpointed
+        policy, so the non-last stages must adopt it too -- a stage that kept
+        its constructor guess would grow the scale at a different step and then
+        unscale the boundary gradients by the wrong factor.
+        """
+
+        factor = float(growth_factor)
+        backoff = float(backoff_factor)
+        interval = int(growth_interval)
+        if not factor > 1.0 or not 0.0 < backoff < 1.0 or interval < 1:
+            raise PipelineParallelError(
+                CODE_GRAD_SCALER_MISSING,
+                f"restored fp16 growth policy is invalid at {where or self._where}: "
+                f"growth_factor={factor!r}, backoff_factor={backoff!r}, "
+                f"growth_interval={interval!r}",
+            )
+        self._growth_factor = factor
+        self._backoff_factor = backoff
+        self._growth_interval = interval
+
     def scale_loss(self, loss: Tensor) -> Tensor:
         """Multiply the raw loss by the shared fp16 scale.
 

@@ -75,6 +75,7 @@ from .checkpoint_state import (
     PP_CHECKPOINT_FORMAT,
     PP_CHECKPOINT_VERSION,
     capture_stage_snapshot,
+    checkpoint_format_for_family,
     content_hash_file,
     topology_digest,
 )
@@ -193,7 +194,7 @@ def _build_manifest(
     first_topology = dict(ranks[0]["topology"])
     plan = _plan_record(first_topology, ranks)
     return {
-        "format": PP_CHECKPOINT_FORMAT,
+        "format": checkpoint_format_for_family(first_topology.get("family")),
         "version": PP_CHECKPOINT_VERSION,
         "world_size": int(world_size),
         "stages": int(first_topology["stages"]),
@@ -391,7 +392,12 @@ def save_distributed_checkpoint(
         created=created,
         group=group,
     )
-    manifest = read_manifest(root)
+    manifest = read_manifest(
+        root,
+        format_name=checkpoint_format_for_family(
+            dict(outcomes[0]["topology"]).get("family")
+        ),
+    )
     files = {
         int(entry["rank"]): stage_path(root, int(entry["rank"]))
         for entry in manifest["ranks"]
@@ -422,11 +428,14 @@ def _validate_optimizer_shape(state: PpResumeState, optimizer: Any) -> None:
         )
 
 
-def apply_stage_checkpoint(state: PpResumeState, runtime: Any) -> PpResumeState:
-    """Load a validated checkpoint into this rank's runtime.
+def validate_stage_checkpoint(state: PpResumeState, runtime: Any) -> dict[str, Any]:
+    """Pure validation of a loaded state against this rank's runtime.
 
-    Called only after the group agreed on the load, so a rank never starts
-    restoring while its peer is still deciding.
+    Raises before **any** mutation when the state does not fit (C3): adapter
+    ownership, optimizer param-group/state shape, transaction/scaler existence
+    and scale presence are checked here so a predictable mismatch never leaves
+    one rank mutated while its peer refuses.  Returns the pieces the mutation
+    phase needs.
     """
 
     optimizer = getattr(runtime, "optimizer", None)
@@ -437,16 +446,14 @@ def apply_stage_checkpoint(state: PpResumeState, runtime: Any) -> PpResumeState:
             "applied to it",
         )
     owned = _validate_adapters(state.adapters, runtime.stage_module)
-    for name, module in owned.items():
-        module.load_state_dict(state.adapters[name], strict=True)
     _validate_optimizer_shape(state, optimizer)
-    try:
-        optimizer.load_state_dict(state.optimizer)
-    except (ValueError, KeyError, RuntimeError) as exc:
-        raise PipelineParallelError(
-            CODE_CHECKPOINT_STATE_MISMATCH,
-            f"rank {state.rank} optimizer state does not load: {exc}",
-        ) from exc
+    # F2: payload semantics are pure local checks too -- scale/tracker
+    # legality, GradScaler keys/ranges and optimizer state content are all
+    # refused here, before any rank mutates anything.
+    from library.training.pp.checkpoint_validation import validate_checkpoint_content, validate_optimizer_payload
+
+    validate_checkpoint_content(state)
+    validate_optimizer_payload(state.optimizer, optimizer)
     transaction = getattr(runtime, "transaction", None)
     if transaction is None:
         if state.scaler is not None or state.scale is not None:
@@ -455,40 +462,70 @@ def apply_stage_checkpoint(state: PpResumeState, runtime: Any) -> PpResumeState:
                 f"rank {state.rank} checkpoint carries fp16 state but this runtime has "
                 "no optimizer transaction to restore it into",
             )
-        return state
-    if state.scale is None:
-        raise PipelineParallelError(
-            CODE_CHECKPOINT_STATE_MISMATCH,
-            f"rank {state.rank} checkpoint has no fp16 scale, but this runtime owns an "
-            "optimizer transaction",
-        )
-    scaler = getattr(transaction, "scaler", None)
-    if scaler is not None:
-        if state.scaler is None:
+        restore_args = None
+    else:
+        if state.scale is None:
             raise PipelineParallelError(
                 CODE_CHECKPOINT_STATE_MISMATCH,
-                f"rank {state.rank} is the stage that owns the GradScaler, but the "
-                "checkpoint has no scaler state",
+                f"rank {state.rank} checkpoint has no fp16 scale, but this runtime owns an "
+                "optimizer transaction",
             )
-        try:
-            scaler.load_state_dict(state.scaler)
-        except (ValueError, KeyError, RuntimeError) as exc:
+        scaler = getattr(transaction, "scaler", None)
+        if scaler is not None:
+            if state.scaler is None:
+                raise PipelineParallelError(
+                    CODE_CHECKPOINT_STATE_MISMATCH,
+                    f"rank {state.rank} is the stage that owns the GradScaler, but the "
+                    "checkpoint has no scaler state",
+                )
+        elif state.scaler is not None:
             raise PipelineParallelError(
                 CODE_CHECKPOINT_STATE_MISMATCH,
-                f"rank {state.rank} GradScaler state does not load: {exc}",
-            ) from exc
-    elif state.scaler is not None:
+                f"rank {state.rank} checkpoint carries a GradScaler state, but this stage "
+                "does not own the loss scale",
+            )
+        restore_args = {
+            "scale": state.scale,
+            "growth_tracker": state.growth_tracker,
+            "last_skip": state.last_skip,
+            "where": f"pp_checkpoint_rank{state.rank}",
+        }
+    return {"owned": owned, "optimizer": optimizer, "restore_args": restore_args}
+
+
+def apply_stage_checkpoint(state: PpResumeState, runtime: Any) -> PpResumeState:
+    """Load a validated checkpoint into this rank's runtime.
+
+    Runs :func:`validate_stage_checkpoint` first; only when every validation
+    passes does the mutation phase start, so a refused apply leaves this rank's
+    adapter/optimizer/scaler state untouched.
+    """
+
+    plan = validate_stage_checkpoint(state, runtime)
+    # ---- mutation phase (all validations passed) ----------------------------
+    for name, module in plan["owned"].items():
+        module.load_state_dict(state.adapters[name], strict=True)
+    optimizer = plan["optimizer"]
+    try:
+        optimizer.load_state_dict(state.optimizer)
+    except (ValueError, KeyError, RuntimeError) as exc:
         raise PipelineParallelError(
             CODE_CHECKPOINT_STATE_MISMATCH,
-            f"rank {state.rank} checkpoint carries a GradScaler state, but this stage "
-            "does not own the loss scale",
-        )
-    transaction.restore(
-        scale=state.scale,
-        growth_tracker=state.growth_tracker,
-        last_skip=state.last_skip,
-        where=f"pp_checkpoint_rank{state.rank}",
-    )
+            f"rank {state.rank} optimizer state does not load: {exc}",
+        ) from exc
+    restore_args = plan["restore_args"]
+    if restore_args is not None:
+        transaction = getattr(runtime, "transaction", None)
+        scaler = getattr(transaction, "scaler", None)
+        if scaler is not None:
+            try:
+                scaler.load_state_dict(state.scaler)
+            except (ValueError, KeyError, RuntimeError) as exc:
+                raise PipelineParallelError(
+                    CODE_CHECKPOINT_STATE_MISMATCH,
+                    f"rank {state.rank} GradScaler state does not load: {exc}",
+                ) from exc
+        transaction.restore(**restore_args)
     return state
 
 
@@ -548,7 +585,99 @@ def load_distributed_checkpoint(
             "have stepped while the other did not",
         )
     assert state is not None  # guaranteed by the zero-error agreement above
-    return apply_stage_checkpoint(state, runtime)
+    # C3, phase 1: pure local validation (no mutation, no collective inside the
+    # try) -- every rank reports its verdict, and only an all-rank agreement
+    # releases the apply phase.  Predictable mismatches (adapter ownership,
+    # optimizer shape, transaction/scaler/scale existence) refuse here on both
+    # ranks with state untouched.
+    validate_error = None
+    validate_code = None
+    try:
+        validate_stage_checkpoint(state, runtime)
+    except Exception as exc:  # noqa: BLE001 - negotiated below
+        validate_code = getattr(exc, "code", None)
+        validate_error = f"rank {rank}: {type(exc).__name__}: {exc}"
+    _raise_agreed(
+        _all_gather_object(
+            {"rank": rank, "error": validate_error, "code": validate_code}, group
+        ),
+        context="PP checkpoint validate",
+    )
+    # C3, phase 2: the mutation phase is itself coordinated.  A rank-local
+    # failure here (payload that loads differently on this process) must abort
+    # both ranks instead of leaving one applied and the peer waiting.
+    apply_error = None
+    apply_code = None
+    try:
+        apply_stage_checkpoint(state, runtime)
+    except Exception as exc:  # noqa: BLE001 - negotiated below
+        apply_code = getattr(exc, "code", None)
+        apply_error = f"rank {rank}: {type(exc).__name__}: {exc}"
+    _raise_agreed(
+        _all_gather_object(
+            {"rank": rank, "error": apply_error, "code": apply_code}, group
+        ),
+        context="PP checkpoint apply",
+    )
+    # C3, phase 3: the policy collective runs only after both ranks applied;
+    # every rank reaches it, so its gather schema is always symmetric.
+    _restore_fp16_policy(state, runtime, group=group)
+    return state
+
+
+def _restore_fp16_policy(state: PpResumeState, runtime: Any, *, group: Any) -> None:
+    """Adopt the checkpointed growth policy on every stage, not just the last.
+
+    The policy is broadcast at *construction* from the last stage's scaler;
+    after a load the last stage's scaler carries the checkpointed policy, so a
+    non-last stage that kept its constructor guess would grow the scale at a
+    different step than the stage that owns the loss.  One collective re-derives
+    the policy from the restored scaler and every stage adopts it.
+    """
+
+    import torch.distributed as dist
+
+    transaction = getattr(runtime, "transaction", None)
+    if transaction is None:
+        return
+    scaler = getattr(transaction, "scaler", None)
+    is_last = bool(getattr(transaction, "is_last", False))
+    restore_policy = getattr(transaction, "restore_policy", None)
+    if not callable(restore_policy):
+        return
+    payload: dict[str, Any] = {"policy": None}
+    if is_last and scaler is not None:
+        payload["policy"] = {
+            "growth_factor": float(scaler.get_growth_factor()),
+            "backoff_factor": float(scaler.get_backoff_factor()),
+            "growth_interval": int(scaler.get_growth_interval()),
+        }
+    if dist.is_available() and dist.is_initialized():
+        gathered: list[Any] = [None] * dist.get_world_size(group)
+        dist.all_gather_object(gathered, payload, group=group)
+        policies = [entry.get("policy") for entry in gathered if entry]
+        restored = next((item for item in policies if item), None)
+        if restored is None:
+            # No stage owns a GradScaler (non-fp16 or probe runtimes): there is
+            # no policy to restore.
+            return
+        if len({json.dumps(item, sort_keys=True) for item in policies if item}) != 1:
+            raise PipelineParallelError(
+                CODE_SCALER_DECISION_ASYMMETRY,
+                "the stages restored different GradScaler policies "
+                f"({policies}); the checkpoint's policy must be one "
+                "pipeline-wide fact",
+            )
+    else:
+        restored = payload["policy"]
+    if restored is None:
+        return
+    transaction.restore_policy(
+        growth_factor=restored["growth_factor"],
+        backoff_factor=restored["backoff_factor"],
+        growth_interval=restored["growth_interval"],
+        where=f"pp_checkpoint_rank{state.rank}",
+    )
 
 
 __all__ = [

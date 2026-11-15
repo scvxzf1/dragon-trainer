@@ -219,6 +219,34 @@ class _AnimaStageBase(nn.Module):
         raise NotImplementedError
 
 
+    def _stage_device(self, model) -> torch.device:
+        try:
+            return next(model.parameters()).device
+        except StopIteration as error:  # pragma: no cover - parameterless DiT
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                "the PP stage model exposes no parameters; cannot resolve the "
+                "autocast device",
+            ) from error
+
+    def _trainer_autocast(self, device: torch.device):
+        """The non-PP trainer wraps the model forward in accelerate's autocast.
+
+        Under the fp16 policy the block stack promotes the residual stream to
+        fp32 (``models.py:1519``); the trainer's fp16 autocast is what lets the
+        promoted fp32 activations re-enter the fp16 block weights.  The PP stage
+        path must reproduce that wrapper or CUDA fails with
+        ``expected mat1 and mat2 to have the same dtype (float != Half)``.
+        CPU/Gloo keeps the eager fp32 path (no autocast), matching the
+        library-level runtime tests.
+        """
+
+        from contextlib import nullcontext
+
+        if device.type == "cpu" or self.compute_policy.activation_dtype != torch.float16:
+            return nullcontext()
+        return torch.autocast(device_type=device.type, dtype=torch.float16)
+
 class AnimaFirstStage(_AnimaStageBase):
     """Embedding + timestep modulation + the first contiguous block range."""
 
@@ -234,26 +262,27 @@ class AnimaFirstStage(_AnimaStageBase):
         w_offset: int = 0,
     ) -> Any:
         model = self._model
-        hidden, rope_cos_sin = model.prepare_embedded_sequence(
-            latents,
-            fps=fps,
-            padding_mask=padding_mask,
-            h_offset=int(h_offset),
-            w_offset=int(w_offset),
-        )
-        self._require_pre_block_dtype(hidden)
-        embedding, adaln_lora = timestep_modulation(model, timesteps)
-        hidden = run_stage_blocks(
-            self._block_stage,
-            model,
-            hidden,
-            embedding,
-            crossattn_emb,
-            attention_params(model),
-            compute_dtype=self.compute_policy.activation_dtype,
-            rope_cos_sin=rope_cos_sin,
-            adaln_lora=adaln_lora,
-        )
+        with self._trainer_autocast(self._stage_device(model)):
+            hidden, rope_cos_sin = model.prepare_embedded_sequence(
+                latents,
+                fps=fps,
+                padding_mask=padding_mask,
+                h_offset=int(h_offset),
+                w_offset=int(w_offset),
+            )
+            self._require_pre_block_dtype(hidden)
+            embedding, adaln_lora = timestep_modulation(model, timesteps)
+            hidden = run_stage_blocks(
+                self._block_stage,
+                model,
+                hidden,
+                embedding,
+                crossattn_emb,
+                attention_params(model),
+                compute_dtype=self.compute_policy.activation_dtype,
+                rope_cos_sin=rope_cos_sin,
+                adaln_lora=adaln_lora,
+            )
         if self.conditioning == CONDITIONING_LOCAL:
             return hidden
         self._require_grad_free((embedding, crossattn_emb, adaln_lora))
@@ -317,30 +346,31 @@ class AnimaLastStage(_AnimaStageBase):
         # ``padding_mask`` is accepted so both ranks can be driven with one kwargs
         # dict; only the pre-block region (``concat_padding_mask``) consumes it.
         del padding_mask
-        embedding, context, adaln_lora = self._resolve_conditioning(
-            frozen, timesteps=timesteps, crossattn_emb=crossattn_emb
-        )
-        rope_cos_sin = rope_for_shape(
-            model,
-            hidden.shape,
-            fps=fps,
-            h_offset=int(h_offset),
-            w_offset=int(w_offset),
-        )
-        hidden = run_stage_blocks(
-            self._block_stage,
-            model,
-            hidden,
-            embedding,
-            context,
-            attention_params(model),
-            compute_dtype=self.compute_policy.activation_dtype,
-            rope_cos_sin=rope_cos_sin,
-            adaln_lora=adaln_lora,
-        )
-        projected = finish_model(
-            model, hidden, embedding, adaln_lora, use_fp32=self.use_fp32
-        )
+        with self._trainer_autocast(self._stage_device(model)):
+            embedding, context, adaln_lora = self._resolve_conditioning(
+                frozen, timesteps=timesteps, crossattn_emb=crossattn_emb
+            )
+            rope_cos_sin = rope_for_shape(
+                model,
+                hidden.shape,
+                fps=fps,
+                h_offset=int(h_offset),
+                w_offset=int(w_offset),
+            )
+            hidden = run_stage_blocks(
+                self._block_stage,
+                model,
+                hidden,
+                embedding,
+                context,
+                attention_params(model),
+                compute_dtype=self.compute_policy.activation_dtype,
+                rope_cos_sin=rope_cos_sin,
+                adaln_lora=adaln_lora,
+            )
+            projected = finish_model(
+                model, hidden, embedding, adaln_lora, use_fp32=self.use_fp32
+            )
         return model_pred_to_loss_4d(projected)
 
     def _resolve_conditioning(self, frozen: Sequence[Tensor], *, timesteps, crossattn_emb):

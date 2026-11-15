@@ -197,6 +197,16 @@ def prepare_accelerator(args: argparse.Namespace):
         precision_kwargs["dataloader_config"] = DataLoaderConfiguration(
             **loader_config_kwargs
         )
+    # PP runs decide their process-group backend *once, here*: the first (and
+    # only) initialization is the multi-backend ``cpu:gloo,cuda:nccl`` group the
+    # PP runtime needs (device activations over NCCL, CPU scalars over Gloo).
+    # Accelerator reuses an already-initialized group, so this happens *before*
+    # its construction and is never rebuilt; the shared validator then refuses
+    # any mismatch instead of masking it.
+    from library.training.pp.gate import pipeline_parallel_enabled
+
+    if pipeline_parallel_enabled(args):
+        initialize_pp_process_group()
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -209,10 +219,75 @@ def prepare_accelerator(args: argparse.Namespace):
         require_training_contract(args, world_size=accelerator.num_processes)
         if accelerator.device.type != "cuda" or accelerator.scaler is None:
             raise ValueError("Adaptive FP16 training requires CUDA and the Accelerate FP16 scaler")
+    from library.training.pp.gate import pipeline_parallel_enabled
+
+    if pipeline_parallel_enabled(args):
+        validate_pp_process_group_backend(accelerator)
     _record_multiprocess_identity(accelerator, args)
     _warn_fp16_without_scaler(args, accelerator)
     print("accelerator device:", accelerator.device)
     return accelerator
+
+
+def initialize_pp_process_group() -> None:
+    """The first (and only) process-group initialization for a PP run.
+
+    ``cpu:gloo,cuda:nccl`` is the multi-backend group the PP runtime needs
+    (device activations over NCCL, CPU scalars over Gloo).  Accelerator reuses
+    an already-initialized group, so this runs *before* its construction; a
+    group that already exists is left untouched, never rebuilt.
+    """
+
+    import torch.distributed as dist
+
+    if not (dist.is_available() and not dist.is_initialized()):
+        return
+    try:
+        world = int(os.environ.get("WORLD_SIZE", "1") or 1)
+    except ValueError:
+        world = 1
+    if world < 2:
+        # Single process: the world-size refusal happens in the validator, so
+        # the entry fails named instead of hanging in a one-rank "pipeline".
+        return
+    dist.init_process_group("cpu:gloo,cuda:nccl")
+
+
+def validate_pp_process_group_backend(accelerator) -> None:
+    """Validate the first process group against the shared PP contract.
+
+    Single source of truth is
+    :func:`library.training.pp.contract.validate_distributed_backend`; this
+    wrapper only adds the "a group exists at all" and world-size facts.
+    """
+
+    import torch.distributed as dist
+
+    from library.training.pp.contract import validate_distributed_backend
+    from library.training.pp.errors import (
+        CODE_BACKEND_MULTIBACKEND_REQUIRED,
+        CODE_WORLD_SIZE_MISMATCH,
+        PipelineParallelError,
+    )
+
+    world = int(getattr(accelerator, "num_processes", 1) or 1)
+    if world < 2:
+        raise PipelineParallelError(
+            CODE_WORLD_SIZE_MISMATCH,
+            f"pipeline_parallel needs one process per stage, got num_processes={world}; "
+            "launch through accelerate/torchrun",
+        )
+    if not (dist.is_available() and dist.is_initialized()):
+        raise PipelineParallelError(
+            CODE_BACKEND_MULTIBACKEND_REQUIRED,
+            "no process group was initialized at Accelerator construction; the PP "
+            "backend must be decided once, at this first initialization",
+        )
+    validate_distributed_backend(
+        str(dist.get_backend()),
+        device_type=str(getattr(accelerator.device, "type", "cpu")),
+        world_size=world,
+    )
 
 
 def _record_multiprocess_identity(accelerator, args) -> None:

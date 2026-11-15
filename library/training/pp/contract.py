@@ -44,6 +44,7 @@ from .errors import (
     CODE_QUANTIZATION_UNSUPPORTED,
     CODE_RUNTIME_UNAVAILABLE,
     CODE_SCHEDULE_UNSUPPORTED,
+    CODE_STAGE_CONTRACT,
     CODE_WORLD_SIZE_MISMATCH,
     PipelineParallelError,
 )
@@ -444,6 +445,7 @@ def validate_master_weight_dtype(
     parameters: Iterable[Any],
     *,
     mixed_precision: str | None = None,
+    device: Any = None,
 ) -> None:
     """fp16 PP needs fp32 master weights (``GradScaler`` refuses fp16 grads).
 
@@ -452,10 +454,14 @@ def validate_master_weight_dtype(
     every non-last stage, which silently underflows fp16.  A fp16 PP run is
     therefore only meaningful with fp32 adapter master weights and an autocast
     forward; the base model may stay fp16/bf16 because it carries no gradient.
+    When ``device`` is provided, reject misplaced masters as well: callers must
+    move the network before constructing an optimizer, not after it captures
+    parameter references. Omitting ``device`` preserves the legacy check.
     """
 
     if mixed_precision != "fp16":
         return
+    parameters = tuple(parameters)
     offenders = sorted(
         {
             str(getattr(parameter, "dtype", "?"))
@@ -472,6 +478,28 @@ def validate_master_weight_dtype(
             "GradScaler refuses fp16 gradients and the non-last stages divide "
             "gradients by the shared scale by hand, which underflows in fp16.",
         )
+    if device is None:
+        return
+    expected = torch.device(device)
+    for parameter in parameters:
+        if not getattr(parameter, "requires_grad", False):
+            continue
+        actual = parameter.device
+        matches = actual.type == expected.type
+        if matches and expected.type == "cuda":
+            index = expected.index
+            if index is None:
+                index = torch.cuda.current_device()
+            matches = actual.index == index
+        elif matches and expected.type != "cpu" and expected.index is not None:
+            matches = actual.index == expected.index
+        if not matches:
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                f"trainable master parameter is on {actual}, expected {expected}; "
+                "move the adapter network to the stage device before constructing "
+                "the optimizer/runtime",
+            )
 
 
 # ---------------------------------------------------------------------------

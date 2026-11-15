@@ -80,8 +80,8 @@ def _run_configured_training(args, trainer_factory):
     from library.training.pp.gate import (
         pipeline_parallel_enabled,
         require_pipeline_runtime,
-        require_trainer_topology,
     )
+    from library.training.pp.trainer_admission import require_family_trainer_admission
 
     if pipeline_parallel_enabled(args):
         try:
@@ -92,12 +92,12 @@ def _run_configured_training(args, trainer_factory):
         # runtime, and for microbatches < stages (torch 2.10 refuses that for
         # Schedule1F1B *and* ScheduleGPipe). Never returns to DDP.
         require_pipeline_runtime(args, world_size=world_size)
-        # Early refusal (F6/F10): the trainer path is the Accelerate data-parallel
-        # topology, and it would only discover that *after* the DiT/VAE/text
-        # encoder are loaded (bootstrap.prepare_with_accelerator). Refuse here, at
-        # argument-parse time, so a valid-but-unservable PP config costs no model
-        # load. The WebUI preflight deliberately stays a warning.
-        require_trainer_topology(args, where="cli_entry")
+        # Early refusal (F6/F10) for every family without a *wired* trainer PP
+        # path; a wired family (moss_image, anima) passes here and is dispatched
+        # to its dedicated PP session in train_session._run_training_session.
+        # The DDP-interior guards (bootstrap / loop) keep refusing any PP run
+        # that ever reaches them.
+        require_family_trainer_admission(args, world_size=world_size, where="cli_entry")
 
     if args.attn_mode == "sdpa":
         args.attn_mode = "torch"  # backward compatibility

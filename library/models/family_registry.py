@@ -228,7 +228,20 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         image_test_flow_shift_default=5.0,
         automatic_flow_shift=False,
         supports_anima_selective_lora=False,
-        pipeline_parallel=None,
+        pipeline_parallel=PipelineParallelFamilySpec(
+            block_container="layers",
+            default_num_blocks=42,
+            known_num_blocks=frozenset({42}),
+            supported_stages=frozenset({2}),
+            supported_schedules=frozenset({"1f1b"}),
+            supported_splits=frozenset({"balanced"}),
+            # MOSS-Image publishes the same stage-local PP v0 runtime backend as
+            # Anima: ``library.training.pp`` dispatches the family-specific
+            # stage components (moss_image.pipeline_parallel) behind this one
+            # shared identifier, so the family switch and the compatibility
+            # gate cannot drift apart.  No separate availability flag exists.
+            runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
+        ),
     ),
 }
 

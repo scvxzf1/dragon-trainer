@@ -200,6 +200,55 @@ def pipeline_parallel_runtime_issue(
     return None
 
 
+#: Families whose *trainer-level* PP path is wired into
+#: ``train_session._run_training_session`` (dedicated PP session dispatch).
+#: The DDP-interior guards (:func:`require_trainer_topology`) keep refusing
+#: every family -- a wired family is dispatched *before* those code paths run.
+TRAINER_PP_WIRED_FAMILIES = frozenset({"moss_image", "anima"})
+
+
+def trainer_pp_wired(config: Mapping[str, Any] | object) -> bool:
+    """Does this config's family have the wired trainer-level PP path?"""
+
+    if not pipeline_parallel_enabled(config):
+        return False
+    family, backend = family_runtime_backend(config)
+    return (
+        family in TRAINER_PP_WIRED_FAMILIES
+        and backend == PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B
+    )
+
+
+def require_trainer_pp_admission(
+    config: Mapping[str, Any] | object, *, where: str
+) -> None:
+    """Entry preflight for the wired trainer PP path.
+
+    A family with a wired trainer runtime may pass the CLI/session preflight --
+    the only execution dispatch stays in ``train_session._run_training_session``.
+    Every other family keeps the historical ``pp_trainer_path_unavailable``
+    refusal (fail-closed unchanged), so this function *adds* an admission, it
+    never removes a guard: the DDP-interior ``require_trainer_topology`` calls
+    in ``bootstrap`` / ``loop`` keep refusing any PP run that ever reaches them.
+    """
+
+    if not pipeline_parallel_enabled(config):
+        return
+    if trainer_pp_wired(config):
+        return
+    family, backend = family_runtime_backend(config)
+    runtime = require_pipeline_runtime(config)
+    raise PipelineParallelError(
+        CODE_TRAINER_PATH,
+        f"{where}: pipeline_parallel is enabled (stages={runtime.stages}, "
+        f"schedule={runtime.schedule}, microbatches={runtime.microbatches}) but "
+        f"model_family={family!r} has no wired trainer-level PP path "
+        f"(runtime_backend={backend!r}). PP v0 runs through "
+        "library.training.pp build_*_pipeline_runtime with the dedicated session "
+        "dispatch in train_session; refusing to fall back to DDP.",
+    )
+
+
 def require_trainer_topology(config: Mapping[str, Any] | object, *, where: str) -> None:
     """Refuse to enter an accelerate/DDP code path while PP is enabled."""
 
@@ -261,6 +310,7 @@ __all__ = [
     "COMPAT_CODE_CONFIG_INVALID",
     "COMPAT_CODE_RUNTIME_UNAVAILABLE",
     "PP_GRAD_SCALE_OWNER",
+    "TRAINER_PP_WIRED_FAMILIES",
     "PipelineGateIssue",
     "compat_code",
     "family_runtime_backend",
@@ -269,5 +319,7 @@ __all__ = [
     "pipeline_parallel_runtime_issue",
     "require_accelerate_checkpoint",
     "require_pipeline_runtime",
+    "require_trainer_pp_admission",
     "require_trainer_topology",
+    "trainer_pp_wired",
 ]
