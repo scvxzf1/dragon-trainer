@@ -1,7 +1,8 @@
 import { TrainingDisplayMenu } from "./TrainingDisplayMenu";
 import { TrainingLaunchAvailability } from "./TrainingLaunchAvailability";
 import type { useTrainingEditorView } from "./useTrainingEditorView";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { useTrainingWorkspace } from "./useTrainingWorkspace";
 import { downloadTextFile } from "../dataset-editor/downloadTextFile";
 import {
@@ -30,33 +31,70 @@ function CommandPopover({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  // The panel is portalled to <body> and positioned with viewport coordinates:
+  // an ancestor animation keeps a residual transform on the command bar, which
+  // would otherwise trap this panel in that stacking context and let ordinary
+  // content paint over it.
+  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const placePanel = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const margin = 8;
+    const minWidth = Math.max(180, Math.round(rect.width));
+    const maxWidth = Math.min(280, window.innerWidth - margin * 2);
+    const left = Math.min(
+      Math.max(margin, rect.left),
+      Math.max(margin, window.innerWidth - Math.min(minWidth, maxWidth) - margin),
+    );
+    const estimatedHeight = panelRef.current?.offsetHeight ?? 0;
+    const below = rect.bottom + 6;
+    const flipAbove = estimatedHeight > 0 && below + estimatedHeight > window.innerHeight - margin;
+    setPanelStyle({
+      position: "fixed",
+      left,
+      minWidth,
+      maxWidth,
+      top: flipAbove ? Math.max(margin, rect.top - estimatedHeight - 6) : below,
+    });
+  };
   const close = (restoreFocus = true) => {
     setOpen(false);
+    setPanelStyle(null);
     if (restoreFocus) {
       requestAnimationFrame(() => triggerRef.current?.focus());
     }
   };
   useEffect(() => {
     if (!open) return;
+    placePanel();
+    const outside = (target: EventTarget | null) =>
+      target instanceof Node
+      && !rootRef.current?.contains(target)
+      && !panelRef.current?.contains(target);
     const dismiss = (event: PointerEvent) => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
-        close(false);
-      }
+      if (outside(event.target)) close(false);
     };
     const dismissOnBlur = (event: FocusEvent) => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
-        close(false);
-      }
+      if (outside(event.target)) close(false);
     };
+    // The portalled panel does not move with the trigger, so follow it instead
+    // of leaving a detached menu floating over the wrong row.
+    const reposition = () => placePanel();
     document.addEventListener("pointerdown", dismiss);
     document.addEventListener("focusin", dismissOnBlur);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    // Second pass once the panel has a measured height (flip-above decision).
+    requestAnimationFrame(() => placePanel());
     panelRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     return () => {
       document.removeEventListener("pointerdown", dismiss);
       document.removeEventListener("focusin", dismissOnBlur);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
     };
   }, [open]);
   return (
@@ -90,10 +128,11 @@ function CommandPopover({
         <span>{label}</span>
         <ChevronDown size={14} aria-hidden="true" />
       </button>
-      {open && (
+      {open && panelStyle && createPortal(
         <div
           className="training-command-menu-panel"
           ref={panelRef}
+          style={panelStyle}
           role="menu"
           aria-label={label}
           onClick={(event) => {
@@ -123,7 +162,8 @@ function CommandPopover({
           }}
         >
           <div data-preserve-focus="true">{children}</div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

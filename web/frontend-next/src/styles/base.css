@@ -66,6 +66,14 @@
   --radius: 8px;
   --radius-lg: 12px;
   --radius-xl: 16px;
+
+  /* 层级：集中声明，避免各文件散落魔数导致层叠事故 */
+  --z-nav: 2;
+  --z-command-bar: 50;
+  --z-popover: 1000;
+  --z-dialog-backdrop: 1000;
+  --z-dialog: 1200;
+  --z-overlay: 1300;
 }
 
 :root[data-theme="dark"] {

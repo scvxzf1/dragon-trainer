@@ -246,7 +246,7 @@
 .training-stage-nav {
   position: sticky;
   top: 12px;
-  z-index: 2;
+  z-index: var(--z-nav);
   display: flex;
   gap: 4px;
   margin-bottom: 12px;
@@ -546,7 +546,7 @@
 .training-config-shell .dataset-dialog-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-dialog-backdrop);
   display: grid;
   place-items: center;
   padding: 16px;

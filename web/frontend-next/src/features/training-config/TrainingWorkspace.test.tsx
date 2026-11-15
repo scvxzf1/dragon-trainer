@@ -1176,13 +1176,14 @@ describe("TrainingWorkspace", () => {
     // because the item is re-created per render and toBeDisabled also accounts
     // for ancestor fieldset/aria state this popover never sets.
     // Both toolbars can expose menuitems, so scope the query to the save menu group.
-    const saveGroup = screen.getByRole("group", { name: "训练配置操作" });
-
-    await waitFor(() =>
+    // The menu panel is portalled to <body>, so it is no longer a child of the
+    // command group; scope by the menu's own accessible name instead.
+    await waitFor(() => {
+      const saveMenu = screen.getByRole("menu", { name: "保存菜单" });
       expect(
-        within(saveGroup).getByRole("menuitem", { name: /恢复默认值/ }).hasAttribute("disabled"),
-      ).toBe(false),
-    );
+        within(saveMenu).getByRole("menuitem", { name: /恢复默认值/ }).hasAttribute("disabled"),
+      ).toBe(false);
+    });
   }, 20_000);
 
   it("blocks execution after a failed save and retains the draft", async () => {

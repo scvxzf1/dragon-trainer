@@ -129,10 +129,11 @@
   display: none;
 }
 .training-command-menu-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
+  /* Positioned by TrainingCommands: portalled to <body> with viewport
+     coordinates, so no top/left/absolute here. The command bar keeps a
+     residual transform from its entrance animation, which would otherwise
+     trap this panel in that stacking context. */
+  z-index: var(--z-popover);
   width: max-content;
   min-width: 180px;
   max-width: min(280px, calc(100vw - 24px));
@@ -141,6 +142,12 @@
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow-lg);
+}
+.training-command-bar {
+  /* Belt and braces for the portal fix: keep the bar itself above ordinary
+     content so any non-portalled child popover still paints on top. */
+  position: relative;
+  z-index: var(--z-command-bar);
 }
 .training-command-menu-panel button {
   display: flex;
