@@ -13,7 +13,11 @@ from web.services.training.service_state import (
     _normalize_queue_retry_backoff,
 )
 from web.services.training.common import _format_ts, _int_or_none
-from web.services.training.gpu import normalize_gpu_whitelist as _normalize_gpu_whitelist
+from web.services.training.distributed import normalize_distributed_mode
+from web.services.training.gpu import (
+    ensure_gpu_whitelist_authorized,
+    normalize_gpu_whitelist as _normalize_gpu_whitelist,
+)
 from web.services.training.launch_support import _normalize_continue_lora_info
 from web.services.training.resume_pipeline_gate import (
     ensure_resume_pipeline_compatible,
@@ -59,9 +63,11 @@ async def enqueue_training(
     auto_retry: bool | None = None,
     max_attempts: int | None = None,
     retry_backoff_sec: float | None = None,
+    distributed_mode: Any = None,
 ) -> dict[str, Any]:
     extra = list(extra_args or [])
     gpu_selection = _normalize_gpu_whitelist(gpu_whitelist)
+    ensure_gpu_whitelist_authorized(gpu_selection)
     runtime = None
     runtime_config_file = str(config_file or "").strip()
     source_config_file = str(config_file or "").strip()
@@ -95,6 +101,8 @@ async def enqueue_training(
         "source_config_file": source_config_file,
         "extra_args": extra,
         "gpu_whitelist": gpu_selection,
+        # 分布式模式三态卡片：旧调用面/旧队列缺省 DDP 兼容。
+        "distributed_mode": normalize_distributed_mode(distributed_mode),
         "continue_info": continue_payload or {},
         "resume_info": {},
         "retry_of": "",
@@ -142,6 +150,7 @@ async def enqueue_training_batch(
     queued: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     gpu_selection = _normalize_gpu_whitelist(gpu_whitelist)
+    ensure_gpu_whitelist_authorized(gpu_selection)
     if start_paused:
         self._queue_paused = True
         self._queue["paused"] = True
@@ -183,6 +192,7 @@ async def enqueue_training_batch(
                 auto_retry=raw.get("auto_retry") if "auto_retry" in raw else None,
                 max_attempts=raw.get("max_attempts") if "max_attempts" in raw else None,
                 retry_backoff_sec=raw.get("retry_backoff_sec") if "retry_backoff_sec" in raw else None,
+                distributed_mode=raw.get("distributed_mode"),
             )
         except Exception as exc:
             failure = {
@@ -270,6 +280,10 @@ async def enqueue_resume_from_history_task(
         "source_config_file": str(runtime.get("history_source_config_file") or task.get("history_source_config_file") or ""),
         "extra_args": ["--resume", selected["path"], "--skip_until_initial_step"],
         "gpu_whitelist": _normalize_gpu_whitelist(gpu_whitelist),
+        # 旧队列 resume 无模式字段缺省 DDP；PP 快照仍由 pipeline_parallel 键决定。
+        "distributed_mode": normalize_distributed_mode(
+            "pp" if bool(runtime.get("pipeline_parallel")) else task.get("distributed_mode"),
+        ),
         "continue_info": {},
         "resume_info": resume_info,
         "retry_of": "",

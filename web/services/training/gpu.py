@@ -165,6 +165,242 @@ def apply_gpu_whitelist(env: dict[str, str], whitelist: list[int]) -> None:
         env["CUDA_VISIBLE_DEVICES"] = ",".join(str(index) for index in whitelist)
 
 
+#: Stable named error for the whitelist resolution guard.
+GPU_WHITELIST_UNAUTHORIZED = "gpu_whitelist_unauthorized_gpu"
+
+
+def parse_gpu_identity_rows(text: str) -> dict[int, dict[str, str]]:
+    """Parse ``index,uuid,name`` rows from ``nvidia-smi``."""
+
+    rows: dict[int, dict[str, str]] = {}
+    for line in str(text or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        index = int_or_none(parts[0])
+        if index is None or not parts[1] or not parts[2]:
+            continue
+        rows[index] = {"uuid": parts[1], "name": parts[2]}
+    return rows
+
+
+def gpu_identity_authorized(identity: dict[str, str] | None) -> bool:
+    """Legacy compat shim: every resolvable card is now authorized.
+
+    GPU 选择已全卡开放（解析级 fail-closed 是唯一的硬守卫，见
+    :func:`ensure_gpu_whitelist_authorized`）。该函数仅为旧调用面保留，
+    恒返回 ``True``（unresolvable 情况由守卫自己在更早的位置拒绝）。
+    """
+
+    del identity
+    return True
+
+
+def query_gpu_identities(
+    indices: Any = None,
+    *,
+    runner: NvidiaSmiRunner | None = None,
+) -> dict[int, dict[str, str]]:
+    """Resolve ``{index: {uuid, name}}`` for the physical nvidia-smi indices.
+
+    The whitelist is index-based under ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` (see
+    :func:`apply_gpu_whitelist`), so identity must be read from the same
+    nvidia-smi index space.  Unknown indices are absent from the result.
+    """
+
+    rows = parse_gpu_identity_rows(
+        _query_nvidia_smi("index,uuid,name", runner=runner) or ""
+    )
+    selected = normalize_gpu_whitelist(indices)
+    if selected:
+        return {index: rows[index] for index in selected if index in rows}
+    return rows
+
+
+def ensure_gpu_whitelist_authorized(
+    whitelist: Any,
+    *,
+    runner: NvidiaSmiRunner | None = None,
+) -> None:
+    """Resolution-level fail-closed guard for the WebUI gpu_whitelist.
+
+    GPU 选择全卡开放：不再按 UUID/型号拒绝任何物理卡（GTX 1050 等卡改为
+    由分布式诊断给出建议级警告）。唯一 fail-closed 条件 = 白名单索引无法在
+    nvidia-smi 中解析到物理卡，此时以命名错误
+    :data:`GPU_WHITELIST_UNAUTHORIZED` 在入队/启动前拒绝。空白名单（默认
+    单卡路径）不受影响，宿主机没有 nvidia-smi 时保持历史行为。
+    """
+
+    selected = normalize_gpu_whitelist(whitelist)
+    if not selected:
+        return
+    resolved = query_gpu_identities(selected, runner=runner)
+    missing = [index for index in selected if index not in resolved]
+    if missing:
+        raise ValueError(
+            f"{GPU_WHITELIST_UNAUTHORIZED}: GPU 白名单索引 {missing} 无法在 "
+            "nvidia-smi 中解析到物理卡（显存查询失败或索引越界）；"
+            "为避免把未知设备拉进训练，拒绝启动。"
+            "请改选在 nvidia-smi 中可见的 GPU 索引。"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Distributed hardware snapshot (one nvidia-smi query, TTL-cached)
+# ---------------------------------------------------------------------------
+
+#: Single nvidia-smi query powering the distributed hardware snapshot.
+GPU_HARDWARE_QUERY_FIELDS = "index,uuid,name,memory.total,compute_cap"
+
+#: Snapshot TTL: the WebUI polls often, and hardware topology changes rarely.
+HARDWARE_SNAPSHOT_TTL_SECONDS = 30.0
+
+_hardware_snapshot_cache: dict[str, Any] = {"monotonic": 0.0, "rows": []}
+
+
+def parse_gpu_hardware_rows(text: str) -> list[dict[str, Any]]:
+    """Parse ``index,uuid,name,memory.total,compute_cap`` rows.
+
+    ``compute_cap`` is optional on old drivers; when absent the capability
+    falls back to the GPU marketing-name table, else ``None`` (callers treat
+    unknown capability as "no mixed-generation judgement", not an error).
+    """
+
+    rows: list[dict[str, Any]] = []
+    for line in str(text or "").splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 3:
+            continue
+        index = int_or_none(parts[0])
+        if index is None or not parts[1]:
+            continue
+        name = parts[2]
+        memory_total_mb = None
+        capability = None
+        if len(parts) >= 5:
+            name = ",".join(parts[2:-2]).strip()
+            memory_total_mb = int_or_none(parts[-2])
+            capability = parse_compute_capability(parts[-1])
+        elif len(parts) == 4:
+            # 老驱动没有 compute_cap 列：index,uuid,name,memory.total
+            memory_total_mb = int_or_none(parts[3])
+        if capability is None:
+            capability = capability_from_gpu_name(name)
+        rows.append({
+            "index": index,
+            "uuid": parts[1],
+            "name": name,
+            "memory_total_mb": memory_total_mb,
+            "capability": capability,
+        })
+    return rows
+
+
+def query_gpu_hardware_snapshot(
+    *,
+    runner: NvidiaSmiRunner | None = None,
+    ttl_seconds: float = HARDWARE_SNAPSHOT_TTL_SECONDS,
+) -> list[dict[str, Any]]:
+    """One nvidia-smi query for index/uuid/name/memory/capability, TTL-cached.
+
+    Only the real nvidia-smi path is cached; injected ``runner`` call sites
+    (tests, alternate probes) always run fresh so fixtures stay deterministic.
+    """
+
+    global _hardware_snapshot_cache
+    import time as _time
+
+    if runner is None:
+        cache = _hardware_snapshot_cache
+        now = _time.monotonic()
+        if cache["rows"] and now - float(cache["monotonic"]) < ttl_seconds:
+            return cache["rows"]
+    rows = parse_gpu_hardware_rows(
+        _query_nvidia_smi(GPU_HARDWARE_QUERY_FIELDS, runner=runner) or ""
+    )
+    if runner is None:
+        _hardware_snapshot_cache = {"monotonic": _time.monotonic(), "rows": rows}
+    return rows
+
+
+def _format_gigabytes(memory_total_mb: int | None) -> str:
+    if memory_total_mb is None:
+        return "未知显存"
+    return f"{round(memory_total_mb / 1024, 1)}GB"
+
+
+def classify_pp_hardware_risks(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Suggestion-level PP hardware risks (仅 PP 模式判定).
+
+    三层风险：显存异构 / 低显存（<8GB）/ 代际混搭。全部为建议级（warning /
+    info），不阻挡启动；真正的拦截仍由训练入口的 admission 兜底。
+    """
+
+    risks: list[dict[str, Any]] = []
+    if not snapshot:
+        risks.append({
+            "level": "info",
+            "key": "pp_hardware_snapshot_unavailable",
+            "code": "pp_hardware_snapshot_unavailable",
+            "message": "无法通过 nvidia-smi 读取 GPU 硬件快照，PP 硬件风险检测降级为未知。",
+        })
+        return risks
+
+    labels = {
+        row["index"]: f"GPU {row['index']} · {row['name']}（{_format_gigabytes(row.get('memory_total_mb'))}）"
+        for row in snapshot
+    }
+
+    low = [row for row in snapshot if (row.get("memory_total_mb") or 0) < 8192]
+    if low:
+        risks.append({
+            "level": "warning",
+            "key": "pp_low_vram",
+            "code": "pp_low_vram",
+            "message": "低显存风险（建议级）："
+            + "、".join(labels[row["index"]] for row in low)
+            + " 显存低于 8GB，PP 阶段放置大概率放不下底座分片。",
+        })
+
+    totals = {row["index"]: row.get("memory_total_mb") for row in snapshot}
+    distinct = {value for value in totals.values() if value is not None}
+    if len(distinct) > 1:
+        risks.append({
+            "level": "warning",
+            "key": "pp_vram_heterogeneous",
+            "code": "pp_vram_heterogeneous",
+            "message": "显存异构（建议级）：各卡显存不一致（"
+            + "、".join(
+                f"GPU {index} {_format_gigabytes(value)}" for index, value in sorted(totals.items())
+            )
+            + "），建议按显存从小到大放置流水线阶段并降低 microbatches。",
+        })
+
+    capabilities = {row["index"]: row.get("capability") for row in snapshot}
+    known = {value for value in capabilities.values() if value is not None}
+    unknown_rows = [row for row in snapshot if row.get("capability") is None]
+    if len(known) > 1:
+        risks.append({
+            "level": "warning",
+            "key": "pp_mixed_generation",
+            "code": "pp_mixed_generation",
+            "message": "代际混搭（建议级）：参与 PP 的卡算力代际不一致（"
+            + "、".join(
+                f"GPU {index} sm_{cap[0]}{cap[1]}"
+                for index, cap in sorted(capabilities.items()) if cap is not None
+            )
+            + "），跨代 NCCL/P2P 通常不可用，流水线吞吐会明显下降。",
+        })
+    elif unknown_rows:
+        risks.append({
+            "level": "info",
+            "key": "pp_generation_unknown",
+            "code": "pp_generation_unknown",
+            "message": "部分 GPU 的算力代际无法解析（老驱动或未知型号），代际混搭检测未判定。",
+        })
+    return risks
+
+
 def parse_compute_capability(value: Any) -> tuple[int, int] | None:
     """Parse ``"7.0"`` / ``"8.6"`` into ``(major, minor)``."""
     text = str(value or "").strip().replace("_", ".")

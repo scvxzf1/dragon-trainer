@@ -167,6 +167,113 @@ def _normalize_training_policy(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class DistributedSettingsError(ValueError):
+    """Invalid [distributed] settings payload (stable 400 for the API)."""
+
+
+DISTRIBUTED_MODES = ("single", "ddp", "pp")
+DISTRIBUTED_SCHEDULES = ("1f1b",)
+DISTRIBUTED_SPLITS = ("balanced",)
+
+
+def _default_distributed_settings() -> dict[str, Any]:
+    return {
+        "mode": "ddp",
+        "gpu_whitelist": [],
+        "pipeline_parallel_stages": 2,
+        "pipeline_parallel_microbatches": 4,
+        "pipeline_parallel_schedule": "1f1b",
+        "pipeline_parallel_split": "balanced",
+    }
+
+
+def _normalize_distributed_gpu_whitelist(value: Any) -> list[int]:
+    from web.services.training.gpu import normalize_gpu_whitelist
+
+    return normalize_gpu_whitelist(value)
+
+
+def _normalize_distributed_settings(data: dict[str, Any]) -> dict[str, Any]:
+    from web.services.training.distributed import normalize_distributed_mode
+
+    defaults = _default_distributed_settings()
+    mode = normalize_distributed_mode(data.get("mode"), default=defaults["mode"])
+    raw_mode = str(data.get("mode") or "").strip().lower()
+    if raw_mode and raw_mode not in DISTRIBUTED_MODES:
+        raise DistributedSettingsError(
+            f"distributed.mode 必须是 {'/'.join(DISTRIBUTED_MODES)} 之一，收到 {raw_mode!r}"
+        )
+    schedule = str(data.get("pipeline_parallel_schedule") or defaults["pipeline_parallel_schedule"]).strip().lower()
+    if schedule not in DISTRIBUTED_SCHEDULES:
+        raise DistributedSettingsError(
+            f"distributed.pipeline_parallel_schedule 必须是 {'/'.join(DISTRIBUTED_SCHEDULES)} 之一"
+        )
+    split = str(data.get("pipeline_parallel_split") or defaults["pipeline_parallel_split"]).strip().lower()
+    if split not in DISTRIBUTED_SPLITS:
+        raise DistributedSettingsError(
+            f"distributed.pipeline_parallel_split 必须是 {'/'.join(DISTRIBUTED_SPLITS)} 之一"
+        )
+
+    def _positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise DistributedSettingsError(
+                "distributed.pipeline_parallel_stages / pipeline_parallel_microbatches 必须是正整数"
+            ) from None
+        if parsed < 1:
+            raise DistributedSettingsError(
+                "distributed.pipeline_parallel_stages / pipeline_parallel_microbatches 必须是正整数"
+            )
+        return parsed
+
+    return {
+        "mode": mode,
+        "gpu_whitelist": _normalize_distributed_gpu_whitelist(
+            data.get("gpu_whitelist", defaults["gpu_whitelist"])
+        ),
+        "pipeline_parallel_stages": _positive_int(
+            data.get("pipeline_parallel_stages", defaults["pipeline_parallel_stages"]),
+            defaults["pipeline_parallel_stages"],
+        ),
+        "pipeline_parallel_microbatches": _positive_int(
+            data.get("pipeline_parallel_microbatches", defaults["pipeline_parallel_microbatches"]),
+            defaults["pipeline_parallel_microbatches"],
+        ),
+        "pipeline_parallel_schedule": schedule,
+        "pipeline_parallel_split": split,
+    }
+
+
+def get_distributed_settings() -> dict[str, Any]:
+    """Read the [distributed] section of the local settings file.
+
+    缺失节/缺字段按默认值回填（mode 缺省 DDP，旧设置零迁移兼容）。
+    """
+
+    raw = _load_raw_settings()
+    section = raw.get("distributed") if isinstance(raw.get("distributed"), dict) else {}
+    defaults = _default_distributed_settings()
+    merged = {**defaults, **(section if isinstance(section, dict) else {})}
+    try:
+        normalized = _normalize_distributed_settings(merged)
+    except DistributedSettingsError:
+        normalized = defaults
+    return {"ok": True, **normalized, "defaults": defaults}
+
+
+def save_distributed_settings(data: dict[str, Any]) -> dict[str, Any]:
+    """Persist the [distributed] section via the existing settings channel."""
+
+    settings_file = Path(SETTINGS_FILE)
+    normalized = _normalize_distributed_settings({**_default_distributed_settings(), **(data or {})})
+    raw = _load_raw_settings(settings_file)
+    raw["distributed"] = normalized
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(settings_file, toml.dumps(raw))
+    return {"ok": True, **normalized}
+
+
 def _normalize_bool_setting(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default

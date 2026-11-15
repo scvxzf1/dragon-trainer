@@ -1,0 +1,42 @@
+.training-distributed-card { min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.training-distributed-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.training-distributed-row > strong { font-size: 13px; }
+.training-distributed-modes { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.training-distributed-modes button { min-height: 30px; padding: 4px 8px; border: 0; border-radius: 0; font-size: 12px; }
+.training-distributed-modes button[aria-pressed="true"] { background: var(--success-soft); color: var(--ink); box-shadow: inset 0 -2px var(--success); }
+.training-distributed-modes button:disabled { opacity: 0.45; cursor: not-allowed; }
+.training-distributed-state { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+.training-distributed-state[data-tone="danger"] { color: var(--danger); border-color: var(--danger); }
+.training-distributed-state[data-tone="warning"] { color: var(--warning); border-color: var(--warning); }
+.training-distributed-state[data-tone="success"] { color: var(--success); border-color: var(--success); }
+
+.training-distributed-popover { width: min(420px, calc(100vw - 16px)); max-height: min(60vh, 480px); overflow: auto;
+  background: var(--surface); color: inherit; border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); font-size: 12px; }
+.training-distributed-popover header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.training-distributed-gpus { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 0; border-top: 1px solid var(--line); }
+.training-distributed-gpus > label { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border: 1px solid transparent; border-radius: 4px; }
+.training-distributed-gpus > label:has(input:checked) { border-color: var(--success); background: var(--success-soft); }
+.training-distributed-gpus small { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.training-distributed-attr { border: 1px solid var(--line); border-radius: 999px; padding: 0 6px; }
+.training-distributed-pp { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.training-distributed-pp label { display: flex; align-items: center; gap: 6px; }
+.training-distributed-pp input { width: 64px; min-height: 26px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; }
+.training-distributed-pp small { width: 100%; color: var(--muted); }
+.training-distributed-checks { border-top: 1px solid var(--line); padding: 6px 0; display: grid; gap: 4px; }
+.training-distributed-checks p { margin: 0; display: flex; gap: 6px; align-items: baseline; overflow-wrap: anywhere; }
+.training-distributed-checks [data-tone="danger"] { color: var(--danger); }
+.training-distributed-checks [data-tone="warning"] { color: var(--warning); }
+.training-distributed-checks [data-tone="info"] { color: var(--muted); }
+/* Human wording stays on the primary line; the raw error folds away below it. */
+.training-distributed-detail { margin: 2px 0 0 18px; font-size: 11px; color: var(--muted); }
+.training-distributed-detail summary { cursor: pointer; }
+.training-distributed-detail pre {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 11px/1.5 ui-monospace, monospace;
+}
+.training-distributed-popover footer { border-top: 1px solid var(--line); padding-top: 6px; display: grid; gap: 4px; color: var(--muted); }

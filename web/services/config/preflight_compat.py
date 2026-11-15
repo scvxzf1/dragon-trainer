@@ -301,10 +301,11 @@ def _compat_web_message(
             "当前会阻止启动，不会静默回退到 DDP。"
         ),
         "pipeline_parallel_experimental_runtime": (
-            "Anima 流水线并行已解析到实验性的 stage-local PP v0 运行时"
-            "（2 阶段 / 1F1B / fp16 事务）。它由 library.training.pp 驱动，"
-            "主训练入口遇到 pipeline_parallel 会以 pp_trainer_path_unavailable "
-            "具名拒绝，绝不静默回退 DDP。"
+            "流水线并行已解析到实验性的 stage-local PP v0 运行时"
+            "（2 阶段 / 1F1B / fp16 事务），由 library.training.pp 驱动。"
+            "Anima 与 MOSS-Image 已接线专用 PP 训练会话（2 阶段 / 1F1B / fp16 / "
+            "plain LoRA / 完整缓存范围）；其余模型族遇到 pipeline_parallel 仍以 "
+            "pp_trainer_path_unavailable 具名拒绝，绝不静默回退 DDP。"
         ),
         "pipeline_parallel_microbatches_below_stages": (
             "pipeline_parallel_microbatches 必须 >= pipeline_parallel_stages；"
@@ -479,6 +480,7 @@ def _check_checkpointing_config(
         if defer_adaptive_contract and item.code == "adaptive_precision_contract":
             continue
         add("error", item.key, _compat_web_message(item, device=device))
+    _check_pipeline_trainer_admission(cfg, add)
 
     if defer_adaptive_contract:
         add(
@@ -501,6 +503,36 @@ def _check_checkpointing_config(
         add("warning", item.key, _compat_web_message(item, device=device))
     for item in compat.infos:
         add("info", item.key, _compat_web_message(item, device=device))
+
+
+def _check_pipeline_trainer_admission(cfg: dict[str, Any], add) -> None:
+    """Surface the wired PP trainer admission before the launch (contract §5).
+
+    The compat layer stays family-agnostic; this adds the trainer-path knob
+    view (preview 类字段、compile、router、缓存等) so the WebUI shows the
+    named refusal the queue dispatch would hit instead of failing only in the
+    worker log.  Never blocks harder than the launch itself: it is a warning
+    carrying the exact ``pp_*`` code.
+    """
+
+    try:
+        from library.models.pipeline_parallel import PipelineParallelConfig
+
+        if not PipelineParallelConfig.from_config(cfg).enabled:
+            return
+    except ValueError:
+        return  # the compat layer above already reports pipeline_parallel_config
+    from library.training.pp.errors import PipelineParallelError
+    from library.training.pp.trainer_admission import require_family_trainer_admission
+
+    try:
+        require_family_trainer_admission(cfg, where="webui_preflight")
+    except PipelineParallelError as exc:
+        add(
+            "warning",
+            "pipeline_parallel",
+            f"PP 训练准入预检：启动时会以 {exc.code} 具名拒绝：{exc.detail}",
+        )
 
 
 def _check_core_training_semantics(

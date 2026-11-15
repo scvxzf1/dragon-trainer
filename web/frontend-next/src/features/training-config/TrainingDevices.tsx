@@ -46,7 +46,7 @@ export function TrainingDevices({ state, details = false }: Props) {
           {device.issue}
           {device.issue.startsWith("已选设备不可用") && <button type="button" disabled={busy} onClick={device.resetSelection}>清除失效选择</button>}
         </p>}
-        <p className="training-device-detail training-device-unavailable"><span>流水线并行（实验）</span><small>暂不可用：主训练入口尚未接入流水线执行。</small></p>
+        <p className="training-device-detail training-device-unavailable"><span>流水线并行（实验）</span><small>请在下方「分布式训练」卡片选择流水线并行；未接线模型族会被拦截，admission 在训练入口兜底。</small></p>
       </details>
     </section>
   );

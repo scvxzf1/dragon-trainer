@@ -239,8 +239,8 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "ko": "reuse_storage 복원 청크당 행 수입니다. 0은 전체 텐서를 복원하며, 작은 값은 피크를 낮추지만 커널을 추가합니다.",
     },
     "pipeline_parallel": {
-        "en": "Enable the experimental two-GPU pipeline planner for the selected model family. Launch remains blocked until the 1F1B trainer schedule is connected.",
-        "ko": "선택한 모델 패밀리의 실험적 2-GPU 파이프라인 계획을 활성화합니다. 1F1B 학습 스케줄 연결 전까지 시작은 차단됩니다.",
+        "en": "Enable the experimental two-GPU pipeline for the selected model family. Anima and MOSS-Image are wired to the dedicated PP trainer session (2 stages / 1F1B / fp16 / plain LoRA / full caches); every other family keeps a named launch refusal.",
+        "ko": "선택한 모델 패밀리의 실험적 2-GPU 파이프라인을 활성화합니다. Anima와 MOSS-Image는 전용 PP 트레이너 세션(2 스테이지 / 1F1B / fp16 / plain LoRA / 전체 캐시)으로 연결되어 있으며, 다른 패밀리는 시작이 명시적으로 거부됩니다.",
     },
     "pipeline_parallel_stages": {
         "en": "Pipeline stage count. The current topology requires exactly two stages and two worker processes.",

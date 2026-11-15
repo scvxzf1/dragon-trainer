@@ -42,6 +42,7 @@ logs
 .env
 .anima-update-backups
 .anima-webui-settings.toml
+configs/web-ui-settings.local.toml
 .anima-captioning-secrets.toml
 configs.backup/
 configs/datasets/

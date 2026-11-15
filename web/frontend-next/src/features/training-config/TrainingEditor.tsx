@@ -6,6 +6,7 @@ import type { useTrainingWorkspace } from "./useTrainingWorkspace";
 import { TrainingStageFields } from "./TrainingResourceGroups";
 import { GROUPS } from "./useTrainingWorkspace";
 import { TrainingDevices } from "./TrainingDevices";
+import { TrainingDistributedCard } from "./TrainingDistributedCard";
 import { TrainingEditorScrollArea } from "./TrainingEditorScrollArea";
 import { useTrainingInheritedDefaults } from "./useTrainingInheritedDefaults";
 import { useTrainingBlockInventory } from "./useTrainingBlockInventory";
@@ -95,6 +96,7 @@ export function TrainingEditor({
                 </span>
               </header>
               {group === "resources" && !fieldSearch && <TrainingDevices state={state} details />}
+              {group === "resources" && !fieldSearch && <TrainingDistributedCard state={state} />}
               {!visibleFields.some((field) => field.group === group) && (
                 <p role="status">当前分类没有符合筛选条件的配置项。</p>
               )}

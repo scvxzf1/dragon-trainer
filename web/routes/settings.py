@@ -14,7 +14,13 @@ from web.services.model_config_service import (
     get_model_configs,
     save_model_configs,
 )
-from web.services.settings_service import get_global_settings, save_global_settings
+from web.services.settings_service import (
+    DistributedSettingsError,
+    get_distributed_settings,
+    get_global_settings,
+    save_distributed_settings,
+    save_global_settings,
+)
 from web.services.model_file_service import list_model_files
 from web.services import settings_paths
 
@@ -27,6 +33,23 @@ def setup_settings_routes(app: web.Application) -> None:
     app.router.add_get("/api/settings/model-files", handle_model_files_get)
     app.router.add_get("/api/settings/model-path-status", handle_model_path_status_get)
     app.router.add_get("/api/settings/directories", handle_settings_directories_get)
+    app.router.add_get("/api/settings/distributed", handle_distributed_settings_get)
+    app.router.add_put("/api/settings/distributed", handle_distributed_settings_put)
+
+
+async def handle_distributed_settings_get(request: web.Request) -> web.Response:
+    del request
+    return web.json_response(get_distributed_settings())
+
+
+async def handle_distributed_settings_put(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+        return web.json_response(await asyncio.to_thread(save_distributed_settings, data))
+    except DistributedSettingsError as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
+    except (ValueError, OSError) as e:
+        return web.json_response({"ok": False, "error": str(e)}, status=400)
 
 
 async def handle_model_files_get(request: web.Request) -> web.Response:

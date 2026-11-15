@@ -26,6 +26,7 @@ def _preflight_world_size(gpu_whitelist) -> int:
 
 def setup_training_routes(app: web.Application) -> None:
     app.router.add_post("/api/training/preflight", handle_preflight)
+    app.router.add_post("/api/training/distributed/diagnosis", handle_distributed_diagnosis)
     app.router.add_post("/api/training/continue-lora/inspect", handle_continue_lora_inspect)
     app.router.add_post("/api/training/start", handle_start)
     app.router.add_post("/api/training/resume", handle_resume)
@@ -70,6 +71,42 @@ def setup_training_routes(app: web.Application) -> None:
     app.router.add_patch("/api/training/history/{task_id}", handle_history_update)
     app.router.add_delete("/api/training/history/{task_id}", handle_history_delete)
     app.router.add_get("/ws/training", handle_ws)
+
+
+async def handle_distributed_diagnosis(request: web.Request) -> web.Response:
+    """只读「分布式训练」诊断端点（🔴必败 / 🟡风险 / 🔵信息，前端不阻挡）。"""
+
+    from web.services.training.distributed import diagnose_distributed_training
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    variant = data.get("variant", "lora")
+    preset = data.get("preset", "default")
+    methods_subdir = data.get("methods_subdir", "gui-methods")
+    try:
+        payload = await asyncio.to_thread(
+            diagnose_distributed_training,
+            variant,
+            preset,
+            methods_subdir,
+            config_file=str(data.get("config_file") or "").strip() or None,
+            gpu_whitelist=data.get("gpu_whitelist"),
+            mode=data.get("mode"),
+        )
+        return web.json_response(payload)
+    except Exception as e:
+        return web.json_response({
+            "ok": False,
+            "mode": "ddp",
+            "checks": [{
+                "level": "error",
+                "key": "diagnosis",
+                "code": "pp_diagnosis",
+                "message": f"分布式诊断失败: {e}",
+            }],
+        }, status=400)
 
 
 async def handle_preflight(request: web.Request) -> web.Response:

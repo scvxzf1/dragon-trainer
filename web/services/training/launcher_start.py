@@ -35,6 +35,10 @@ from web.services.training.launcher_runtime import (
     _sample_config_from_cfg,
     preflight_training_config,
 )
+from web.services.training.gpu import ensure_gpu_whitelist_authorized
+from web.services.training.resume_pipeline_gate import (
+    ensure_pipeline_parallel_family_pairing,
+)
 
 
 async def start(
@@ -105,6 +109,13 @@ async def _start_unlocked(
         config_file = runtime["runtime_config_file"]
     elif source_config_file and not config_file:
         config_file = source_config_file
+    if config_file:
+        try:
+            launch_config = _load_config_file_config(config_file)
+        except Exception:  # noqa: BLE001 - unreadable config fails later anyway
+            launch_config = {}
+        if launch_config:
+            ensure_pipeline_parallel_family_pairing(launch_config)
 
     venv_python = str(_root() / ".venv" / "bin" / "python")
     if not Path(venv_python).exists():
@@ -112,6 +123,7 @@ async def _start_unlocked(
 
     env = os.environ.copy()
     gpu_selection = _normalize_gpu_whitelist(gpu_whitelist)
+    ensure_gpu_whitelist_authorized(gpu_selection)
     _apply_gpu_whitelist(env, gpu_selection)
     configure_accelerate_for_gpu_selection(env, gpu_selection)
     mixed_precision = _accelerate_mixed_precision_for_training(config_file, extra_args)
@@ -260,6 +272,7 @@ async def _start_preprocess_unlocked(
 
     env = os.environ.copy()
     gpu_selection = _normalize_gpu_whitelist(gpu_whitelist)
+    ensure_gpu_whitelist_authorized(gpu_selection)
     _apply_gpu_whitelist(env, gpu_selection)
     env["PYTHONUNBUFFERED"] = "1"
     env["PATH"] = str(_root() / ".venv" / "bin") + ":" + env.get("PATH", "")

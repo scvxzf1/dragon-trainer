@@ -12,7 +12,34 @@ from library.env import anima_home
 from library.models.pipeline_parallel import PipelineParallelConfig
 from library.runtime.launch import resolve_training_world_size_for_gpu_selection
 from library.training.compat_matrix import check_training_compat
-from web.services.training.gpu import normalize_gpu_whitelist
+from web.services.training.gpu import (
+    ensure_gpu_whitelist_authorized,
+    normalize_gpu_whitelist,
+)
+
+
+def ensure_pipeline_parallel_family_pairing(config: dict[str, Any]) -> None:
+    """``pipeline_parallel`` and ``model_family`` must travel as a pair.
+
+    A queue/runtime config that turns on ``pipeline_parallel`` without naming
+    ``model_family`` would let the launch silently resolve a different family
+    (default ``anima``) than the one the WebUI preflight inspected.  Normal
+    non-PP runs are untouched: neither key is required when PP is off.
+    """
+
+    try:
+        pipeline_config = PipelineParallelConfig.from_config(config)
+    except ValueError as exc:
+        raise ValueError(f"流水线配置无效: {exc}") from exc
+    if not pipeline_config.enabled:
+        return
+    family = str(config.get("model_family") or "").strip()
+    if not family:
+        raise ValueError(
+            "流水线并行训练配置必须同时携带 model_family 与 pipeline_parallel "
+            "（不允许只传其一）: pipeline_parallel=true 缺少 model_family，"
+            "启动将无法保证与预检相同的模型族"
+        )
 
 
 def ensure_resume_pipeline_compatible(
@@ -30,6 +57,14 @@ def ensure_resume_pipeline_compatible(
             f"续训流水线配置无法读取或解析: {config_file}: {exc}"
         ) from exc
 
+    ensure_pipeline_parallel_family_pairing(config)
+
+    gpu_selection = normalize_gpu_whitelist(gpu_whitelist)
+    # UUID-level guard runs for every resume (PP or not): the whitelist is
+    # index-based under PCI_BUS_ID order, so a stale index can resolve to the
+    # GTX 1050 on either path.
+    ensure_gpu_whitelist_authorized(gpu_selection)
+
     try:
         pipeline_config = PipelineParallelConfig.from_config(config)
     except ValueError as exc:
@@ -37,7 +72,6 @@ def ensure_resume_pipeline_compatible(
     if not pipeline_config.enabled:
         return
 
-    gpu_selection = normalize_gpu_whitelist(gpu_whitelist)
     world_size = resolve_training_world_size_for_gpu_selection(gpu_selection)
     compatibility = check_training_compat(config, world_size=world_size)
     errors = [

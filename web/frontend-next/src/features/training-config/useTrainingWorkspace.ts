@@ -6,6 +6,7 @@ import { useTrainingContext } from "../../app/useTrainingContext";
 import { useTrainingContextStore } from "../../app/trainingContextStore";
 import { datasetKeys } from "../dataset-editor/api";
 import { useTrainingDevices } from "./useTrainingDevices";
+import { ppWiredForFamily } from "./distributedDiagnosis";
 import { useUnsavedChangesGuard } from "../dataset-editor/useUnsavedChangesGuard";
 import { ApiError } from "../../api/client";
 import {
@@ -76,7 +77,10 @@ export function useTrainingWorkspace() {
   });
   const [baseline, setBaseline] = useState<TrainingDraft>({});
   const [draft, setDraft] = useState<TrainingDraft>({});
-  const pipelineUnavailable = draft.pipeline_parallel === true || draft.pipeline_parallel === "true";
+  const pipelineRequested = draft.pipeline_parallel === true || draft.pipeline_parallel === "true";
+  // PP 入口已按族接线（t1 后端 admission 兜底）：仅未接线族仍拦截启动。
+  const pipelineUnavailable = pipelineRequested
+    && !ppWiredForFamily(String(draft.model_family || context.mergedConfig?.model_family || "anima"));
   const [hydratedKey, setHydratedKey] = useState("");
   const [saveAsOpen, setSaveAsOpen] = useState(false);
   const [notice, setNotice] = useState("");
