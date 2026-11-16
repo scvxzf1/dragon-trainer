@@ -504,7 +504,9 @@ class Krea2PipelineRuntime:
         prediction = run_pipeline_step(
             self._schedule,
             is_first=self._layout.is_first,
-            latents=latents,
+            # A non-first stage receives its activations over the wire; handing it
+            # the positional latents is a named contract violation.
+            latents=latents if self._layout.is_first else None,
             kwargs=kwargs,
             target=target,
             losses=losses,
@@ -631,7 +633,12 @@ def build_krea2_pipeline_runtime(
                     CODE_STAGE_CONTRACT,
                     f"rank {rank} owns no stage-local trainable parameters",
                 )
-            optimizer = optimizer_factory(parameters)
+            # The factory contract is the *stage module* (moss passes the
+            # same): a trainer-side factory calls stage_module.
+            # trainable_parameters() itself, so handing it the flat list
+            # raises AttributeError, which the negotiation below would
+            # report as a stage-contract violation.
+            optimizer = optimizer_factory(stage_module)
         validate_distributed_backend(
             _distributed_backend(group),
             device_type=str(getattr(device, "type", device)),
