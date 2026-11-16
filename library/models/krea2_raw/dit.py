@@ -205,44 +205,39 @@ class SwiGLU(torch.nn.Module):
         # enable/disable toggles this too.
         self.gradient_checkpointing = False
 
+    def _mlp_chunk(self, hidden: Tensor) -> Tensor:
+        return self.down(F.silu(self.gate(hidden)) * self.up(hidden))
+
     def forward(self, x: Tensor) -> Tensor:
+        # The MLP is token-independent along the sequence dim, so under gradient
+        # checkpointing we split the sequence and run *complete* MLPs per chunk,
+        # concatenating only the projected 6144-dim result.
+        #
+        # Chunking here -- rather than inside a gate/up-only helper -- is what
+        # removes every 136 MiB tensor: [1, 4352, 16384] fp16 becomes
+        # [1, 2176, 16384], and because ``down`` (16384 -> 6144) also runs
+        # inside the chunk, even its input is halved.  The outer cat only ever
+        # holds the small 6144-dim output.  down(cat(a, b)) == cat(down(a),
+        # down(b)) holds exactly since every op here is per-token.
+        #
+        # Also intentionally *not* an in-place ``up(x).mul_(...)`` fusion:
+        # MulBackward0 needs the pre-update ``u`` and would raise "modified by
+        # an inplace operation".
         checkpointing = (
-            torch.is_grad_enabled()
+            self.gradient_checkpointing
             and self.training
-            and self.gradient_checkpointing
+            and torch.is_grad_enabled()
             and x.requires_grad
         )
-
-        def _gate_act(hidden: Tensor) -> Tensor:
-            return F.silu(self.gate(hidden))
-
-        def _front(hidden: Tensor) -> Tensor:
-            # gate + up + activation -- everything *before* ``down``.  Wrapping
-            # only this half is what saves memory: on backward ``down`` runs
-            # first and _front recomputes afterwards, so gate/up/act no longer
-            # share a window with down's workspace.  Wrapping the whole MLP
-            # would keep all of them alive at once and save nothing.
-            #
-            # ``silu(gate(h))`` gets its *own* inner checkpoint: without it the
-            # recompute holds g = gate(h) and s = silu(g) alive at the same time
-            # as u = up(h), and MulBackward0 then needs dy/ds/du on top of that
-            # -- six 136 MiB tensors in one window.  With the inner checkpoint g
-            # is released as soon as s exists, and on backward up's gradient is
-            # fully released before gate is recomputed.  Numerically identical;
-            # an in-place ``up(h).mul_(...)`` would instead trip autograd's
-            # "modified by an inplace operation" on MulBackward0.
-            gated = (
-                torch_checkpoint(_gate_act, hidden, use_reentrant=False)
-                if checkpointing
-                else _gate_act(hidden)
-            )
-            return gated * self.up(hidden)
-
-        if checkpointing:
-            hidden = torch_checkpoint(_front, x, use_reentrant=False)
-        else:
-            hidden = _front(x)
-        return self.down(hidden)
+        if not checkpointing:
+            return self._mlp_chunk(x)
+        return torch.cat(
+            [
+                torch_checkpoint(self._mlp_chunk, chunk, use_reentrant=False)
+                for chunk in x.chunk(2, dim=-2)
+            ],
+            dim=-2,
+        )
 
 
 class Attention(torch.nn.Module):
