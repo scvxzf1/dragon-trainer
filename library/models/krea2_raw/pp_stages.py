@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import re
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -237,9 +238,11 @@ class _Krea2StageBase(nn.Module):
         stages: int,
         block_range: tuple[int, int],
         activation_dtype: torch.dtype | None = None,
+        network: object | None = None,
     ) -> None:
         super().__init__()
         object.__setattr__(self, "_model", model)
+        object.__setattr__(self, "_network", network)
         object.__setattr__(self, "_blocks", list(blocks))
         object.__setattr__(self, "_stage_index", int(stage_index))
         object.__setattr__(self, "_stages", int(stages))
@@ -299,6 +302,24 @@ class _Krea2StageBase(nn.Module):
                     continue
                 seen.add(id(parameter))
                 owned.append(parameter)
+        # Krea-2 adapters are *not* inserted into the base module tree -- apply_to
+        # keeps them on the network object and patches the forward instead -- so
+        # walking ``model`` alone finds zero adapter parameters.  Collect the
+        # adapter tensors whose lora_name falls inside this rank's block range.
+        network = getattr(self, "_network", None)
+        if network is not None:
+            start, stop = self._block_range  # type: ignore[attr-defined]
+            for lora in getattr(network, "unet_loras", []) or []:
+                name = str(getattr(lora, "lora_name", ""))
+                # lora_name looks like "lora_unet_blocks_12_attn_wq".
+                match = re.match(r"(?:.*_)?blocks[_.](\d+)[_.]", name)
+                if match and not (start <= int(match.group(1)) < stop):
+                    continue
+                for parameter in lora.parameters():
+                    if not parameter.requires_grad or id(parameter) in seen:
+                        continue
+                    seen.add(id(parameter))
+                    owned.append(parameter)
         return owned
 
     def _autocast(self):

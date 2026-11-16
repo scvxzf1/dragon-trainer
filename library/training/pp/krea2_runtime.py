@@ -316,11 +316,21 @@ def build_krea2_stage_module(
         # This is cheap to get wrong silently, so verify the slice really carries
         # adapter parameters: a rank that ends up with none would train nothing
         # while the pipeline still ran.
+        # apply_to usually swaps the Linear for an adapter-typed module rather
+        # than renaming it, so match on the class name as well as the path.
         adapter_markers = ("lora", "loha", "lokr", "vera", "glora")
         has_adapter = any(
             any(marker in name.lower() for marker in adapter_markers)
-            for name, _module in model.named_modules()
+            or any(marker in type(module).__name__.lower() for marker in adapter_markers)
+            for name, module in model.named_modules()
         )
+        if not has_adapter:
+            # ``apply_to`` may keep the original module names/classes (it can
+            # inject plain Parameters or wrap without renaming), so fall back to
+            # the adapter object itself: a built network always carries params.
+            net_params = getattr(network, "parameters", None)
+            if callable(net_params):
+                has_adapter = any(True for _ in net_params())
         if not has_adapter:
             raise PipelineParallelError(
                 CODE_STAGE_CONTRACT,
@@ -340,6 +350,10 @@ def build_krea2_stage_module(
         max_text_tokens=wire.max_text_tokens,
         img_tokens=wire.img_tokens,
     )
+    # The adapter lives on the network object, not inside the base module tree
+    # (apply_to patches forward instead of swapping modules), so the stage needs
+    # the reference to report this rank's trainable parameters.
+    kwargs["network"] = network
     stage_module = Krea2FirstStage(**kwargs) if layout.is_first else Krea2LastStage(**kwargs)
     return layout, stage_module
 
