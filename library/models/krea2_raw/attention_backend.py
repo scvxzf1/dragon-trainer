@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -262,27 +263,60 @@ def _cudnn_attention(
             # head_dim) SDPA output (52 MiB at L=4352) plus
             # mask.repeat(1,1,groups,1) -> (1,1,17408,4352) bool (72 MiB), and
             # the 52 MiB request is what hit the fragmentation wall.
-            chunks = 4 if length % 4 == 0 and length >= 2048 else 1
-            step = length // chunks
-            folded_parts: list[Tensor] = []
-            for index in range(chunks):
-                lo, hi = index * step, (index + 1) * step
-                q_part = q[:, :, lo:hi, :].reshape(
-                    b, hk, groups * (hi - lo), head_dim
+            def _sdpa_chunk(
+                q_slice: Tensor, k_t: Tensor, v_t: Tensor, mask_slice: Tensor | None
+            ) -> Tensor:
+                q_part = q_slice.reshape(
+                    *q_slice.shape[:2], groups * q_slice.shape[2], head_dim
                 )
-                mask_part = mask
-                if mask is not None and mask.shape[-2] == length:
-                    mask_part = mask[..., lo:hi, :].repeat(1, 1, groups, 1)
+                mask_part = (
+                    None
+                    if mask_slice is None
+                    else mask_slice.repeat(1, 1, groups, 1)
+                )
                 part = F.scaled_dot_product_attention(
                     q_part,
-                    k,
-                    v,
+                    k_t,
+                    v_t,
                     attn_mask=mask_part,
                     scale=scale,
                     enable_gqa=False,
                 )
-                folded_parts.append(part.reshape(b, q.shape[1], hi - lo, head_dim))
-                del q_part, mask_part, part
+                return part.reshape(b, q.shape[1], q_slice.shape[2], head_dim)
+
+            # torch_checkpoint is what makes the slicing actually pay off.  The
+            # bool mask is not usable directly by the Cutlass efficient kernel:
+            # SDPA's C++ preprocess_mask builds a same-shaped fp16 attn_bias and
+            # save_for_backward()s it together with q/k/v/out/lse.  Without a
+            # checkpoint every chunk's attn_bias stays in the graph --
+            # 4352*4352*2 = 36.125 MiB per chunk (the allocator rounds it to the
+            # 38.00 MiB request we saw), and 2176*4352*2 = 18.06 MiB with 8
+            # chunks (the 20.00 MiB request).  That is also why 8 chunks pushed
+            # the total *up*: more live graph nodes.  Wrapping each chunk lets
+            # the transient q_part/mask_part/attn_bias be freed before the next
+            # one starts.
+            chunks = 4 if length % 4 == 0 and length >= 2048 else 1
+            step = length // chunks
+            use_checkpoint = torch.is_grad_enabled() and (
+                q.requires_grad or k.requires_grad or v.requires_grad
+            )
+            folded_parts: list[Tensor] = []
+            for index in range(chunks):
+                lo, hi = index * step, (index + 1) * step
+                q_slice = q[:, :, lo:hi, :]
+                mask_slice = (
+                    mask[..., lo:hi, :]
+                    if mask is not None and mask.shape[-2] == length
+                    else mask
+                )
+                if use_checkpoint:
+                    part = torch_checkpoint(
+                        _sdpa_chunk, q_slice, k, v, mask_slice, use_reentrant=False
+                    )
+                else:
+                    part = _sdpa_chunk(q_slice, k, v, mask_slice)
+                folded_parts.append(part)
+                del q_slice, mask_slice, part
             output = (
                 folded_parts[0]
                 if chunks == 1
