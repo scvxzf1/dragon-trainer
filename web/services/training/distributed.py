@@ -347,12 +347,21 @@ def _parse_topology_pairs(text: str) -> list[tuple[int, int, str]]:
     return pairs
 
 
-def _pp_comm_path_check() -> dict[str, str] | None:
+def _pp_comm_path_check(
+    device_indices: list[int] | None = None,
+) -> dict[str, str] | None:
     """Report the GPU-to-GPU link NCCL will use for stage-to-stage traffic.
 
     NCCL already degrades on its own (NVLink -> PCIe P2P -> host bounce), so this
     row is informational: it tells the operator what to expect and never blocks a
     run.  Returns ``None`` when the topology cannot be read at all.
+
+    ``device_indices`` are PCI-bus ordinals -- the same namespace the launch path
+    uses (``CUDA_DEVICE_ORDER=PCI_BUS_ID`` + ``CUDA_VISIBLE_DEVICES``), so they can
+    be matched against ``nvidia-smi topo -m`` rows directly.  With two or more
+    indices only the links *between the selected GPUs* are reported: a box that
+    has NVLink somewhere must not read as "your pipeline will use NVLink" when the
+    chosen pair is a PCIe one.  ``None`` keeps the whole-machine summary.
     """
 
     try:
@@ -369,6 +378,16 @@ def _pp_comm_path_check() -> dict[str, str] | None:
     pairs = _parse_topology_pairs(proc.stdout)
     if not pairs:
         return None
+    wanted = sorted({int(index) for index in (device_indices or [])})
+    if wanted:
+        if len(wanted) < 2:
+            # A single card has no stage-to-stage link; saying anything about one
+            # would be a machine summary dressed up as a PP finding.
+            return None
+        scope = set(wanted)
+        pairs = [(a, b, link) for a, b, link in pairs if a in scope and b in scope]
+        if not pairs:
+            return None
     nvlink = [(a, b, link) for a, b, link in pairs if link.startswith("NV")]
     if nvlink:
         shown = "、".join(f"GPU{a}<->GPU{b} {link}" for a, b, link in nvlink[:4])
@@ -431,8 +450,17 @@ def _classify_admission_failure(exc: BaseException) -> tuple[str, str, str, str]
     return ("error", "admission_refused", "流水线并行准入检查未通过。", raw)
 
 
-def diagnose_pp_config(cfg: dict[str, Any], world_size: int | None) -> list[dict[str, str]]:
-    """PP config/compat/admission diagnosis (复用现有实现，只读)."""
+def diagnose_pp_config(
+    cfg: dict[str, Any],
+    world_size: int | None,
+    *,
+    device_indices: list[int] | None = None,
+) -> list[dict[str, str]]:
+    """PP config/compat/admission diagnosis (复用现有实现，只读).
+
+    ``device_indices`` (PCI-bus ordinals) narrows the communication-path row to the
+    GPUs this card actually selected.
+    """
 
     from library.models.pipeline_parallel import (
         PipelineParallelConfig,
@@ -476,7 +504,7 @@ def diagnose_pp_config(cfg: dict[str, Any], world_size: int | None) -> list[dict
             f"PP 配置通过现有 admission：stages={pipeline.stages}, "
             f"microbatches={pipeline.microbatches}, schedule={pipeline.schedule}。",
         ))
-    comm = _pp_comm_path_check()
+    comm = _pp_comm_path_check(device_indices)
     if comm is not None:
         checks.append(comm)
     return checks
@@ -522,7 +550,9 @@ def diagnose_distributed_training(
 
     if cfg is not None and normalized_mode == "pp":
         try:
-            checks.extend(diagnose_pp_config(cfg, world_size))
+            checks.extend(
+                diagnose_pp_config(cfg, world_size, device_indices=gpu_selection)
+            )
         except Exception as exc:  # noqa: BLE001
             checks.append(_pp_check("error", "diagnosis_error", f"PP 配置诊断异常：{exc}"))
         try:

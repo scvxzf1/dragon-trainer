@@ -409,3 +409,65 @@ def test_topology_parser_dedupes_pairs_and_ignores_diagonal():
     )
     pairs = _parse_topology_pairs(text)
     assert pairs == [(0, 1, "PHB"), (0, 2, "SYS"), (1, 2, "NV4")]
+
+
+_THREE_GPU_TOPO = (
+    "        GPU0    GPU1    GPU2    CPU Affinity\n"
+    "GPU0     X      PHB     PHB     0-35\n"
+    "GPU1    PHB      X      NV4     0-35\n"
+    "GPU2    PHB     NV4     X       0-35\n"
+)
+
+
+def _mock_topo(monkeypatch, stdout: str, returncode: int = 0):
+    from web.services.training import distributed as dist_mod
+
+    class _Proc:
+        pass
+
+    proc = _Proc()
+    proc.returncode = returncode
+    proc.stdout = stdout
+    monkeypatch.setattr(dist_mod.subprocess, "run", lambda *a, **k: proc)
+
+
+def test_comm_path_narrows_to_the_selected_nvlink_pair(monkeypatch):
+    """选中 V100 那两张（GPU1+GPU2）→ 报 NVLink。"""
+
+    from web.services.training import distributed as dist_mod
+
+    _mock_topo(monkeypatch, _THREE_GPU_TOPO)
+    check = dist_mod._pp_comm_path_check([1, 2])
+    assert check is not None and check["key"] == "comm_path_nvlink"
+    assert "GPU1<->GPU2 NV4" in check["message"]
+    assert "GPU0" not in check["message"]
+
+
+def test_comm_path_reports_pcie_for_a_selected_pcie_pair(monkeypatch):
+    """机器有 NVLink，但选中的是 GPU0+GPU1（PCIe）→ 必须报 PCIe，不能误报 NVLink。"""
+
+    from web.services.training import distributed as dist_mod
+
+    _mock_topo(monkeypatch, _THREE_GPU_TOPO)
+    check = dist_mod._pp_comm_path_check([0, 1])
+    assert check is not None and check["key"] == "comm_path_pcie"
+    assert "GPU0<->GPU1 PHB" in check["message"]
+    assert "NV4" not in check["message"]
+
+
+def test_comm_path_ignores_links_that_leave_the_selection(monkeypatch):
+    """只选一张卡（PP 不成立）→ 没有可报的链路。"""
+
+    from web.services.training import distributed as dist_mod
+
+    _mock_topo(monkeypatch, _THREE_GPU_TOPO)
+    assert dist_mod._pp_comm_path_check([1]) is None
+    assert dist_mod._pp_comm_path_check([]) is not None  # 空 = 保持全局摘要
+
+
+def test_comm_path_without_selection_still_summarises_the_machine(monkeypatch):
+    from web.services.training import distributed as dist_mod
+
+    _mock_topo(monkeypatch, _THREE_GPU_TOPO)
+    check = dist_mod._pp_comm_path_check()
+    assert check is not None and check["key"] == "comm_path_nvlink"
