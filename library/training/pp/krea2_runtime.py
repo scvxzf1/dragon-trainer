@@ -490,6 +490,12 @@ class Krea2PipelineRuntime:
                     f"this runtime serves exactly one whole-step latent shape "
                     f"{self._wire.latent_shape}; got {shape}",
                 )
+        # The fp16 transaction tracks one optimizer interval at a time and
+        # refuses a second step() without begin_step() (the moss runtime does the
+        # same).  Without this, step 2 onwards fails with
+        # pp_scaler_decision_asymmetry.
+        if self._transaction is not None:
+            self._transaction.begin_step()
         kwargs: dict[str, Any] = {
             "timesteps": timesteps,
             "context": context,
