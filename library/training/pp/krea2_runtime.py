@@ -653,6 +653,16 @@ def build_krea2_pipeline_runtime(
         # Only this rank's own tensors matter: the peer's blocks are still in
         # ``model.blocks`` and *must* stay on cpu (they are dropped by
         # release_foreign_blocks later in the caller).
+        # Send the peer's adapter modules back to cpu: apply_to builds the LoRA
+        # for *all* 28 layers and keeps it on the network object, so a plain
+        # network.to(device) parks the other rank's dead adapter here (measured
+        # 98 MiB on a 13/15 split).  Doing it here -- not in a caller -- is what
+        # makes it unconditional for every entry point.
+        if network is not None:
+            _keep = {id(m) for m in adapter_modules_for_stage(network, layout)}
+            for _lora in getattr(network, "unet_loras", []) or []:
+                if id(_lora) not in _keep:
+                    _lora.to("cpu")
         _cpu: list[str] = []
         for _block in stage_module.blocks:
             _cpu += [f"{n}" for n, t in _block.named_parameters() if t.device.type == "cpu"]

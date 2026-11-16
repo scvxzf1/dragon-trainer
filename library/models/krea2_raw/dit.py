@@ -206,20 +206,39 @@ class SwiGLU(torch.nn.Module):
         self.gradient_checkpointing = False
 
     def forward(self, x: Tensor) -> Tensor:
+        checkpointing = (
+            torch.is_grad_enabled()
+            and self.training
+            and self.gradient_checkpointing
+            and x.requires_grad
+        )
+
+        def _gate_act(hidden: Tensor) -> Tensor:
+            return F.silu(self.gate(hidden))
+
         def _front(hidden: Tensor) -> Tensor:
             # gate + up + activation -- everything *before* ``down``.  Wrapping
             # only this half is what saves memory: on backward ``down`` runs
             # first and _front recomputes afterwards, so gate/up/act no longer
             # share a window with down's workspace.  Wrapping the whole MLP
             # would keep all of them alive at once and save nothing.
-            return F.silu(self.gate(hidden)) * self.up(hidden)
+            #
+            # ``silu(gate(h))`` gets its *own* inner checkpoint: without it the
+            # recompute holds g = gate(h) and s = silu(g) alive at the same time
+            # as u = up(h), and MulBackward0 then needs dy/ds/du on top of that
+            # -- six 136 MiB tensors in one window.  With the inner checkpoint g
+            # is released as soon as s exists, and on backward up's gradient is
+            # fully released before gate is recomputed.  Numerically identical;
+            # an in-place ``up(h).mul_(...)`` would instead trip autograd's
+            # "modified by an inplace operation" on MulBackward0.
+            gated = (
+                torch_checkpoint(_gate_act, hidden, use_reentrant=False)
+                if checkpointing
+                else _gate_act(hidden)
+            )
+            return gated * self.up(hidden)
 
-        if (
-            torch.is_grad_enabled()
-            and self.training
-            and self.gradient_checkpointing
-            and x.requires_grad
-        ):
+        if checkpointing:
             hidden = torch_checkpoint(_front, x, use_reentrant=False)
         else:
             hidden = _front(x)
