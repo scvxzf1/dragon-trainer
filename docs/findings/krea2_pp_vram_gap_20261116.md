@@ -101,6 +101,39 @@ for p in model.parameters():
 | stage0（13 blocks + fusions） | 11.75 GiB | 13.97 GiB | **15.24 GiB** | **0.01 GiB（10 MB）** |
 | stage1（15 blocks + last） | 12.13 GiB | 13.52 GiB | **14.79 GiB** | 0.48 GiB |
 
+### 4.3b 定位并修掉 stage0 的 890 MiB（txtfusion 未 checkpoint）
+
+stage0 权重更少却更紧，逐步插桩把它定位到了单一模块：
+
+```
+after first           12102.1 MiB
+after tproj           12102.2 MiB
+after txtfusion       12992.2 MiB   (+890 MiB)   ← 全部在这里
+after txtmlp          13003.7 MiB
+after cat             13054.0 MiB
+after mask4d+posemb   13077.1 MiB
+after blocks          13740.1 MiB
+```
+
+根因：`enable_gradient_checkpointing()` **只遍历 `self.blocks`**，从不覆盖首段独有的
+前置模块。`txtfusion`（0.64 GiB 权重）处理的是 `(B, 256, 12, 2560)` 即 30720 宽的文本
+序列，它的内部激活因此一直驻留到 13 个 block 全部跑完。只冻结 `requires_grad` 无效
+（证明不是 `.grad` 或 dW workspace），必须包 checkpoint。
+
+修法：`_txtprefix_checkpoint()` 在 training + grad enabled 时用
+`torch.utils.checkpoint(use_reentrant=False)` 包住 `txtfusion`，推理/无梯度路径保持
+原样直调（不改任何数值）。
+
+**修复后实测**：
+
+| stage | 前向峰值 | **backward 峰值** | 余量 |
+|---|---|---|---|
+| stage0 | 13.97 → **13.10 GiB** | 15.24 → **14.37 GiB** | 0.01 → **0.89 GiB** |
+| stage1 | 13.52 GiB（不变） | 14.79 GiB（不变） | 0.48 GiB |
+
+**两个 stage 现在都在 15 GiB 以下。** stage0 的 0.89 GiB 足以覆盖 1F1B 预热/稳态期
+首段必须同时滞留 2 个 microbatch 的额外 0.4〜0.5 GiB。
+
 两者**都跑通了**，因此：
 
 1. **所谓 52 MB 缺口是伪缺口**——它由全参数测试的 `.grad` 累积造成，不代表 LoRA 场景。
@@ -114,8 +147,9 @@ PP=2 的 1F1B 在预热/稳态阶段，**stage0 必须同时滞留 2 个 microba
 和 stage 输出（等 stage1 反传回来），而 stage1 永远只需驻留 1 个。也就是说双卡联调时 stage0
 还要再多吃 0.4〜0.5 GiB。
 
-**按 §4.3 那 10 MB 的余量，双卡 1F1B 联调时 stage0 必崩。** 这是当前唯一真正的阻塞点，
-且它和「LoRA 还是全参数」无关——即使 LoRA 也需要先解决 stage0 的激活峰值。
+按修复前的 10 MB 余量，stage0 必然崩；**§4.3b 的 txtfusion checkpoint 已把余量提到
+0.89 GiB，这个阻塞点解除**，双卡 1F1B 联调在显存上已具备条件（仍需实测首段双 microbatch
+的真实开销）。剩下要考虑的是数值/正确性验证，而不是容量。
 
 ## 5. 已经排除的两个假设（都实测过，都不是缺口）
 
