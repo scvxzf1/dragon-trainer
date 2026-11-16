@@ -233,12 +233,17 @@ class SwiGLU(torch.nn.Module):
             and torch.is_grad_enabled()
             and x.requires_grad
         )
+        # 4 chunks: 4352 / 4 = 1088 = 17 * 64 tokens, still tensor-core aligned,
+        # and every 16384-dim intermediate drops from 68 MiB to 34 MiB.  The
+        # splits are applied on *both* branches so the req=False precompute pass
+        # never materialises the whole 4352-long sequence either.
+        chunks = x.chunk(4, dim=-2)
         if not checkpointing:
-            return self._mlp_chunk(x)
+            return torch.cat([self._mlp_chunk(chunk) for chunk in chunks], dim=-2)
         return torch.cat(
             [
                 torch_checkpoint(self._mlp_chunk, chunk, use_reentrant=False)
-                for chunk in x.chunk(2, dim=-2)
+                for chunk in chunks
             ],
             dim=-2,
         )
