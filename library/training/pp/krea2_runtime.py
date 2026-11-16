@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+import re
 import torch
 from torch import Tensor
 
@@ -356,6 +357,27 @@ def build_krea2_stage_module(
     kwargs["network"] = network
     stage_module = Krea2FirstStage(**kwargs) if layout.is_first else Krea2LastStage(**kwargs)
     return layout, stage_module
+
+
+
+def adapter_modules_for_stage(network: Any, layout: Krea2StageLayout) -> list:
+    """Adapter modules whose ``lora_name`` falls inside this stage's blocks.
+
+    Krea-2's ``apply_to`` creates the adapter for **all** layers and keeps it on
+    the network object (it patches forward instead of swapping modules), so a
+    plain ``network.to(device)`` parks the other rank's dead weights on this
+    card -- measured at 98 MiB on a 13/15 split.  Callers should move only this
+    list.  Names look like ``lora_unet_blocks_12_attn_wq``.
+    """
+
+    start, stop = layout.block_range
+    selected: list = []
+    for module in getattr(network, "unet_loras", []) or []:
+        name = str(getattr(module, "lora_name", ""))
+        match = re.search(r"(?:^|_)blocks[_.](\d+)[_.]", name)
+        if match is None or start <= int(match.group(1)) < stop:
+            selected.append(module)
+    return selected
 
 
 class Krea2PipelineRuntime:

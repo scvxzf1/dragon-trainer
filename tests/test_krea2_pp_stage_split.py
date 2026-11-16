@@ -378,3 +378,44 @@ def test_network_accepted_once_adapter_is_applied() -> None:
     assert any(p is injected.weight for p in owned)
     # It must still be only this rank's slice, not the whole model.
     assert not any(p is model.blocks[-1].attn.wq.weight for p in owned)
+
+
+def test_adapter_modules_for_stage_filters_by_block_range() -> None:
+    """Only the modules inside this stage's block range may be moved to the card."""
+
+    from library.training.pp.krea2_runtime import adapter_modules_for_stage
+
+    class _Fake:
+        def __init__(self, name: str) -> None:
+            self.lora_name = name
+
+    network = type(
+        "N",
+        (),
+        {
+            "unet_loras": [
+                _Fake("lora_unet_blocks_0_attn_wq"),
+                _Fake("lora_unet_blocks_12_mlp_down"),
+                _Fake("lora_unet_blocks_13_attn_wq"),
+                _Fake("lora_unet_blocks_27_mlp_up"),
+                _Fake("lora_unet_txtfusion_fc"),
+            ]
+        },
+    )()
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    from library.training.pp.krea2_runtime import build_krea2_stage_module
+
+    layout, _ = build_krea2_stage_module(
+        model, stage_index=0, stages=2, wire=wire
+    )
+    picked = [m.lora_name for m in adapter_modules_for_stage(network, layout)]
+    start, stop = layout.block_range
+    for name in picked:
+        match = __import__("re").search(r"(?:^|_)blocks[_.](\d+)[_.]", name)
+        if match is not None:
+            assert start <= int(match.group(1)) < stop, name
+    # a name that carries no block index is kept (caller decides)
+    assert "lora_unet_txtfusion_fc" in picked
+    # the far end of the model must be filtered out on this stage
+    assert "lora_unet_blocks_27_mlp_up" not in picked
