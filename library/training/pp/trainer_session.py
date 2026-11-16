@@ -680,7 +680,25 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
         handoff.unet.enable_gradient_checkpointing()
 
     loader = build_pp_train_dataloader(args, handoff.train_dataset_group, handoff.collator)
-    latent_shape, max_text_tokens = adapter.wire_shape_from_batch(next(iter(loader)))
+    first_batch = next(iter(loader))
+    latent_shape, _raw_text_tokens = adapter.wire_shape_from_batch(first_batch)
+    # The cached text-encoder outputs on disk carry the *real* token length (12
+    # for a short caption); the padding to the bucket length happens in
+    # prepare_cached_conditions.  Declaring the unpadded length made the wire
+    # expect token_cap = 12 + 4200 -> 4352 while the forward actually ran on
+    # 512 + 4200 = 4864, which pipelining rejected as a shape mismatch.
+    _prepared = adapter.prepare_conditions(
+        trainer,
+        args,
+        first_batch,
+        accelerator=accelerator,
+        weight_dtype=handoff.weight_dtype,
+    )
+    # Krea-2 names the bundle {"context", "mask"}; Anima/MOSS use "text_hiddens".
+    _hiddens = _prepared.get("context")
+    if _hiddens is None:
+        _hiddens = _prepared["text_hiddens"]
+    max_text_tokens = int(_hiddens.shape[1])
     # The LR plan is built from max_train_steps, so the steps budget is
     # resolved (epochs -> steps when needed) *before* the scheduler exists.
     total_steps = _resolve_max_steps(args, max(len(loader), 1))
