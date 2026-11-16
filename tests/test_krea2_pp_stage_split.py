@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
+from torch import nn
 
 from library.models.krea2_raw.dit import SingleMMDiTConfig, SingleStreamDiT
+from library.training.pp.errors import PipelineParallelError
+from library.training.pp.krea2_runtime import build_krea2_stage_module
 from library.models.krea2_raw.pp_stages import (
     krea2_forward_first,
     krea2_forward_last,
@@ -347,3 +351,30 @@ def test_build_krea2_stage_module_rejects_adapters_for_now() -> None:
     wire = _tiny_wire(model)
     with _pytest.raises(PipelineParallelError):
         build_krea2_stage_module(model, stage_index=0, stages=2, wire=wire, network=object())
+
+
+def test_network_without_applied_adapter_is_rejected() -> None:
+    """Passing a network while the model carries no adapter must fail loudly."""
+
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    with pytest.raises(PipelineParallelError, match="carries no adapter modules"):
+        build_krea2_stage_module(
+            model, stage_index=0, stages=2, wire=wire, network=object()
+        )
+
+
+def test_network_accepted_once_adapter_is_applied() -> None:
+    """A stage carrying adapter modules builds, and only those stay trainable."""
+
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    injected = nn.Linear(4, 4, bias=False)
+    model.blocks[0].lora_down = injected
+    layout, stage = build_krea2_stage_module(
+        model, stage_index=0, stages=2, wire=wire, network=object()
+    )
+    owned = stage.trainable_parameters()
+    assert any(p is injected.weight for p in owned)
+    # It must still be only this rank's slice, not the whole model.
+    assert not any(p is model.blocks[-1].attn.wq.weight for p in owned)

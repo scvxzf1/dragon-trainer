@@ -305,12 +305,29 @@ def build_krea2_stage_module(
     start, stop = layout.block_range
     sliced = list(blocks[start:stop])
     if network is not None:
-        # Adapters are applied to the live base model before the stage is built;
-        # the probe cut does not yet map adapter modules onto a block range.
-        raise PipelineParallelError(
-            CODE_STAGE_CONTRACT,
-            "the Krea-2 PP probe cut does not support network adapters yet",
+        # Contract: the caller applies the adapter to the *live* base model
+        # before this call, and freezes the base at the same time.  We must not
+        # re-apply it here -- a PP rank owns only its own block range plus its
+        # side's fusions, so applying on a trimmed model would silently miss the
+        # other half.  ``trainable_parameters()`` then walks exactly this rank's
+        # slice and keeps whatever still has requires_grad=True, which is the
+        # adapter (plus any intentionally trained Norm/Bias) and nothing else.
+        #
+        # This is cheap to get wrong silently, so verify the slice really carries
+        # adapter parameters: a rank that ends up with none would train nothing
+        # while the pipeline still ran.
+        adapter_markers = ("lora", "loha", "lokr", "vera", "glora")
+        has_adapter = any(
+            any(marker in name.lower() for marker in adapter_markers)
+            for name, _module in model.named_modules()
         )
+        if not has_adapter:
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                "network was passed but the model carries no adapter modules; "
+                "apply the network to the live base model before building the "
+                "Krea-2 PP stage",
+            )
     kwargs = dict(
         model=model,
         blocks=sliced,
