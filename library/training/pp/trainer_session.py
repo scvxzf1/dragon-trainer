@@ -304,6 +304,15 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
     )
+    # The base was loaded on CPU for the PP slice; move only this rank's blocks.
+    owned = set()
+    for block in runtime.stage_module.blocks:
+        owned.add(id(block))
+        block.to(accelerator.device)
+    for name in ("first", "last", "tmlp", "tproj", "txtmlp", "txtfusion", "patchify"):
+        module = getattr(unet, name, None)
+        if module is not None and hasattr(module, "to"):
+            module.to(accelerator.device)
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=accelerator.device
     )

@@ -364,7 +364,17 @@ def _load_krea2_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         if inspect_nf4_checkpoint(str(args.pretrained_model_name_or_path)).is_nf4:
             raise ValueError("FP16/FP32 training requires nonquantized base weights, not NF4")
     loading_dtype = torch.bfloat16 if adaptive else weight_dtype
-    loading_device = "cpu" if trainer.is_swapping_blocks else accelerator.device
+    # PP must slice on CPU: the stage cut keeps 13/15 of the 28 blocks, so the
+    # full 25 GB model cannot be materialised on a single 16 GB card.  Loading
+    # straight to the accelerator OOM'd inside .to() before the PP dispatch
+    # ever ran (measured: 15.18 GiB allocated, 192 MiB short).
+    from library.training.pp.gate import pipeline_parallel_enabled
+
+    loading_device = (
+        "cpu"
+        if (trainer.is_swapping_blocks or pipeline_parallel_enabled(args))
+        else accelerator.device
+    )
     # NF4 (Krea-2 QLoRA): compat_matrix 对 nf4×block_swap 已降级 warning (方向 A
     # 端到端探针验证通过). NF4 v1 通过 nf4_prequantized_path 覆盖 BF16;
     # 自包含 v2 可用同一参数，也可直接作为 pretrained_model_name_or_path，
