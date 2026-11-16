@@ -246,18 +246,34 @@ def _cudnn_attention(
         # 48/48 go through).  Krea-2 is 48 heads / 12 kv heads, so expand the K/V
         # heads instead of falling all the way back to MATH -- the expansion is a
         # 12->48 repeat (tens of MiB) against the ~2 GiB MATH score matrix.
-        eff_k, eff_v, eff_gqa = k, v, gqa
+        # Query-group folding instead of K/V replication.  Krea-2 is 48 q heads /
+        # 12 kv heads, and this hardware's EFFICIENT does not implement
+        # enable_gqa.  Repeating K/V to 48 heads costs ~53 MB each in forward and
+        # another ~106 MB of dK_exp/dV_exp in backward.  Because the mask is a
+        # bidirectional padding mask (no causal structure), the four query heads
+        # of a group all attend the same K/V, so folding them into the sequence
+        # dim is bit-equivalent and 100% copy-free: q.view(B,12,4L,D).
         if gqa and q.shape[1] != k.shape[1]:
-            repeat = q.shape[1] // k.shape[1]
-            eff_k = k.repeat_interleave(repeat, dim=1)
-            eff_v = v.repeat_interleave(repeat, dim=1)
-            eff_gqa = False
+            groups = q.shape[1] // k.shape[1]
+            b, hk, length, head_dim = k.shape
+            q_folded = q.reshape(b, hk, groups * length, head_dim)
+            mask_folded = mask
+            if mask is not None and mask.shape[-2] == length:
+                mask_folded = mask.repeat(1, 1, groups, 1)
+            output = F.scaled_dot_product_attention(
+                q_folded, k, v, attn_mask=mask_folded, scale=scale,
+                enable_gqa=False,
+            )
+            return rearrange(
+                output.reshape(b, q.shape[1], length, head_dim),
+                "B H L D -> B L (H D)",
+            )
         try:
             with sdpa_kernel(
                 [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
             ):
                 output = F.scaled_dot_product_attention(
-                    q, eff_k, eff_v, attn_mask=mask, scale=scale, enable_gqa=eff_gqa
+                    q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
                 )
         except (RuntimeError, NotImplementedError):
             output = F.scaled_dot_product_attention(
