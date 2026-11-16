@@ -320,14 +320,19 @@ class Krea2LastStage(_Krea2StageBase):
         hidden: Tensor,
         tvec: Tensor,
         freqs: Tensor,
-        mask: Tensor,
+        mask_float: Tensor,
         tembed: Tensor,
+        **_shared_kwargs,
     ) -> Tensor:
+        # ``_shared_kwargs`` absorbs the kwargs the schedule hands to *every*
+        # stage (``timesteps``/``context``/``pos``/``mask``); only the leading
+        # stage consumes them.  The wire mask slot is named ``mask_float`` on
+        # purpose so it cannot collide with a ``mask`` kwarg.
         state = Krea2StageState(
             hidden=hidden,
             tvec=tvec,
             freqs=freqs,
-            mask=mask > 0.5,
+            mask=mask_float > 0.5,
             tembed=tembed,
             txtlen=self._max_text_tokens,  # type: ignore[attr-defined]
             imglen=self._img_tokens,  # type: ignore[attr-defined]

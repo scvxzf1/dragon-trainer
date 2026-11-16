@@ -296,3 +296,43 @@ def test_wire_spec_rejects_a_geometry_it_cannot_freeze() -> None:
         resolve_krea2_wire_spec(model, latent_shape=(3, 16, 1, 4, 4), max_text_tokens=5, microbatches=2)
     with _pytest.raises(PipelineParallelError):
         resolve_krea2_wire_spec(model, latent_shape=(2, 8, 1, 4, 4), max_text_tokens=5, microbatches=2)
+
+
+def test_build_krea2_stage_module_splits_the_plan_contiguously() -> None:
+    from library.models.krea2_raw.pp_stages import Krea2FirstStage, Krea2LastStage
+    from library.training.pp.krea2_runtime import build_krea2_stage_module
+
+    model = _tiny_model()
+    wire = _tiny_wire(model, microbatches=1)
+    head, head_module = build_krea2_stage_module(model, stage_index=0, stages=2, wire=wire)
+    tail, tail_module = build_krea2_stage_module(model, stage_index=1, stages=2, wire=wire)
+
+    assert isinstance(head_module, Krea2FirstStage)
+    assert isinstance(tail_module, Krea2LastStage)
+    assert head.is_first and not head.is_last
+    assert tail.is_last and not tail.is_first
+    assert head.block_range[0] == 0
+    assert head.block_range[1] == tail.block_range[0]
+    assert tail.block_range[1] == LAYERS
+    assert head.local_blocks + tail.local_blocks == LAYERS
+
+    img, context, t, pos, mask = _inputs(model)
+    with torch.no_grad():
+        reference = model(img, context, t, pos, mask)
+        wire_tensors = head_module(
+            img, timesteps=t, context=context, pos=pos, mask=mask
+        )
+        out = tail_module(*wire_tensors)
+    assert torch.equal(reference, out)
+
+
+def test_build_krea2_stage_module_rejects_adapters_for_now() -> None:
+    import pytest as _pytest
+
+    from library.training.pp.errors import PipelineParallelError
+    from library.training.pp.krea2_runtime import build_krea2_stage_module
+
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    with _pytest.raises(PipelineParallelError):
+        build_krea2_stage_module(model, stage_index=0, stages=2, wire=wire, network=object())
