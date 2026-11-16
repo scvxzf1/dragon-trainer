@@ -236,6 +236,21 @@ def _model_dtype(model) -> torch.dtype:
     return torch.float32
 
 
+def _distributed_backend(group) -> str | None:
+    """Backend spec of the default (or given) group, e.g. ``cpu:gloo,cuda:nccl``."""
+
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return None
+    if not hasattr(dist, "get_backend"):
+        return None
+    try:
+        return str(dist.get_backend(group))
+    except Exception:  # noqa: BLE001 - an unknown backend must not mask the check
+        return None
+
+
 def _negotiate_phase(error, group, *, where: str) -> None:
     """Turn a rank-local build failure into an agreed one (or none)."""
 
@@ -506,7 +521,7 @@ def build_krea2_pipeline_runtime(
                 )
             optimizer = optimizer_factory(parameters)
         validate_distributed_backend(
-            group,
+            _distributed_backend(group),
             device_type=str(getattr(device, "type", device)),
             world_size=int(world_size),
         )

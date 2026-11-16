@@ -236,7 +236,30 @@ class _Krea2StageBase(nn.Module):
         return self.stage_index == self.stages - 1
 
     def trainable_parameters(self):
-        return [p for p in self._model.parameters() if p.requires_grad]  # type: ignore[attr-defined]
+        """Parameters this stage actually owns and can update.
+
+        Not ``model.parameters()``: a PP rank must only optimise its own block
+        range plus the pre/post submodules that live on its side, otherwise the
+        two ranks would both update the same weights and the frozen foreign
+        halves would silently be trained twice.
+        """
+
+        model = self._model  # type: ignore[attr-defined]
+        modules: list[nn.Module] = list(self._blocks)  # type: ignore[attr-defined]
+        names = _FIRST_ONLY_SUBMODULES if self.is_first else _LAST_ONLY_SUBMODULES
+        for name in names:
+            module = getattr(model, name, None)
+            if module is not None:
+                modules.append(module)
+        seen: set[int] = set()
+        owned: list[nn.Parameter] = []
+        for module in modules:
+            for parameter in module.parameters():
+                if not parameter.requires_grad or id(parameter) in seen:
+                    continue
+                seen.add(id(parameter))
+                owned.append(parameter)
+        return owned
 
     def _autocast(self):
         """Mirror ``_AnimaStageBase._trainer_autocast`` for the fp16 contract.
