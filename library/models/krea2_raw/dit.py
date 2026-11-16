@@ -201,9 +201,29 @@ class SwiGLU(torch.nn.Module):
         self.gate = torch.nn.Linear(features, mlpdim, bias=bias)
         self.up = torch.nn.Linear(features, mlpdim, bias=bias)
         self.down = torch.nn.Linear(mlpdim, features, bias=bias)
+        # Mirrors SingleStreamBlock.gradient_checkpointing; the block's
+        # enable/disable toggles this too.
+        self.gradient_checkpointing = False
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.down(F.silu(self.gate(x)) * self.up(x))
+        def _front(hidden: Tensor) -> Tensor:
+            # gate + up + activation -- everything *before* ``down``.  Wrapping
+            # only this half is what saves memory: on backward ``down`` runs
+            # first and _front recomputes afterwards, so gate/up/act no longer
+            # share a window with down's workspace.  Wrapping the whole MLP
+            # would keep all of them alive at once and save nothing.
+            return F.silu(self.gate(hidden)) * self.up(hidden)
+
+        if (
+            torch.is_grad_enabled()
+            and self.training
+            and self.gradient_checkpointing
+            and x.requires_grad
+        ):
+            hidden = torch_checkpoint(_front, x, use_reentrant=False)
+        else:
+            hidden = _front(x)
+        return self.down(hidden)
 
 
 class Attention(torch.nn.Module):
@@ -360,9 +380,15 @@ class SingleStreamBlock(nn.Module):
 
     def enable_gradient_checkpointing(self) -> None:
         self.gradient_checkpointing = True
+        mlp = getattr(self, "mlp", None)
+        if mlp is not None and hasattr(mlp, "gradient_checkpointing"):
+            mlp.gradient_checkpointing = True
 
     def disable_gradient_checkpointing(self) -> None:
         self.gradient_checkpointing = False
+        mlp = getattr(self, "mlp", None)
+        if mlp is not None and hasattr(mlp, "gradient_checkpointing"):
+            mlp.gradient_checkpointing = False
 
     def _forward(
         self, x: Tensor, vec: Tensor, freqs: Tensor, mask: Tensor | None = None

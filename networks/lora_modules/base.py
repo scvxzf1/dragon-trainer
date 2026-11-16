@@ -186,6 +186,12 @@ class BaseLoRAModule(torch.nn.Module):
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
             lx, scale = self._apply_rank_dropout(lx)
             lx = self._up(lx.to(work), work)
+        # Cast to the base output's dtype *immediately*.  ``work`` is fp32 for a
+        # fp32-master adapter, so ``lx`` is [B, L, mlpdim] fp32; the caller casts
+        # right after anyway, but by then the allocation is already made --
+        # measured as a 272 MiB single request (= 4352x16384x4) against 136 MiB
+        # in fp16, which is what OOM'd a 16 GB card at the tail of the MLP.
+        lx = lx.to(org_forwarded.dtype)
         return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:
