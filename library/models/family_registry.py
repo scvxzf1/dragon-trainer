@@ -148,6 +148,10 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             supported_schedules=frozenset({"1f1b"}),
             supported_splits=frozenset({"balanced"}),
             stage_zero_block_offset=-1,
+            # The Krea-2 1F1B runtime lives in library/training/pp/krea2_runtime.py
+            # and is verified end to end on 2xV100 (forward, backward, AdamW,
+            # multi-step numerical alignment vs a single-card reference arm).
+            runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
         ),
     ),
     "z_image": ModelFamilySpec(

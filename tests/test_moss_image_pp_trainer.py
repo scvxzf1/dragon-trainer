@@ -86,7 +86,9 @@ def test_trainer_pp_wired_families():
     # trainer path (tests/test_anima_pp_trainer.py owns its admission cases).
     assert trainer_pp_wired({**_config(), "model_family": "anima"})
     assert not trainer_pp_wired({**_config(), "pipeline_parallel": False})
-    for family in ("krea2_raw", "z_image", "qwen_image_2_1"):
+    # Krea-2 gained its own 1F1B runtime (verified on 2xV100), so it is wired too.
+    assert trainer_pp_wired({**_config(), "model_family": "krea2_raw"})
+    for family in ("z_image", "qwen_image_2_1"):
         assert not trainer_pp_wired({**_config(), "model_family": family})
 
 
@@ -98,7 +100,8 @@ def test_entry_admission_admits_wired_families_and_refuses_others():
     )
     # A family without any stage-local runtime is refused one step earlier by
     # the shared runtime gate. Either way nothing reaches a DDP fallback.
-    for family in ("krea2_raw", "z_image", "qwen_image_2_1"):
+    require_trainer_pp_admission({**_config(), "model_family": "krea2_raw"}, where="cli_entry")
+    for family in ("z_image", "qwen_image_2_1"):
         with pytest.raises(PipelineParallelError) as excinfo:
             require_trainer_pp_admission({**_config(), "model_family": family}, where="cli_entry")
         # A named PP refusal either way (family contract or runtime gate) --

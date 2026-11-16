@@ -204,7 +204,7 @@ def pipeline_parallel_runtime_issue(
 #: ``train_session._run_training_session`` (dedicated PP session dispatch).
 #: The DDP-interior guards (:func:`require_trainer_topology`) keep refusing
 #: every family -- a wired family is dispatched *before* those code paths run.
-TRAINER_PP_WIRED_FAMILIES = frozenset({"moss_image", "anima"})
+TRAINER_PP_WIRED_FAMILIES = frozenset({"moss_image", "anima", "krea2_raw"})
 
 
 def trainer_pp_wired(config: Mapping[str, Any] | object) -> bool:

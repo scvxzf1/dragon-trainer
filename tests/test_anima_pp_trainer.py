@@ -86,7 +86,8 @@ def _config(**overrides: object) -> dict[str, object]:
 def test_trainer_pp_wired_includes_anima():
     assert trainer_pp_wired(_config())
     assert not trainer_pp_wired({**_config(), "pipeline_parallel": False})
-    for family in ("krea2_raw", "z_image", "qwen_image_2_1"):
+    assert trainer_pp_wired({**_config(), "model_family": "krea2_raw"})
+    for family in ("z_image", "qwen_image_2_1"):
         assert not trainer_pp_wired({**_config(), "model_family": family})
 
 
