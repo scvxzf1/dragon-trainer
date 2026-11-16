@@ -60,11 +60,11 @@ LATENT_T_HW = (1, 150, 112)
 CONTEXT_LEN = (512, 1024)
 
 
-def batch_shapes(batch: int):
+def batch_shapes(batch: int, latent_t_hw=LATENT_T_HW):
     """Wire-buffer shapes for a global batch of ``batch`` samples."""
 
     return (
-        (batch, LATENT_CHANNELS, *LATENT_T_HW),
+        (batch, LATENT_CHANNELS, *latent_t_hw),
         (batch,),
         (batch, *CONTEXT_LEN),
     )
@@ -88,12 +88,30 @@ def parse_args():
     parser.add_argument("--checkpoint-policy", default="full")
     parser.add_argument("--init-scale", type=float, default=65536.0)
     parser.add_argument("--capture-grads", action="store_true")
+    parser.add_argument(
+        "--latent-hw",
+        default=f"{LATENT_T_HW[0]},{LATENT_T_HW[1]},{LATENT_T_HW[2]}",
+        help="PP wire latent shape as T,H,W (default: the 4200-token bucket)",
+    )
+    parser.add_argument(
+        "--blocks-to-swap",
+        type=int,
+        default=0,
+        help="single mode: resident-CPU block count (0 = whole model on the GPU)",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument(
         "--microbatch-accumulate",
         action="store_true",
         help="single mode: same 4x(bs1) split + accumulation order as the PP run "
         "instead of one bs4 forward (the matched reference for track 2)",
+    )
+    parser.add_argument(
+        "--backward-per-microbatch",
+        action="store_true",
+        help="single mode: real gradient accumulation -- backward inside the "
+        "micro-batch loop so each graph is freed immediately (what the "
+        "production trainer does via accelerator.accumulate)",
     )
     parser.add_argument(
         "--autocast-backward",
@@ -168,10 +186,21 @@ def adapter_grads(network):
 # ---------------------------------------------------------------------------
 
 
+def _latent_hw(args):
+    parts = [int(value) for value in str(args.latent_hw).split(",")]
+    if len(parts) != 3:
+        raise SystemExit("--latent-hw must be T,H,W")
+    return tuple(parts)
+
+
 def run_single(args, device):
     model, network = build_base(args)
     configure_checkpoint(model, args.checkpoint_policy)
     model.to(device=device, dtype=torch.float16).train()
+    if args.blocks_to_swap:
+        # Resident-CPU blocks: the single-GPU low-VRAM arm of the comparison.
+        model.enable_block_swap(int(args.blocks_to_swap), device)
+        model.move_to_device_except_swap_blocks(device)
     network.to(device=device, dtype=torch.float32).train()
     model.pos_embedder._cos_sin_cache.clear()
     params = [p for p in network.parameters() if p.requires_grad]
@@ -189,9 +218,23 @@ def run_single(args, device):
         optimizer.zero_grad(set_to_none=True)
         torch.cuda.synchronize(device)
         started = time.perf_counter()
-        if args.microbatch_accumulate:
-            # Same split/accumulation order as the 1F1B run: 4 x bs1, each loss
-            # divided by 4, gradients summed in the master weights.
+        if args.microbatch_accumulate and args.backward_per_microbatch:
+            for index, batch in enumerate(step_batches):
+                one_inputs = tuple(value.to(device) for value in batch[0])
+                one_target = batch[1].to(device)
+                with torch.autocast("cuda", dtype=torch.float16):
+                    one_pred = model.forward_mini_train_dit(
+                        one_inputs[0], one_inputs[1], one_inputs[2],
+                        padding_mask=one_inputs[3],
+                    )
+                    one_loss = torch.nn.functional.mse_loss(
+                        one_pred.float(), one_target.float()
+                    ) / len(step_batches)
+                scaler.scale(one_loss).backward()
+                del one_pred, one_loss
+            loss = torch.zeros((), device=device)
+            del inputs, target
+        elif args.microbatch_accumulate:
             with torch.autocast("cuda", dtype=torch.float16):
                 total = None
                 for index, batch in enumerate(step_batches):
@@ -314,7 +357,7 @@ def build_pp(args, rank, device, group):
             raise RuntimeError(f"stage {rank} owns no trainable adapter parameters")
         return torch.optim.AdamW(params, lr=args.lr)
 
-    latent_shape, timesteps_shape, context_shape = batch_shapes(args.microbatches)
+    latent_shape, timesteps_shape, context_shape = batch_shapes(args.microbatches, _latent_hw(args))
     log(rank, "building runtime")
     runtime = build_anima_pipeline_runtime(
         model,
