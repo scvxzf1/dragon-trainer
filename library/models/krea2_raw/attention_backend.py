@@ -232,9 +232,37 @@ def _cudnn_attention(
                 q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
             )
     except (RuntimeError, NotImplementedError):
-        output = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
-        )
+        # cuDNN attention is sm80+ only, so a Volta (sm70) run always lands here.
+        # An *unconstrained* SDPA on that hardware picks MATH, which materialises
+        # the full [H, L, L] score matrix -- at the 4032-token bucket that is
+        # ~2.0 GiB per call and it is what made Krea-2 PP=2 OOM on 2x16 GB.
+        # EFFICIENT is available there for fp16/fp32 (measured: seq=4608 peak
+        # 0.28 GiB vs 3.39 GiB through MATH) but *not* for bf16, where torch
+        # requires {Half, Float}.  Listing MATH as the fallback keeps bf16 -- the
+        # NF4 compute path -- on exactly the old behaviour while fp16 gets the
+        # memory-efficient kernel.
+        # EFFICIENT does not implement enable_gqa on this hardware (measured:
+        # GQA 48/12 raises "No available kernel", the same shapes expanded to
+        # 48/48 go through).  Krea-2 is 48 heads / 12 kv heads, so expand the K/V
+        # heads instead of falling all the way back to MATH -- the expansion is a
+        # 12->48 repeat (tens of MiB) against the ~2 GiB MATH score matrix.
+        eff_k, eff_v, eff_gqa = k, v, gqa
+        if gqa and q.shape[1] != k.shape[1]:
+            repeat = q.shape[1] // k.shape[1]
+            eff_k = k.repeat_interleave(repeat, dim=1)
+            eff_v = v.repeat_interleave(repeat, dim=1)
+            eff_gqa = False
+        try:
+            with sdpa_kernel(
+                [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+            ):
+                output = F.scaled_dot_product_attention(
+                    q, eff_k, eff_v, attn_mask=mask, scale=scale, enable_gqa=eff_gqa
+                )
+        except (RuntimeError, NotImplementedError):
+            output = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask, scale=scale, enable_gqa=gqa
+            )
     return rearrange(output, "B H L D -> B L (H D)")
 
 
