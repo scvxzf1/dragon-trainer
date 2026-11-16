@@ -501,6 +501,25 @@ class Krea2PipelineRuntime:
             "context": context,
             "mask": mask,
         }
+        # The pipeline loss compares the trailing stage's raw per-image output
+        # [B, N_img, patch*patch*C] against whatever target we hand it.  A
+        # trainer passes the plain latent [B, C, H, W] (or 5D with the singleton
+        # time axis), whose last dim is W -- mse_loss then broadcasts to rank 4
+        # and reports "size of tensor a (64) must match tensor b (112) at
+        # dimension 3" (64 = C*ph*pw, 112 = W).  Patchifying here is a pure
+        # permutation of the same elements, so the mean is unchanged, and it
+        # keeps runtime callers that already pass a 3D target working as-is.
+        if target is not None and target.ndim in (4, 5):
+            from einops import rearrange
+
+            target_4d = target.squeeze(2) if target.ndim == 5 else target
+            _patch = int(self._wire.patch)
+            target = rearrange(
+                target_4d,
+                "b c (h ph) (w pw) -> b (h w) (c ph pw)",
+                ph=_patch,
+                pw=_patch,
+            )
         prediction = run_pipeline_step(
             self._schedule,
             is_first=self._layout.is_first,
