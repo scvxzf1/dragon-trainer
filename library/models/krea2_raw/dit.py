@@ -335,17 +335,57 @@ class Attention(torch.nn.Module):
     def forward(
         self, qkv: Tensor, freqs: Tensor | None = None, mask: Tensor | None = None
     ) -> Tensor:
-        q, k, v, gate = self.wq(qkv), self.wk(qkv), self.wv(qkv), self.gate(qkv)
+        def _prepare(
+            inp: Tensor, freqs_slice: Tensor | None
+        ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+            """Q/K/V preparation for one sequence slice (per-token exact)."""
+            q, k, v, gate = self.wq(inp), self.wk(inp), self.wv(inp), self.gate(inp)
+            q, k, v = (
+                rearrange(q, "B L (H D) -> B H L D", H=self.heads),
+                rearrange(k, "B L (H D) -> B H L D", H=self.kvheads),
+                rearrange(v, "B L (H D) -> B H L D", H=self.kvheads),
+            )
+            q, k, v = self.qknorm(q, k, v)
+            if freqs_slice is not None:
+                q, k = ropeapply(q, k, freqs_slice)
+            return q, k, v, gate
 
-        q, k, v = (
-            rearrange(q, "B L (H D) -> B H L D", H=self.heads),
-            rearrange(k, "B L (H D) -> B H L D", H=self.kvheads),
-            rearrange(v, "B L (H D) -> B H L D", H=self.kvheads),
+        # Under checkpointing, the Q/K/V preparation is recomputed behind a
+        # checkpoint and *sliced*: without the checkpoint every chunk's fp32
+        # window stays in the graph, so 4 x 26 MiB is still 102 MiB and nothing
+        # is saved (that is exactly why the earlier non-checkpointed chunking
+        # left the total at 15.02 GiB).  fp32 windows here: prenorm's
+        # x.float(), wq/wk/wv's x.to(fp32) for the fp32-master adapter, qknorm,
+        # and ropeapply's .float() -- ~660 MiB of saved tensors per block if the
+        # whole preparation stays live.
+        seq = int(qkv.shape[-2])
+        checkpointed = (
+            self.training
+            and torch.is_grad_enabled()
+            and qkv.requires_grad
+            and seq % 4 == 0
+            and seq >= 2048
+            and getattr(self, "gradient_checkpointing", True)
         )
+        if not checkpointed:
+            q, k, v, gate = _prepare(qkv, freqs)
+        else:
+            step = seq // 4
+            parts = [
+                torch_checkpoint(
+                    _prepare,
+                    qkv[..., index * step : (index + 1) * step, :].contiguous(),
+                    (None if freqs is None else freqs[:, index * step : (index + 1) * step]),
+                    use_reentrant=False,
+                )
+                for index in range(4)
+            ]
+            q = torch.cat([part[0] for part in parts], dim=2)
+            k = torch.cat([part[1] for part in parts], dim=2)
+            v = torch.cat([part[2] for part in parts], dim=2)
+            gate = torch.cat([part[3] for part in parts], dim=1)
+            del parts
 
-        q, k, v = self.qknorm(q, k, v)
-        if freqs is not None:
-            q, k = ropeapply(q, k, freqs)
         out = self.wo(
             run_krea2_attention(
                 q, k, v, mask=mask, gqa=self.gqa, mode=self.attn_mode
