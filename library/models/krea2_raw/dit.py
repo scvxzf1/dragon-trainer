@@ -304,7 +304,7 @@ class SwiGLU(torch.nn.Module):
         # and every 16384-dim intermediate drops from 68 MiB to 34 MiB.  The
         # splits are applied on *both* branches so the req=False precompute pass
         # never materialises the whole 4352-long sequence either.
-        chunks = x.chunk(4, dim=-2)
+        chunks = x.chunk(8, dim=-2)
         if not checkpointing:
             return torch.cat([self._mlp_chunk(chunk) for chunk in chunks], dim=-2)
         return torch.cat(

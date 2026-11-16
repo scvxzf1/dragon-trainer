@@ -311,7 +311,7 @@ def _cudnn_attention(
             # the total *up*: more live graph nodes.  Wrapping each chunk lets
             # the transient q_part/mask_part/attn_bias be freed before the next
             # one starts.
-            chunks = 4 if length % 4 == 0 and length >= 2048 else 1
+            chunks = 8 if length % 8 == 0 and length >= 4096 else 1
             step = length // chunks
             use_checkpoint = torch.is_grad_enabled() and (
                 q.requires_grad or k.requires_grad or v.requires_grad
@@ -333,13 +333,24 @@ def _cudnn_attention(
                     part = _sdpa_chunk(q_slice, k, v, mask_slice)
                 folded_parts.append(part)
                 del q_slice, mask_slice, part
-            # Each part is (B, H, chunk_len, D); concatenating along dim 2
-            # rebuilds the full (B, H, L, D) with no further reshape.
-            output = (
-                folded_parts[0]
-                if len(folded_parts) == 1
-                else torch.cat(folded_parts, dim=2)
-            )
+            # Each part is (B, H, chunk_len, D).  Rebuild the full (B, H, L, D)
+            # into a preallocated buffer: torch.cat would hold every chunk *and*
+            # the concatenated result at once, and the result alone is
+            # 4352 * 6144 * 2 = 51 MiB -- the exact request that failed against
+            # 137 MiB of expandable-segment holes.
+            if len(folded_parts) == 1:
+                output = folded_parts[0]
+            else:
+                output = torch.empty(
+                    b,
+                    q.shape[1],
+                    length,
+                    head_dim,
+                    dtype=folded_parts[0].dtype,
+                    device=folded_parts[0].device,
+                )
+                for index, part in enumerate(folded_parts):
+                    output[:, :, index * step : (index + 1) * step, :] = part
             del folded_parts
             return rearrange(output, "B H L D -> B L (H D)")
         try:
