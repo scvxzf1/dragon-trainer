@@ -337,3 +337,75 @@ def test_diagnosis_self_faults_degrade_instead_of_blaming_the_config(exc):
     assert key == "diagnosis_unavailable"
     assert "与你的配置无关" in message
     assert type(exc).__name__ in detail
+
+
+# ---------------------------------------------------------------------------
+# PP 通信路径诊断（info only，永不拦截）
+# ---------------------------------------------------------------------------
+
+
+def test_comm_path_check_reports_nvlink(monkeypatch):
+    from web.services.training import distributed as dist_mod
+
+    class _Proc:
+        returncode = 0
+        stdout = (
+            "        GPU0    GPU1    CPU Affinity\n"
+            "GPU0     X      NV4     0-35\n"
+            "GPU1    NV4      X      0-35\n"
+        )
+
+    monkeypatch.setattr(dist_mod.subprocess, "run", lambda *a, **k: _Proc())
+    check = dist_mod._pp_comm_path_check()
+    assert check["key"] == "comm_path_nvlink"
+    assert check["level"] == "info"
+    assert check["code"] == "pp_comm_path_nvlink"
+    assert "NV4" in check["message"]
+
+
+def test_comm_path_check_reports_pcie_without_nvlink(monkeypatch):
+    from web.services.training import distributed as dist_mod
+
+    class _Proc:
+        returncode = 0
+        stdout = (
+            "        GPU0    GPU1    CPU Affinity\n"
+            "GPU0     X      PHB     0-35\n"
+            "GPU1    PHB      X      0-35\n"
+        )
+
+    monkeypatch.setattr(dist_mod.subprocess, "run", lambda *a, **k: _Proc())
+    check = dist_mod._pp_comm_path_check()
+    assert check["key"] == "comm_path_pcie"
+    assert check["level"] == "info"
+    assert "PHB" in check["message"]
+
+
+def test_comm_path_check_returns_none_when_topology_unavailable(monkeypatch):
+    from web.services.training import distributed as dist_mod
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(dist_mod.subprocess, "run", lambda *a, **k: _Proc())
+    assert dist_mod._pp_comm_path_check() is None
+
+    def _raise(*a, **k):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(dist_mod.subprocess, "run", _raise)
+    assert dist_mod._pp_comm_path_check() is None
+
+
+def test_topology_parser_dedupes_pairs_and_ignores_diagonal():
+    from web.services.training.distributed import _parse_topology_pairs
+
+    text = (
+        "        GPU0    GPU1    GPU2    CPU Affinity\n"
+        "GPU0     X      PHB     SYS     0-35\n"
+        "GPU1    PHB      X      NV4     0-35\n"
+        "GPU2    SYS     NV4     X       0-35\n"
+    )
+    pairs = _parse_topology_pairs(text)
+    assert pairs == [(0, 1, "PHB"), (0, 2, "SYS"), (1, 2, "NV4")]
