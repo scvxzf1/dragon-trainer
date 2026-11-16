@@ -304,15 +304,34 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
     )
-    # The base was loaded on CPU for the PP slice; move only this rank's blocks.
-    owned = set()
+    # The base was loaded on CPU for the PP slice.  Move this rank's blocks, then
+    # every *surviving* top-level child except ``blocks`` -- a hand-written name
+    # allow-list missed a module and surfaced as the ATen addmm error
+    # "mat1 is on cuda:0, different from other tensors on cpu" (a cpu bias).
+    # After release_foreign_submodules only this rank's children remain, so a
+    # deny-list on ``blocks`` cannot leak foreign weights.
     for block in runtime.stage_module.blocks:
-        owned.add(id(block))
         block.to(accelerator.device)
-    for name in ("first", "last", "tmlp", "tproj", "txtmlp", "txtfusion", "patchify"):
-        module = getattr(unet, name, None)
-        if module is not None and hasattr(module, "to"):
-            module.to(accelerator.device)
+    for name, child in unet.named_children():
+        if name == "blocks":
+            continue
+        child.to(accelerator.device)
+    leftovers = [
+        f"stage:{n}" for n, t in runtime.stage_module.named_parameters() if t.device.type == "cpu"
+    ] + [
+        f"stagebuf:{n}" for n, t in runtime.stage_module.named_buffers() if t.device.type == "cpu"
+    ] + [
+        f"adapter:{n}"
+        for n, t in network.named_parameters()
+        if t.requires_grad and t.device.type == "cpu"
+    ]
+    if leftovers:
+        raise PipelineParallelError(
+            CODE_STAGE_CONTRACT,
+            f"rank {rank} still holds CPU tensors after the stage move "
+            f"({len(leftovers)} found, first few: {leftovers[:8]}); a cpu weight "
+            "here surfaces as an ATen device mismatch inside forward",
+        )
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=accelerator.device
     )
