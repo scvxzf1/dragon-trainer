@@ -344,6 +344,13 @@ def build_krea2_trainer_runtime(
     is_last = rank == int(config.stages) - 1
     scaler = _last_stage_scaler(accelerator.device, is_last)
     network.to(device=accelerator.device)
+    # PP v0 trains the adapter only.  Krea-2's apply_to keeps the adapter off the
+    # module tree, so a generic "train unet network" freeze does not reach the
+    # base weights and autograd would still retain ~192 MiB of fc2.weight dW per
+    # layer (measured: 15.18 GiB allocated, OOM at 192 MiB on a 16 GB card).
+    adapter_ids = {id(p) for p in network.parameters()}
+    for parameter in unet.parameters():
+        parameter.requires_grad_(id(parameter) in adapter_ids)
     runtime = build_krea2_pipeline_runtime(
         unet,
         config=config,
