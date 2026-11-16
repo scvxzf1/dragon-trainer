@@ -220,3 +220,79 @@ def test_stage_modules_survive_after_the_other_side_is_released() -> None:
         out = last(*wire)
         reference = _tiny_model()(img, context, t, pos, mask)
     assert torch.equal(reference, out)
+
+
+# ---------------------------------------------------------------------------
+# Wire geometry + boundary metas (runtime step 3, geometry half)
+# ---------------------------------------------------------------------------
+
+
+def _tiny_wire(model, *, microbatches: int = 2):
+    from library.training.pp.krea2_runtime import resolve_krea2_wire_spec
+
+    # 4x4 latent with patch 2 -> 2x2 = 4 image tokens
+    return resolve_krea2_wire_spec(
+        model,
+        latent_shape=(2, 16, 1, 4, 4),
+        max_text_tokens=TXT_TOKENS,
+        microbatches=microbatches,
+    )
+
+
+def test_wire_spec_freezes_geometry() -> None:
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    assert wire.img_tokens == 4
+    assert wire.token_cap == krea2_token_cap(TXT_TOKENS, 4) == 256
+    assert wire.dim == model.config.features
+    assert wire.microbatch_batch_size == 1
+    assert wire.freqs_shape == (1, 256, model.config.features // model.config.heads // 2, 2, 2)
+
+
+def test_boundary_metas_match_the_real_wire_shapes() -> None:
+    from library.training.pp.contract import PpComputePolicy
+    from library.training.pp.krea2_runtime import (
+        KREA2_BOUNDARY_FROZEN_INDICES,
+        krea2_boundary_metas,
+    )
+
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    policy = PpComputePolicy.from_dtype(torch.float32)
+    first, last = _stage_pair(model)
+    first_in, first_out = krea2_boundary_metas(
+        first, wire=wire, policy=policy, latent_dtype=torch.float32
+    )
+    last_in, last_out = krea2_boundary_metas(
+        last, wire=wire, policy=policy, latent_dtype=torch.float32
+    )
+    assert first_in[0].shape == wire.microbatch_latent_shape
+    assert tuple(t.shape for t in first_out) == tuple(t.shape for t in last_in)
+    assert last_out[0].shape == (1, 256, 16)
+    assert KREA2_BOUNDARY_FROZEN_INDICES == (1, 2, 3, 4)
+
+    # The frozen slots must be exactly the non-hidden ones.
+    img, context, t, pos, mask = _inputs(model)
+    with torch.no_grad():
+        produced = first(img, timesteps=t, context=context, pos=pos, mask=mask)
+    # metas are frozen per *microbatch*; the probe batch is larger, so only the
+    # non-batch axes must agree.
+    for index, meta in enumerate(first_out):
+        assert meta.shape[1:] == produced[index].shape[1:], (
+            index,
+            meta.shape,
+            produced[index].shape,
+        )
+
+
+def test_wire_spec_rejects_a_geometry_it_cannot_freeze() -> None:
+    import pytest as _pytest
+
+    from library.training.pp.errors import PipelineParallelError
+    from library.training.pp.krea2_runtime import resolve_krea2_wire_spec
+
+    model = _tiny_model()
+    with _pytest.raises(PipelineParallelError):
+        resolve_krea2_wire_spec(model, latent_shape=(3, 16, 1, 4, 4), max_text_tokens=5, microbatches=2)
+    with _pytest.raises(PipelineParallelError):
+        resolve_krea2_wire_spec(model, latent_shape=(2, 8, 1, 4, 4), max_text_tokens=5, microbatches=2)
