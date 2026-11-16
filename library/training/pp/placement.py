@@ -252,7 +252,13 @@ def build_anima_stage_module(
     return layout, module
 
 
-def release_foreign_blocks(model: nn.Module, layout: AnimaStageLayout) -> tuple[int, int]:
+def release_foreign_blocks(
+    model: nn.Module,
+    layout: AnimaStageLayout | object,
+    *,
+    container: str = "blocks",
+    block_range: tuple[int, int] | None = None,
+) -> tuple[int, int]:
     """Drop the blocks this stage does not own, to reclaim their memory.
 
     This is the only destructive operation in the package and it is **opt-in**:
@@ -260,18 +266,31 @@ def release_foreign_blocks(model: nn.Module, layout: AnimaStageLayout) -> tuple[
     blocks) and the optimizer are built.  It intentionally does not touch the
     pre-block / post-block submodules -- head/tail residency is a trainer policy
     decision, not a placement detail.
+
+    ``container``/``block_range`` let the other wired family (MOSS keeps its
+    blocks under ``model.layers`` and reports ``layer_range``) reuse the same
+    destructive step instead of growing a second implementation.
     """
 
-    blocks = getattr(model, "blocks", None)
+    blocks = getattr(model, container, None)
     if not isinstance(blocks, nn.ModuleList):
         raise PipelineParallelError(
             CODE_STAGE_CONTRACT,
-            f"model.blocks must be an nn.ModuleList, got {type(blocks).__name__}",
+            f"model.{container} must be an nn.ModuleList, got {type(blocks).__name__}",
         )
-    start, end = layout.block_range
+    if block_range is None:
+        block_range = getattr(layout, "block_range", None)
+        if block_range is None:
+            block_range = getattr(layout, "layer_range", None)
+    if block_range is None:
+        raise PipelineParallelError(
+            CODE_STAGE_CONTRACT,
+            f"layout {type(layout).__name__} exposes neither block_range nor layer_range",
+        )
+    start, end = block_range
     if (start, end) == (0, len(blocks)):
         return (start, end)
-    model.blocks = nn.ModuleList([blocks[index] for index in range(start, end)])
+    setattr(model, container, nn.ModuleList([blocks[index] for index in range(start, end)]))
     return (start, end)
 
 

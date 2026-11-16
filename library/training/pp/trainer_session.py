@@ -31,6 +31,7 @@ Checkpoint semantics:
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import math
@@ -179,7 +180,7 @@ def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape
     is_last = rank == int(config.stages) - 1
     device = accelerator.device
     scaler = _last_stage_scaler(device, is_last)
-    return build_moss_pipeline_runtime(
+    runtime = build_moss_pipeline_runtime(
         unet,
         config=config,
         rank=rank,
@@ -193,6 +194,10 @@ def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
     )
+    _release_foreign_stage_weights(
+        unet, runtime.layout, network=network, device=device
+    )
+    return runtime
 
 
 def _last_stage_scaler(device, is_last: bool):
@@ -220,6 +225,52 @@ def _stage_optimizer_factory(args):
     )[2]  # get_optimizer returns the (name, args, optimizer) triple
 
 
+def _release_foreign_stage_weights(model, layout, *, network, device) -> None:
+    """Drop the blocks this stage does not own so PP actually saves weights.
+
+    Stage modules *borrow* their slice from the full model, so ``model.blocks``
+    still holds every layer and each rank would carry the whole DiT.  The
+    release is opt-in by design (it is the only destructive placement op), so
+    the trainer has to ask for it explicitly.
+
+    An attached adapter keeps an ``org_module_ref`` back-pointer to the layer it
+    wraps; a foreign adapter's pointer would keep a dropped layer alive.  Those
+    back-pointers are cleared for foreign adapters only -- their LoRA tensors
+    stay untouched, so checkpoint saving and stage gathering are unaffected.
+    """
+
+    from library.training.pp.placement import release_foreign_blocks, stage_adapter_modules
+
+    blocks = getattr(model, "blocks", None)
+    container = "blocks"
+    if blocks is None:
+        blocks = getattr(model, "layers", None)
+        container = "layers"
+    if blocks is None:
+        return
+    block_range = getattr(layout, "block_range", None) or getattr(layout, "layer_range", None)
+    if block_range is None:
+        return
+    start, end = block_range
+    if (start, end) == (0, len(blocks)):
+        return
+    if network is not None and hasattr(layout, "block_indices"):
+        # Adapter bookkeeping is Anima-shaped (``block_indices``); the MOSS
+        # layout indexes layers only, so its adapters keep their references and
+        # the block release below stands on its own.
+        owned = {id(module) for module in stage_adapter_modules(network, layout)}
+        for adapter in getattr(network, "unet_loras", ()) or ():
+            if id(adapter) in owned:
+                continue
+            ref = getattr(adapter, "org_module_ref", None)
+            if isinstance(ref, list) and ref:
+                ref[0] = None
+    release_foreign_blocks(model, layout, container=container, block_range=(start, end))
+    gc.collect()
+    if getattr(device, "type", "") == "cuda":
+        torch.cuda.empty_cache()
+
+
 def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens=None, dtype=None):
     """Build this rank's Anima stage-local runtime (library-level, wired).
 
@@ -240,7 +291,7 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
     rank = dist.get_rank() if _distributed() else 0
     is_last = rank == int(config.stages) - 1
     scaler = _last_stage_scaler(accelerator.device, is_last)
-    return build_anima_pipeline_runtime(
+    runtime = build_anima_pipeline_runtime(
         unet,
         config=config,
         world_size=world_size,
@@ -253,6 +304,10 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
     )
+    _release_foreign_stage_weights(
+        unet, runtime.layout, network=network, device=accelerator.device
+    )
+    return runtime
 
 
 def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) -> None:
