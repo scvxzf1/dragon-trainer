@@ -206,6 +206,10 @@ class SwiGLU(torch.nn.Module):
         self.gradient_checkpointing = False
 
     def _mlp_chunk(self, hidden: Tensor) -> Tensor:
+        # Pin the dtype at the chunk entry.  With chunk(2) a fp16 gate/up output
+        # is 2176*16384*2 = 68 MiB, while fp32 is 136 MiB -- the exact size the
+        # backward OOM asked for, i.e. the chunk math was running in fp32.
+        hidden = hidden.to(self.gate.weight.dtype)
         return self.down(F.silu(self.gate(hidden)) * self.up(hidden))
 
     def forward(self, x: Tensor) -> Tensor:
