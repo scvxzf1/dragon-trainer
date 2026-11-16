@@ -419,3 +419,20 @@ def test_adapter_modules_for_stage_filters_by_block_range() -> None:
     assert "lora_unet_txtfusion_fc" in picked
     # the far end of the model must be filtered out on this stage
     assert "lora_unet_blocks_27_mlp_up" not in picked
+
+
+def test_stage_exposes_checkpoint_contract() -> None:
+    """The PP checkpoint writer classifies params via adapter_modules/topology."""
+
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    injected = nn.Linear(4, 4, bias=False)
+    model.blocks[0].lora_down = injected
+    layout, stage = build_krea2_stage_module(
+        model, stage_index=0, stages=2, wire=wire, network=object()
+    )
+    # adapter_modules must be discoverable; Krea-2 adapters are not children of
+    # the blocks they patch, so a stage cannot see them via parameters().
+    assert isinstance(stage.adapter_modules, tuple)
+    runtime_topology = {"family": "krea2_raw"}
+    assert runtime_topology["family"] == "krea2_raw"

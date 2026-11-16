@@ -513,6 +513,41 @@ class Krea2PipelineRuntime:
             return prediction
         return _unpatchify(prediction, self._wire)
 
+    def topology(self) -> dict[str, Any]:
+        """Stage shape and adapter set, as the PP checkpoint writer records it.
+
+        The checkpoint stores this next to the payload and refuses to resume a
+        run whose topology or adapter names differ, so it must describe exactly
+        what this rank is training.
+        """
+
+        layout = self._layout
+        adapter_names = sorted(
+            str(getattr(module, "lora_name", ""))
+            for module in self._stage_module.adapter_modules
+        )
+        return {
+            "family": "krea2_raw",
+            "stage_index": layout.stage_index,
+            "stages": layout.stages,
+            "is_first": layout.is_first,
+            "is_last": layout.is_last,
+            "block_range": list(layout.block_range),
+            "num_blocks": layout.num_blocks,
+            "microbatches": self._config.microbatches,
+            "schedule": self._config.schedule,
+            "conditioning": self._config.conditioning,
+            "mixed_precision": self._config.mixed_precision,
+            "latent_shape": list(self._wire.latent_shape),
+            "max_text_tokens": self._wire.max_text_tokens,
+            "dim": self._wire.dim,
+            "patch": self._wire.patch,
+            "dtype": str(self._dtype),
+            "wire_dtype": str(self._compute_policy.activation_dtype),
+            "compute_policy": self._compute_policy.as_dict(),
+            "adapter_names": adapter_names,
+        }
+
     def optimizer_step(self) -> PpStepOutcome:
         if self._transaction is None:
             raise PipelineParallelError(

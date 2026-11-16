@@ -63,11 +63,18 @@ MOSS_IMAGE_PP_CHECKPOINT_FORMAT = "moss-image-pp-stage-checkpoint"
 #: Bumped whenever the payload/manifest meaning changes (append-only history).
 PP_CHECKPOINT_VERSION = 1
 
+#: Krea-2 payload/manifest schema.  Distinct from Anima and MOSS-Image: a
+#: Krea-2 stage owns its own block range plus side-specific fusion modules, and
+#: its adapter tensors live on the network object rather than in the module
+#: tree, so a foreign loader must refuse it before reading any field.
+KREA2_PP_CHECKPOINT_FORMAT = "krea2-pp-stage-checkpoint"
+
 #: family -> checkpoint format for every family that publishes a stage-local PP
 #: runtime.  Families without a runtime never save one, so the default is the
 #: historical Anima format.
 _CHECKPOINT_FORMATS_BY_FAMILY = {
     "moss_image": MOSS_IMAGE_PP_CHECKPOINT_FORMAT,
+    "krea2_raw": KREA2_PP_CHECKPOINT_FORMAT,
 }
 
 

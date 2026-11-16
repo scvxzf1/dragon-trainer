@@ -259,6 +259,30 @@ class _Krea2StageBase(nn.Module):
         return self._blocks  # type: ignore[attr-defined]
 
     @property
+    def adapter_modules(self) -> tuple[nn.Module, ...]:
+        """This stage's adapter modules.
+
+        Needed by the PP checkpoint writer: it classifies every trainable
+        parameter as "inside an adapter module" or not, and refuses to save the
+        latter (they could not be restored).  Krea-2 adapters live on the network
+        object, not as children of the blocks they patch, so a stage cannot
+        discover them from its own ``parameters()``.
+        """
+
+        network = getattr(self, "_network", None)
+        if network is None:
+            return ()
+        start, stop = self._block_range  # type: ignore[attr-defined]
+        selected: list[nn.Module] = []
+        for module in getattr(network, "unet_loras", []) or []:
+            name = str(getattr(module, "lora_name", ""))
+            # lora_name looks like "lora_unet_blocks_12_attn_wq".
+            match = re.search(r"(?:^|_)blocks[_.](\d+)[_.]", name)
+            if match is None or start <= int(match.group(1)) < stop:
+                selected.append(module)
+        return tuple(selected)
+
+    @property
     def stage_index(self) -> int:
         return self._stage_index  # type: ignore[attr-defined]
 
