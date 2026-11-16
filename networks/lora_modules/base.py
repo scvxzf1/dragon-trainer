@@ -43,6 +43,81 @@ def _absorb_channel_scale(
     return (1.0 / s).to(weight.device).contiguous()
 
 
+def _chunked_down(module, x: torch.Tensor, work: torch.dtype):
+    """``_down(_rebalance(x.to(work)))`` over sequence slices.
+
+    The upcast itself is the allocation: for an attention projection
+    ``x.to(fp32)`` is 4352 * 6144 * 4 = 102.00 MiB, the single request that
+    OOM'd backward on a 16 GB card.  ``_down`` projects down to ``rank``
+    dimensions, so only the fp32 *input* window is large, and it is per-token:
+    slicing the sequence is exact.  The concatenated result keeps ``_down``'s
+    own dtype/dim, so ``_gate``/dropout/``_up`` downstream are untouched.
+    """
+
+    if work != torch.float32 or x.ndim < 3:
+        return module._down(module._rebalance(x.to(work)), work)
+    seq = int(x.shape[-2])
+    chunks = 8 if seq % 8 == 0 and seq >= 2048 else 1
+    if chunks == 1:
+        return module._down(module._rebalance(x.to(work)), work)
+    step = seq // chunks
+    return torch.cat(
+        [
+            module._down(
+                module._rebalance(
+                    x[..., index * step : (index + 1) * step, :].contiguous().to(work)
+                ),
+                work,
+            )
+            for index in range(chunks)
+        ],
+        dim=-2,
+    )
+
+
+def _chunked_up(module, lx: torch.Tensor, work: torch.dtype, out_dtype: torch.dtype):
+    """Run ``module._up`` over sequence slices, casting each slice on the way out.
+
+    ``work`` is fp32 on sm70 with fp16 mixed precision (Bootstrap auto-enables
+    ``lora_fp32_compute`` there for stability), so the up projection materialises
+    ``[B, L, out_features]`` in fp32: 4352 * 6144 * 4 = 102.00 MiB for one
+    attention projection -- the exact allocation that OOM'd backward.  Casting
+    per slice keeps every fp32 window at 102/chunks while the concatenated
+    result is fp16, i.e. the same tensor the caller builds one statement later.
+    64 * 6144 * 4 = 1.5 MiB is the same arithmetic for the MLP's first half.
+
+    Numerically identical: ``_up`` is a per-token linear map, so slicing the
+    sequence is exact and casting element-wise commutes with concatenation.
+    """
+
+    if work != torch.float32 or lx.ndim < 3:
+        return module._up(lx, work).to(out_dtype)
+    seq = int(lx.shape[-2])
+    chunks = 8 if seq % 8 == 0 and seq >= 2048 else 1
+    if chunks == 1:
+        return module._up(lx, work).to(out_dtype)
+    step = seq // chunks
+    # Pre-allocate and copy slices in place.  ``torch.cat`` would hold every
+    # fp32 slice *and* the concatenated result at once, which is what kept the
+    # peak at ~102 MiB even after chunking; filling a preallocated buffer means
+    # only the finished fp16 output plus one fp32 slice are ever resident.
+    out = None
+    for index in range(chunks):
+        piece = module._up(
+            lx[..., index * step : (index + 1) * step, :].contiguous(), work
+        ).to(out_dtype)
+        if out is None:
+            out = torch.empty(
+                (*piece.shape[:-2], seq, piece.shape[-1]),
+                dtype=out_dtype,
+                device=piece.device,
+            )
+        out[..., index * step : (index + 1) * step, :] = piece
+        del piece
+    assert out is not None
+    return out
+
+
 class BaseLoRAModule(torch.nn.Module):
     """Shared scaffolding: alpha→scale, multiplier, dropouts, channel_scale,
     timestep masking, ``apply_to`` monkey-patching. Subclasses own ``forward``."""
@@ -163,7 +238,37 @@ class BaseLoRAModule(torch.nn.Module):
         if not self.enabled or getattr(self, "_fused", False):
             return self.org_forward(x)
 
-        return BaseLoRAModule.forward_with_base(self, x, self.org_forward(x))
+        # Training with an fp32-master adapter keeps the base output and the
+        # fp32 delta alive at the same time: 4352 * 6144 * 2 = 51 MiB each, and
+        # the producer below only ever shrinks the *individual* windows.  Running
+        # the whole adapter (base projection + delta) per sequence slice is the
+        # only way to reduce the total: then just one slice's base and delta
+        # coexist, and the preallocated output holds the finished fp16 result.
+        seq = int(x.shape[-2]) if x.ndim >= 3 else 0
+        chunks = 8 if self.training and seq % 8 == 0 and seq >= 2048 else 1
+        if chunks == 1 or not self._uses_fp32_compute():
+            return BaseLoRAModule.forward_with_base(self, x, self.org_forward(x))
+        step = seq // chunks
+        out = None
+        for index in range(chunks):
+            lo, hi = index * step, (index + 1) * step
+            piece = x[..., lo:hi, :]
+            value = BaseLoRAModule.forward_with_base(
+                self, piece, self.org_forward(piece)
+            )
+            if out is None:
+                out = torch.empty(
+                    (*value.shape[:-2], seq, value.shape[-1]),
+                    dtype=value.dtype,
+                    device=value.device,
+                )
+            out[..., lo:hi, :] = value
+            del value, piece
+        assert out is not None
+        return out
+
+    def _uses_fp32_compute(self) -> bool:
+        return bool(self.training and self.fp32_compute)
 
     def forward_with_base(self, x: torch.Tensor, org_forwarded: torch.Tensor) -> torch.Tensor:
         """Apply this adapter to a base output computed by a shared projection."""
@@ -179,16 +284,15 @@ class BaseLoRAModule(torch.nn.Module):
 
         work = self._rank_compute_dtype(org_forwarded)
         with self._rank_autocast_context(x, work):
-            x_lora = self._rebalance(x.to(work))
-            lx = self._down(x_lora, work)
+            lx = _chunked_down(self, x, work)
             lx = self._gate(lx, work)
             if self.dropout is not None:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
             lx, scale = self._apply_rank_dropout(lx)
-            lx = self._up(lx.to(work), work)
+            lx = _chunked_up(self, lx.to(work), work, org_forwarded.dtype)
         # Cast to the base output's dtype *immediately*.  ``work`` is fp32 for a
-        # fp32-master adapter, so ``lx`` is [B, L, mlpdim] fp32; the caller casts
-        # right after anyway, but by then the allocation is already made --
+        # fp32-master adapter, so ``lx`` is [B, L, out_features] fp32; the caller
+        # casts right after anyway, but by then the allocation is already made --
         # measured as a 272 MiB single request (= 4352x16384x4) against 136 MiB
         # in fp16, which is what OOM'd a 16 GB card at the tail of the MLP.
         lx = lx.to(org_forwarded.dtype)

@@ -43,13 +43,52 @@ def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
     return out.float()
 
 
-def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
-    xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)
-    xk_ = xk.float().reshape(*xk.shape[:-1], -1, 1, 2)
+_ROPE_CHUNKS = 4
+
+
+def _rope_apply_chunk(x: Tensor, freqs: Tensor) -> Tensor:
+    """Rotate one sequence slice of ``x`` (``[B, H, L, D]``) with ``freqs``."""
+
+    x_ = x.float().reshape(*x.shape[:-1], -1, 1, 2)
     freqs = freqs[:, None, :, :, :]
-    xq_ = freqs[..., 0] * xq_[..., 0] + freqs[..., 1] * xq_[..., 1]
-    xk_ = freqs[..., 0] * xk_[..., 0] + freqs[..., 1] * xk_[..., 1]
-    return xq_.reshape(*xq.shape).to(xq.dtype), xk_.reshape(*xk.shape).to(xk.dtype)
+    out = freqs[..., 0] * x_[..., 0] + freqs[..., 1] * x_[..., 1]
+    return out.reshape(*x.shape).to(x.dtype)
+
+
+def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
+    """Apply rope, in sequence chunks.
+
+    The ``.float()`` upcast is required for precision -- ``freqs`` is fp32 and a
+    fp16 multiply would round the cos/sin pair before the sum -- but
+    materialising the whole window costs ``heads * L * (D/2) * 2 * 4`` bytes:
+    48 * 4352 * 64 * 2 * 4 = 102.00 MiB for q (and again for k).  That single
+    allocation is what OOM'd the 16 GB card at the tail of backward, so the
+    rotation is computed over sequence slices instead.  Every element only
+    depends on its own token, so chunking is bit-identical, and the peak drops
+    to 102/``_ROPE_CHUNKS`` = 25.5 MiB.
+
+    ``xq``/``xk`` carry the sequence on dim -2 (``[B, H, L, D]``) while ``freqs``
+    carries it on dim 1 (``[B, L, D/2, 2, 2]``).
+    """
+
+    def _apply(x: Tensor) -> Tensor:
+        seq = int(x.shape[-2])
+        chunks = _ROPE_CHUNKS if seq % _ROPE_CHUNKS == 0 else 1
+        if chunks == 1:
+            return _rope_apply_chunk(x, freqs)
+        step = seq // chunks
+        return torch.cat(
+            [
+                _rope_apply_chunk(
+                    x[..., index * step : (index + 1) * step, :],
+                    freqs[:, index * step : (index + 1) * step],
+                )
+                for index in range(chunks)
+            ],
+            dim=-2,
+        )
+
+    return _apply(xq), _apply(xk)
 
 
 def _mask(mask: Tensor) -> Tensor:
@@ -182,11 +221,39 @@ class RMSNorm(torch.nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        t, dtype = x.float(), x.dtype
-        t = F.rms_norm(
-            t, (self.features,), eps=self.eps, weight=(self.scale.float() + 1.0)
-        )
-        return t.to(dtype)
+        dtype = x.dtype
+        # The fp32 upcast is required for stability (rms_norm over 6144 in fp16
+        # loses the mean-of-squares), but the whole window is
+        # 4352 * 6144 * 4 = 102.00 MiB -- the exact allocation that OOM'd
+        # backward here.  Normalisation runs along the feature dim only, so each
+        # token is independent and slicing the sequence is exact.
+        seq = int(x.shape[-2]) if x.ndim >= 3 else 0
+        chunks = 4 if x.dtype == torch.float16 and seq % 4 == 0 and seq >= 2048 else 1
+        if chunks == 1:
+            t = x.float()
+            t = F.rms_norm(
+                t, (self.features,), eps=self.eps, weight=(self.scale.float() + 1.0)
+            )
+            return t.to(dtype)
+        step = seq // chunks
+        out = None
+        for index in range(chunks):
+            lo, hi = index * step, (index + 1) * step
+            t = x[..., lo:hi, :].float()
+            t = F.rms_norm(
+                t, (self.features,), eps=self.eps, weight=(self.scale.float() + 1.0)
+            )
+            piece = t.to(dtype)
+            if out is None:
+                out = torch.empty(
+                    (*piece.shape[:-2], seq, piece.shape[-1]),
+                    dtype=dtype,
+                    device=piece.device,
+                )
+            out[..., lo:hi, :] = piece
+            del piece, t
+        assert out is not None
+        return out
 
 
 class SwiGLU(torch.nn.Module):
