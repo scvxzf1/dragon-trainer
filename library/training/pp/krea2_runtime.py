@@ -623,6 +623,52 @@ def build_krea2_pipeline_runtime(
         if release_foreign:
             # Opt-in: drop the 1.24 GiB of fusions/heads this rank does not own.
             release_foreign_submodules(model, is_first=layout.is_first)
+        # PP v0 trains the adapter only.  Krea-2's apply_to keeps the adapter off
+        # the module tree, so a generic "train unet network" freeze never reaches
+        # the base and autograd would retain ~192 MiB of fc2.weight dW per layer
+        # (measured: 14.98 GiB allocated, OOM on a 16 GB card without this).
+        if network is not None:
+            _adapter_ids = {id(p) for p in network.parameters()}
+            for _param in model.parameters():
+                _param.requires_grad_(id(_param) in _adapter_ids)
+        # Move this rank's weights onto the device *here*, before the optimizer
+        # and the PipelineStage are built: doing it in a caller runs too late
+        # (the factory below would capture cpu parameters) and any caller that
+        # forgets it leaves model.first() on cpu -- the base model is loaded on
+        # cpu under PP because the full 25 GB cannot fit on one 16 GB card.
+        # After the release above, ``model`` only holds this rank's weights, so
+        # no name guessing is needed.
+        # Only this rank's blocks plus the surviving non-block children: walking
+        # ``model.parameters()`` here would move all 28 layers and OOM at build
+        # time (measured: 14.98 GiB allocated, 192 MiB short).
+        for _block in stage_module.blocks:
+            _block.to(device)
+        for _name, _child in model.named_children():
+            if _name == "blocks":
+                continue
+            _child.to(device)
+        _moved = sum(
+            1 for t in list(stage_module.parameters()) if t.device.type == "cuda"
+        )
+        # Only this rank's own tensors matter: the peer's blocks are still in
+        # ``model.blocks`` and *must* stay on cpu (they are dropped by
+        # release_foreign_blocks later in the caller).
+        _cpu: list[str] = []
+        for _block in stage_module.blocks:
+            _cpu += [f"{n}" for n, t in _block.named_parameters() if t.device.type == "cpu"]
+        for _name, _child in model.named_children():
+            if _name == "blocks":
+                continue
+            _cpu += [
+                f"{_name}.{n}" for n, t in _child.named_parameters() if t.device.type == "cpu"
+            ]
+        if _cpu:
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                f"rank {rank} still holds {len(_cpu)} cpu tensors of its own after "
+                f"the stage move (first few: {_cpu[:6]}); a cpu weight surfaces as "
+                "an ATen device mismatch inside forward",
+            )
         parameters = list(stage_module.trainable_parameters())
         validate_master_weight_dtype(
             parameters, mixed_precision=config.mixed_precision, device=device
