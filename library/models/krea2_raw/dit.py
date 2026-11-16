@@ -373,10 +373,32 @@ class SingleStreamBlock(nn.Module):
         compute_dtype = x.dtype
         modulation = tuple(value.to(compute_dtype) for value in self.mod(vec))
         prescale, preshift, pregate, postscale, postshift, postgate = modulation
-        attn_input = ((1 + prescale) * self.prenorm(x) + preshift).to(
-            compute_dtype
-        )
-        attn_output = self.attn(attn_input, freqs, mask).to(compute_dtype)
+
+        def _attn_step(hidden: Tensor) -> Tensor:
+            attn_input = ((1 + prescale) * self.prenorm(hidden) + preshift).to(
+                compute_dtype
+            )
+            return self.attn(attn_input, freqs, mask).to(compute_dtype)
+
+        # Nested checkpoint on the *first* half (attention), use_reentrant=True.
+        # Backward runs mlp first and attention second, so checkpointing the tail
+        # would recompute mlp while attention's ~400 MB of internals are still
+        # resident -- zero saving.  Wrapping attention instead lets the mlp pass
+        # finish and release its ~800 MB before attention gets recomputed, so the
+        # two never coexist.  use_reentrant=True keeps the first pass under
+        # torch.no_grad(), so it does not stack with the outer checkpoint's
+        # saved_tensors_hooks, and it only holds this one block's input.
+        if (
+            torch.is_grad_enabled()
+            and self.training
+            and self.gradient_checkpointing
+            and x.requires_grad
+        ):
+            attn_output = torch_checkpoint(
+                _attn_step, x, use_reentrant=False
+            )
+        else:
+            attn_output = _attn_step(x)
         x = x + pregate * attn_output
         mlp_input = ((1 + postscale) * self.postnorm(x) + postshift).to(
             compute_dtype
