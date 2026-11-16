@@ -18,6 +18,7 @@
 | [distributed-training-card.md](distributed-training-card.md) | WebUI「分布式训练」三态卡片使用说明：单卡/DDP/PP、GPU 全卡可选＋解析级 fail-closed 守卫、🔴🟡🔵 三档诊断与 `[distributed]` 设置落点 |
 | [moss_image_pipeline_parallel_v0.md](moss_image_pipeline_parallel_v0.md) | MOSS-Image 流水线并行 v0：复用 PP v0 骨架的族专属双 stage、真实文本长度 conditioning 与分 rank checkpoint；CPU/Gloo 已验收，双 V100 CUDA tiny 已独立验收；库级 runtime 文档 |
 | [moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md) | MOSS-Image PP 主训练接线：正式 CLI/train 入口派发到专用 PP 会话、trainer 级保存/恢复与步进语义；CPU/Gloo 与双 V100 CUDA tiny 热测均已独立验收（rc=0），真实权重训练未验收 |
+| [pipeline_parallel_v0_prerequisites.md](pipeline_parallel_v0_prerequisites.md) | PP v0 上手条件与硬件前提：默认是 DDP、最小配置、硬性约束（stages=2 / microbatch=1 / 与 compile·swap 互斥）、双 V100 实测基线、通信路径三档、新增族必须复刻 `_trainer_autocast` |
 | [krea2-native-fp16.md](krea2-native-fp16.md) | Krea-2 显式原生 FP16 窄配置、guard 与验证边界 |
 | [anima-native-fp16-acceptance.md](anima-native-fp16-acceptance.md) | 原生 FP16 集中严格验收与独立训练质量协议 |
 | [anima-mixed-nf4.md](anima-mixed-nf4.md) | Anima 固定 MLP 策略 BF16/NF4 保存与加载实验 |
