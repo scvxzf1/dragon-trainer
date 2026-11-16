@@ -149,7 +149,18 @@ def krea2_forward_last(
     # its stride still carries token_cap and [[torch pipelining]] rejects it
     # against the frozen boundary metadata (expected (256, 64, 1), got
     # (16384, 64, 1)).  The slice is tiny, the copy is free.
-    return final[:, state.txtlen : state.txtlen + state.imglen, :].contiguous()
+    # ``.contiguous()`` is NOT enough here: the batch dim is 1, and torch treats a
+    # size-1 dim's stride as irrelevant, so the slice stays "contiguous" and keeps
+    # the parent's stride (16384, 64, 1) instead of the (256, 64, 1) the frozen
+    # boundary metadata declares.  pipelining validates stride strictly, so force
+    # a real allocation in contiguous format.
+    sliced = final[:, state.txtlen : state.txtlen + state.imglen, :]
+    out = sliced.clone(memory_format=torch.contiguous_format)
+    import os as _os
+    if _os.environ.get('KREA2_PP_TRACE'):
+        print(f'[Krea2LastStage] out={tuple(out.shape)} stride={out.stride()} '
+              f'contig={out.is_contiguous()} txtlen={state.txtlen} imglen={state.imglen}', flush=True)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -287,10 +298,13 @@ class _Krea2StageBase(nn.Module):
 class Krea2FirstStage(_Krea2StageBase):
     """Input/text fusion + timestep projection + the leading block range."""
 
-    def __init__(self, *, max_text_tokens: int, img_tokens: int, **kwargs) -> None:
+    def __init__(
+        self, *, max_text_tokens: int, img_tokens: int, patch: int = 2, **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         object.__setattr__(self, "_max_text_tokens", int(max_text_tokens))
         object.__setattr__(self, "_img_tokens", int(img_tokens))
+        object.__setattr__(self, "_patch", int(patch))
 
     @property
     def max_text_tokens(self) -> int:
@@ -306,31 +320,58 @@ class Krea2FirstStage(_Krea2StageBase):
 
     def forward(
         self,
-        img: Tensor,
+        latents: Tensor,
         *,
         timesteps: Tensor,
         context: Tensor,
-        pos: Tensor,
-        mask: Tensor,
+        mask: Tensor | None = None,
+        **_shared_kwargs,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """Take the *5D latent* (the ``forward_for_loss`` contract) and patchify.
+
+        Patchification lives here rather than in the runtime so both pipeline
+        ranks receive exactly the same kwargs -- pipelining splits kwargs the
+        same way on every rank, and an empty kwargs set on the trailing rank
+        makes it subscript ``None``.
+        """
+
+        from library.models.krea2_raw.family import prepare_img_tokens
+
+        latents_4d = latents.squeeze(2)
+        batch = int(latents_4d.shape[0])
+        txtlen = int(context.shape[1])
+        if mask is None:
+            txtmask = torch.ones(batch, txtlen, dtype=torch.bool, device=latents_4d.device)
+        else:
+            txtmask = mask if mask.dtype == torch.bool else mask > 0.5
+        img_tokens, pos, joint_mask = prepare_img_tokens(
+            latents_4d, txtlen, int(self._patch), txtmask
+        )
         with self._autocast():
             state = krea2_forward_first(
                 self.model,
                 self.blocks,
-                img,
+                img_tokens,
                 timesteps=timesteps,
                 context=context,
                 pos=pos,
-                mask=mask,
+                mask=joint_mask,
             )
         # The wire is a fixed list of tensors; the boolean mask travels as
         # float32-encoded 0/1 so every slot has a stable dtype/shape.
+        #
+        # Everything except ``hidden`` is declared frozen in
+        # KREA2_BOUNDARY_FROZEN_INDICES, so it must *really* be detached:
+        # ``tvec = model.tproj(t)`` and ``tembed = model.tmlp(...)`` carry
+        # gradients whenever their own weights are trainable, and [[torch
+        # pipelining]] rejects a frozen slot that arrives carrying gradients
+        # ("[1] for chunk 0 has gradients ...").
         return (
             state.hidden,
-            state.tvec,
-            state.freqs,
+            state.tvec.detach(),
+            state.freqs.detach(),
             state.mask.to(torch.float32),
-            state.tembed,
+            state.tembed.detach(),
         )
 
 
@@ -352,15 +393,20 @@ class Krea2LastStage(_Krea2StageBase):
         **_shared_kwargs,
     ) -> Tensor:
         # ``_shared_kwargs`` absorbs the kwargs the schedule hands to *every*
-        # stage (``timesteps``/``context``/``pos``/``mask``); only the leading
-        # stage consumes them.  The wire mask slot is named ``mask_float`` on
-        # purpose so it cannot collide with a ``mask`` kwarg.
+        # stage (``timesteps``/``context``/``mask``); only the leading stage
+        # consumes them.  The wire mask slot is named ``mask_float`` on purpose
+        # so it cannot collide with a ``mask`` kwarg.
+        #
+        # The frozen slots are detached on the *receiving* side too: the blocks
+        # consume ``tvec``/``freqs``, so without this their gradients flow back
+        # into a slot the pipeline already declared gradient-free and torch
+        # aborts with "expecting to send gradients to stage None".
         state = Krea2StageState(
             hidden=hidden,
-            tvec=tvec,
-            freqs=freqs,
+            tvec=tvec.detach(),
+            freqs=freqs.detach(),
             mask=mask_float > 0.5,
-            tembed=tembed,
+            tembed=tembed.detach(),
             txtlen=self._max_text_tokens,  # type: ignore[attr-defined]
             imglen=self._img_tokens,  # type: ignore[attr-defined]
         )

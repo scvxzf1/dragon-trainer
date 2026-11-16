@@ -136,6 +136,23 @@ def test_gradients_flow_across_the_cut() -> None:
 # ---------------------------------------------------------------------------
 
 
+
+def _latent_case(model, batch: int = 2, seed: int = 11):
+    """5D latent + text mask + the monolith reference built from the same data."""
+
+    from library.models.krea2_raw.family import prepare_img_tokens
+
+    g = torch.Generator().manual_seed(seed)
+    latents = torch.randn(batch, 16, 1, 4, 4, generator=g)
+    context = torch.randn(batch, TXT_TOKENS, 2, 64, generator=g)
+    t = torch.rand(batch, generator=g)
+    text_mask = torch.ones(batch, TXT_TOKENS, dtype=torch.bool)
+    img, pos, joint_mask = prepare_img_tokens(latents.squeeze(2), TXT_TOKENS, 2, text_mask)
+    with torch.no_grad():
+        reference = model(img, context, t, pos, joint_mask)
+    return latents, context, t, text_mask, reference
+
+
 def _stage_pair(model: SingleStreamDiT, cut: int = 2):
     from library.models.krea2_raw.pp_stages import Krea2FirstStage, Krea2LastStage
 
@@ -164,21 +181,20 @@ def _stage_pair(model: SingleStreamDiT, cut: int = 2):
 
 def test_stage_modules_reproduce_the_monolith() -> None:
     model = _tiny_model()
-    img, context, t, pos, mask = _inputs(model)
+    latents, context, t, text_mask, reference = _latent_case(model)
     first, last = _stage_pair(model)
     with torch.no_grad():
-        reference = model(img, context, t, pos, mask)
-        wire = first(img, timesteps=t, context=context, pos=pos, mask=mask)
+        wire = first(latents, timesteps=t, context=context, mask=text_mask)
         out = last(*wire)
     assert torch.equal(reference, out), (reference - out).abs().max().item()
 
 
 def test_stage_wire_has_five_fixed_slots() -> None:
     model = _tiny_model()
-    img, context, t, pos, mask = _inputs(model)
+    latents, context, t, text_mask, _ = _latent_case(model)
     first, _ = _stage_pair(model)
     with torch.no_grad():
-        wire = first(img, timesteps=t, context=context, pos=pos, mask=mask)
+        wire = first(latents, timesteps=t, context=context, mask=text_mask)
     cap = krea2_token_cap(TXT_TOKENS, IMG_TOKENS)
     hidden, tvec, freqs, mask_f, tembed = wire
     assert hidden.shape == (2, cap, model.config.features)
@@ -209,16 +225,15 @@ def test_stage_modules_survive_after_the_other_side_is_released() -> None:
     """The trailing stage must still run once the leading-only parts are gone."""
 
     model = _tiny_model()
-    img, context, t, pos, mask = _inputs(model)
+    latents, context, t, text_mask, reference = _latent_case(model)
     first, last = _stage_pair(model)
     with torch.no_grad():
-        wire = first(img, timesteps=t, context=context, pos=pos, mask=mask)
+        wire = first(latents, timesteps=t, context=context, mask=text_mask)
     from library.models.krea2_raw.pp_stages import release_foreign_submodules
 
     release_foreign_submodules(model, is_first=False)
     with torch.no_grad():
         out = last(*wire)
-        reference = _tiny_model()(img, context, t, pos, mask)
     assert torch.equal(reference, out)
 
 
@@ -268,13 +283,12 @@ def test_boundary_metas_match_the_real_wire_shapes() -> None:
     )
     assert first_in[0].shape == wire.microbatch_latent_shape
     assert tuple(t.shape for t in first_out) == tuple(t.shape for t in last_in)
-    assert last_out[0].shape == (1, 256, 16)
+    assert last_out[0].shape == (1, 4, 64)  # (mb, img_tokens, patch^2*C)
     assert KREA2_BOUNDARY_FROZEN_INDICES == (1, 2, 3, 4)
 
     # The frozen slots must be exactly the non-hidden ones.
-    img, context, t, pos, mask = _inputs(model)
-    with torch.no_grad():
-        produced = first(img, timesteps=t, context=context, pos=pos, mask=mask)
+    latents, context, t, text_mask, _ = _latent_case(model)
+    produced = first(latents, timesteps=t, context=context, mask=text_mask)
     # metas are frozen per *microbatch*; the probe batch is larger, so only the
     # non-batch axes must agree.
     for index, meta in enumerate(first_out):
@@ -316,12 +330,9 @@ def test_build_krea2_stage_module_splits_the_plan_contiguously() -> None:
     assert tail.block_range[1] == LAYERS
     assert head.local_blocks + tail.local_blocks == LAYERS
 
-    img, context, t, pos, mask = _inputs(model)
+    latents, context, t, text_mask, reference = _latent_case(model)
     with torch.no_grad():
-        reference = model(img, context, t, pos, mask)
-        wire_tensors = head_module(
-            img, timesteps=t, context=context, pos=pos, mask=mask
-        )
+        wire_tensors = head_module(latents, timesteps=t, context=context, mask=text_mask)
         out = tail_module(*wire_tensors)
     assert torch.equal(reference, out)
 

@@ -421,18 +421,15 @@ class Krea2PipelineRuntime:
     ):
         """Run one 1F1B step; callers pass the full 5D batch, the schedule chunks it.
 
-        The leading stage owns patchification (the stage modules talk the
-        ``SingleStreamDiT.forward`` protocol, i.e. an already-patchified
-        sequence), and the trailing stage owns the reverse: its raw output is
-        ``[B, L_img, patch*patch*C]`` and is restored to the 5D latent layout
-        here so callers see the same velocity contract as ``forward_for_loss``.
+        Both ranks must pass the *same* kwargs: pipelining splits them the same
+        way on every rank, and an empty set on the trailing rank makes it
+        subscript ``None``.  Patchification lives in ``Krea2FirstStage`` (it needs
+        the text mask anyway), so nothing rank-specific happens here -- the
+        trailing rank simply ignores the inputs it receives and only the leading
+        one consumes ``latents``.
         """
 
-        if self._layout.is_first:
-            if latents is None:
-                raise PipelineParallelError(
-                    CODE_STAGE_CONTRACT, "the first stage needs the microbatch latents"
-                )
+        if self._layout.is_first and latents is not None:
             shape = tuple(int(value) for value in latents.shape)
             if shape != self._wire.latent_shape:
                 raise PipelineParallelError(
@@ -440,32 +437,22 @@ class Krea2PipelineRuntime:
                     f"this runtime serves exactly one whole-step latent shape "
                     f"{self._wire.latent_shape}; got {shape}",
                 )
-            img_tokens, pos, joint_mask = _prepare_first_stage_inputs(
-                latents, self._wire, timesteps=timesteps, context=context, mask=mask
-            )
-            kwargs: dict[str, Any] = {
-                "timesteps": timesteps,
-                "context": context,
-                "pos": pos,
-                "mask": joint_mask,
-            }
-            return run_pipeline_step(
-                self._schedule,
-                is_first=True,
-                latents=img_tokens,
-                kwargs=kwargs,
-                target=target,
-                losses=losses,
-            )
+        kwargs: dict[str, Any] = {
+            "timesteps": timesteps,
+            "context": context,
+            "mask": mask,
+        }
         prediction = run_pipeline_step(
             self._schedule,
-            is_first=False,
-            latents=None,
-            kwargs={},
+            is_first=self._layout.is_first,
+            latents=latents,
+            kwargs=kwargs,
             target=target,
             losses=losses,
         )
-        return None if prediction is None else _unpatchify(prediction, self._wire)
+        if self._layout.is_first or prediction is None:
+            return prediction
+        return _unpatchify(prediction, self._wire)
 
     def optimizer_step(self) -> PpStepOutcome:
         if self._transaction is None:
