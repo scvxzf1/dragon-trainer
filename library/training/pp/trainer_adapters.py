@@ -476,6 +476,17 @@ class Krea2TrainerAdapter:
             )
         hiddens = conds[0].to(accelerator.device, dtype=weight_dtype)
         mask = conds[1].to(accelerator.device)
+        # Krea-2's mask is True=valid (the opposite of Anima's attention-sink
+        # padding), so the trailing padded columns are fully masked out and can
+        # be dropped without changing the numerics.  The on-disk cache pads to
+        # the bucket length (512 here) while a real caption is far shorter, and
+        # carrying the padding costs 512/4864 = 10.5% of every activation --
+        # measured as the 304 MiB request that OOM'd on the 16 GB card.
+        if mask.numel() and mask.dtype == torch.bool:
+            valid = int(mask.sum(dim=1).max().item())
+            if 0 < valid < hiddens.shape[1]:
+                hiddens = hiddens[:, :valid].contiguous()
+                mask = mask[:, :valid].contiguous()
         return {"context": hiddens, "mask": mask}
 
     def finalize_conditions(self, latents: Tensor, conditions: dict) -> dict:
