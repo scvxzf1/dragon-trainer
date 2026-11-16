@@ -231,5 +231,6 @@
 | [agent_audit_20260622/03_test_coverage_map.md](agent_audit_20260622/03_test_coverage_map.md) | 测试覆盖地图 |
 | [agent_audit_20260622/04_webui_maintenance_ux_audit.md](agent_audit_20260622/04_webui_maintenance_ux_audit.md) | WebUI 维护和 UX 审计 |
 | [agent_audit_20260622/05_config_method_matrix.md](agent_audit_20260622/05_config_method_matrix.md) | 配置和方法矩阵 |
+| [krea2_pp_vram_gap_20261116.md](krea2_pp_vram_gap_20261116.md) | Krea-2 fp16 + PP=2 在双 V100 16GB 上的显存缺口：真实 25GB 权重实测、13/15 与 14/14 切分对比、attention 与梯度检查点均已生效的验证、缺口 52 MB 的定位与可选方向权衡 |
 
 配套截图和图表在 [assets/](assets/)。
