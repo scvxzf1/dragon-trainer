@@ -256,18 +256,40 @@ def _cudnn_attention(
         if gqa and q.shape[1] != k.shape[1]:
             groups = q.shape[1] // k.shape[1]
             b, hk, length, head_dim = k.shape
-            q_folded = q.reshape(b, hk, groups * length, head_dim)
-            mask_folded = mask
-            if mask is not None and mask.shape[-2] == length:
-                mask_folded = mask.repeat(1, 1, groups, 1)
-            output = F.scaled_dot_product_attention(
-                q_folded, k, v, attn_mask=mask_folded, scale=scale,
-                enable_gqa=False,
+            # Softmax normalises per *query* row, so every query row still sees
+            # the whole K/V: slicing the query sequence is bit-identical.  Doing
+            # the fold in one shot materialises a (b, hk, groups*length,
+            # head_dim) SDPA output (52 MiB at L=4352) plus
+            # mask.repeat(1,1,groups,1) -> (1,1,17408,4352) bool (72 MiB), and
+            # the 52 MiB request is what hit the fragmentation wall.
+            chunks = 4 if length % 4 == 0 and length >= 2048 else 1
+            step = length // chunks
+            folded_parts: list[Tensor] = []
+            for index in range(chunks):
+                lo, hi = index * step, (index + 1) * step
+                q_part = q[:, :, lo:hi, :].reshape(
+                    b, hk, groups * (hi - lo), head_dim
+                )
+                mask_part = mask
+                if mask is not None and mask.shape[-2] == length:
+                    mask_part = mask[..., lo:hi, :].repeat(1, 1, groups, 1)
+                part = F.scaled_dot_product_attention(
+                    q_part,
+                    k,
+                    v,
+                    attn_mask=mask_part,
+                    scale=scale,
+                    enable_gqa=False,
+                )
+                folded_parts.append(part.reshape(b, q.shape[1], hi - lo, head_dim))
+                del q_part, mask_part, part
+            output = (
+                folded_parts[0]
+                if chunks == 1
+                else torch.cat(folded_parts, dim=2)
             )
-            return rearrange(
-                output.reshape(b, q.shape[1], length, head_dim),
-                "B H L D -> B L (H D)",
-            )
+            del folded_parts
+            return rearrange(output, "B H L D -> B L (H D)")
         try:
             with sdpa_kernel(
                 [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
