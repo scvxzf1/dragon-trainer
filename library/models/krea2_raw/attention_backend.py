@@ -266,23 +266,39 @@ def _cudnn_attention(
             def _sdpa_chunk(
                 q_slice: Tensor, k_t: Tensor, v_t: Tensor, mask_slice: Tensor | None
             ) -> Tensor:
-                q_part = q_slice.reshape(
-                    *q_slice.shape[:2], groups * q_slice.shape[2], head_dim
+                # The kernel guard must live *inside* this function.  Under
+                # torch_checkpoint the backward pass calls it from the autograd
+                # engine, long after the enclosing ``with sdpa_kernel(...)``
+                # scope has exited -- without the guard the recompute fell back
+                # to an unsupported backend and raised
+                # "No available kernel. Aborting execution." on sm70.
+                chunk_len = int(q_slice.shape[2])
+                q_part = q_slice.contiguous().reshape(
+                    q_slice.shape[0],
+                    k_t.shape[1],
+                    groups * chunk_len,
+                    head_dim,
                 )
                 mask_part = (
                     None
                     if mask_slice is None
-                    else mask_slice.repeat(1, 1, groups, 1)
+                    else mask_slice.repeat(1, 1, groups, 1).contiguous()
                 )
-                part = F.scaled_dot_product_attention(
-                    q_part,
-                    k_t,
-                    v_t,
-                    attn_mask=mask_part,
-                    scale=scale,
-                    enable_gqa=False,
+                with torch.autocast(device_type="cuda", enabled=False), sdpa_kernel(
+                    [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+                ):
+                    part = F.scaled_dot_product_attention(
+                        q_part,
+                        k_t,
+                        v_t,
+                        attn_mask=mask_part,
+                        scale=scale,
+                        enable_gqa=False,
+                    )
+                # Restore this chunk's own length -- never the full length.
+                return part.reshape(
+                    q_slice.shape[0], q.shape[1], chunk_len, head_dim
                 )
-                return part.reshape(b, q.shape[1], q_slice.shape[2], head_dim)
 
             # torch_checkpoint is what makes the slicing actually pay off.  The
             # bool mask is not usable directly by the Cutlass efficient kernel:
@@ -317,9 +333,11 @@ def _cudnn_attention(
                     part = _sdpa_chunk(q_slice, k, v, mask_slice)
                 folded_parts.append(part)
                 del q_slice, mask_slice, part
+            # Each part is (B, H, chunk_len, D); concatenating along dim 2
+            # rebuilds the full (B, H, L, D) with no further reshape.
             output = (
                 folded_parts[0]
-                if chunks == 1
+                if len(folded_parts) == 1
                 else torch.cat(folded_parts, dim=2)
             )
             del folded_parts
