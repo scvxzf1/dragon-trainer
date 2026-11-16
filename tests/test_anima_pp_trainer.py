@@ -93,8 +93,10 @@ def test_trainer_pp_wired_includes_anima():
 
 def test_adapter_table_dispatch():
     assert isinstance(resolve_trainer_adapter(_config()), AnimaTrainerAdapter)
+    # Krea-2 gained its own adapter; families without one still refuse by name.
+    assert resolve_trainer_adapter({**_config(), "model_family": "krea2_raw"}).name == "krea2_raw"
     with pytest.raises(PipelineParallelError) as excinfo:
-        resolve_trainer_adapter({**_config(), "model_family": "krea2_raw"})
+        resolve_trainer_adapter({**_config(), "model_family": "z_image"})
     assert excinfo.value.code == "pp_trainer_path_unavailable"
 
 

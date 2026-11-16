@@ -385,9 +385,199 @@ def anima_padding_mask(latents: Tensor) -> Tensor:
     return torch.zeros((int(latents.shape[0]), 1, h, w), dtype=latents.dtype, device=latents.device)
 
 
+
+class Krea2TrainerAdapter:
+    """The Krea-2 trainer adapter: the single-stream MMDiT 1F1B runtime.
+
+    Conditioning is ``(hiddens, mask)`` -- Qwen3-VL's 12-layer stack with the
+    prefix slice already applied and a boolean valid-token mask -- not Anima's
+    ``crossattn_emb``.  ``txtfusion`` only exists on the first stage, but both
+    ranks receive the SAME cached ``context`` so every rank can build its
+    timestep modulation, hence ``conditions_on_every_rank = True``.
+    """
+
+    name = "krea2_raw"
+    resume_format = trainer_resume_format("krea2_raw")
+    family_label = "Krea-2"
+    #: Both stages consume the cached context (step kwargs are identical on
+    #: both ranks); only ``txtfusion`` is first-stage-only and it lives inside
+    #: the stage, not in the wire.
+    conditions_on_every_rank = True
+
+    def admission(self, config, *, world_size=None, where="trainer-admission"):
+        from .trainer_admission import require_krea2_trainer_admission
+
+        return require_krea2_trainer_admission(config, world_size=world_size, where=where)
+
+    def build_runtime(self, args, accelerator, network, unet, *, latent_shape, max_text_tokens, dtype=None):
+        from .trainer_session import build_krea2_trainer_runtime
+
+        return build_krea2_trainer_runtime(
+            args, accelerator, network, unet,
+            latent_shape=latent_shape, max_text_tokens=max_text_tokens, dtype=dtype,
+        )
+
+    def wire_latents(self, latents: Tensor) -> Tensor:
+        """Krea-2's 5D wire: the T=1 axis is the frozen 4D/5D boundary."""
+
+        if latents.ndim == 4:
+            return latents.unsqueeze(2)
+        if latents.ndim == 5:
+            return latents
+        raise PipelineParallelError(
+            CODE_CONFIG_INVALID,
+            "the Krea-2 PP wire consumes (B, C, H, W) cached latents or an "
+            f"existing 5D (B, C, 1, H, W) wire; got ndim={latents.ndim}",
+        )
+
+    def wire_shape_from_batch(self, batch) -> tuple[tuple[int, ...], int]:
+        latents = batch.get("latents")
+        if latents is None:
+            raise PipelineParallelError(
+                CODE_CONFIG_INVALID,
+                "the Krea-2 PP trainer path serves the cached-latents "
+                "configuration; the first batch has no latents",
+            )
+        wire = self.wire_latents(latents)
+        conds = batch.get("text_encoder_outputs_list")
+        if not conds or len(conds) < 2 or conds[0] is None:
+            raise PipelineParallelError(
+                CODE_CONFIG_INVALID,
+                "the Krea-2 PP trainer path serves the cached text-encoder "
+                "configuration; the first batch has no cached "
+                "[hiddens, mask] (rebuild the Krea-2 text cache)",
+            )
+        # hiddens: (B, L_txt, 12, 2560) -> L_txt is dim -2, never trimmed.
+        max_text_tokens = int(conds[0].shape[-2])
+        return tuple(int(v) for v in wire.shape), max_text_tokens
+
+    def prepare_conditions(self, trainer, args, batch, *, accelerator, weight_dtype, text_encoding_strategy=None):
+        """Move the cached ``(hiddens, mask)`` bundle to the device.
+
+        Masked positions stay masked (never zeroed): the Krea-2 attention mask
+        consumes the boolean tensor directly.
+        """
+
+        conds = batch.get("text_encoder_outputs_list", None)
+        if not conds or len(conds) < 2 or conds[0] is None:
+            raise PipelineParallelError(
+                CODE_CONFIG_INVALID,
+                "the Krea-2 PP trainer path serves the cached text-encoder "
+                "configuration only; this batch arrived without cached "
+                "[hiddens, mask] (rebuild the Krea-2 text cache)",
+            )
+        rates = batch.get("caption_dropout_rates", None) if isinstance(batch, dict) else None
+        if rates is not None and any(float(rate or 0.0) > 0.0 for rate in rates):
+            raise PipelineParallelError(
+                CODE_CONFIG_INVALID,
+                "caption_dropout_rate > 0 is not wired into the Krea-2 PP path "
+                "(the unconditional cache and per-stage dropout contract would "
+                "need an explicit contract); disable caption dropout",
+            )
+        hiddens = conds[0].to(accelerator.device, dtype=weight_dtype)
+        mask = conds[1].to(accelerator.device)
+        return {"context": hiddens, "mask": mask}
+
+    def finalize_conditions(self, latents: Tensor, conditions: dict) -> dict:
+        # No extra padding-mask tensor: Krea-2 consumes ``mask`` directly.
+        return conditions
+
+    def sample_flow(self, args, trainer, latents: Tensor, *, accelerator, weight_dtype) -> FlowSample:
+        """Rank 0 samples noise/timesteps with the shared sampler registry.
+
+        Krea-2 trains the simplest rectified-flow path and reuses the Anima
+        sampler registry (``compute_noise_pred_and_target`` does the same), so
+        the PP branch never owns a second noise policy.
+        """
+
+        from library.training.samplers import SAMPLER_REGISTRY, SamplerContext
+
+        latents_4d = latents.squeeze(2)
+        noise = torch.randn_like(latents_4d)
+        sampler_fn = SAMPLER_REGISTRY[getattr(args, "sampler", "default") or "default"]
+        scheduler = trainer.get_noise_scheduler(args, accelerator.device)
+        sampler_out = sampler_fn(
+            SamplerContext(
+                args=args,
+                noise_scheduler=scheduler,
+                latents=latents,
+                noise=noise.unsqueeze(2),
+                device=accelerator.device,
+                weight_dtype=weight_dtype,
+            )
+        )
+        timesteps = sampler_out.timesteps.reshape(-1).float()
+        return FlowSample(
+            noisy_input=sampler_out.noisy_input.to(dtype=weight_dtype),
+            broadcast={"noise": noise, "timesteps": timesteps},
+        )
+
+    def receive_flow(self, latents: Tensor, broadcast: dict[str, Tensor], *, weight_dtype):
+        noise = broadcast["noise"]
+        timesteps = broadcast["timesteps"]
+        sigmas = timesteps.to(latents.dtype).view(-1, 1, 1, 1, 1)
+        noisy_input = ((1.0 - sigmas) * latents + sigmas * noise.unsqueeze(2)).to(weight_dtype)
+        return noisy_input, timesteps
+
+    def timesteps_from_flow(self, broadcast: dict[str, Tensor]) -> Tensor:
+        return broadcast["timesteps"]
+
+    def empty_broadcast(self, latents: Tensor, weight_dtype) -> dict[str, Tensor]:
+        return {
+            "noise": torch.empty(latents.squeeze(2).shape, dtype=latents.dtype, device=latents.device),
+            "timesteps": torch.empty((latents.shape[0],), dtype=torch.float32, device=latents.device),
+        }
+
+    def make_target(self, latents: Tensor, noise: Tensor) -> Tensor:
+        return noise - latents.squeeze(2)
+
+    def build_inputs(self, *, noisy_input, timesteps, target, conditions, digest):
+        return Krea2StepInputs(
+            noisy_input=noisy_input,
+            timesteps=timesteps,
+            target=target,
+            context=conditions.get("context"),
+            mask=conditions.get("mask"),
+            batch_digest=digest,
+        )
+
+
+@dataclass(frozen=True)
+class Krea2StepInputs:
+    """One whole-step Krea-2 PP training input bundle (already synchronized)."""
+
+    noisy_input: Tensor
+    timesteps: Tensor
+    target: Tensor
+    context: Tensor | None
+    mask: Tensor | None
+    batch_digest: str
+
+    @property
+    def batch_size(self) -> int:
+        return int(self.noisy_input.shape[0])
+
+    def step_kwargs(self, runtime) -> dict:
+        """The ``runtime.step`` kwargs for the Krea-2 wire.
+
+        Both ranks pass the identical triple; the trailing rank must not send an
+        empty dict (that surfaced as "'NoneType' object is not subscriptable").
+        """
+
+        return {
+            "timesteps": self.timesteps,
+            "context": self.context,
+            "mask": self.mask,
+        }
+
+    def wire_for(self, runtime) -> Tensor | None:
+        return self.noisy_input
+
+
 ADAPTERS: dict[str, object] = {
     MossTrainerAdapter.name: MossTrainerAdapter(),
     AnimaTrainerAdapter.name: AnimaTrainerAdapter(),
+    Krea2TrainerAdapter.name: Krea2TrainerAdapter(),
 }
 
 
@@ -417,6 +607,8 @@ __all__ = [
     "AnimaStepInputs",
     "AnimaTrainerAdapter",
     "FlowSample",
+    "Krea2StepInputs",
+    "Krea2TrainerAdapter",
     "MossTrainerAdapter",
     "anima_padding_mask",
     "resolve_trainer_adapter",

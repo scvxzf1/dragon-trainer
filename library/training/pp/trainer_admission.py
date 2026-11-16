@@ -259,6 +259,52 @@ def require_anima_trainer_admission(
     return require_pipeline_runtime(config, world_size=world_size)
 
 
+def require_krea2_trainer_admission(
+    config: Mapping[str, Any] | object,
+    *,
+    world_size: int | None = None,
+    where: str = "trainer-admission",
+):
+    """Admit a legal Krea-2 PP config to the wired trainer path, or fail closed.
+
+    Krea-2 has no FEI/router and no per-band compile, so the Anima-only refusals
+    (compile bands, router_source, use_moe_style) do not apply.  The shared v0
+    table plus the refusals that DO change the noising arithmetic still apply.
+    """
+
+    _require_wired_trainer_family(config, world_size=world_size, where=where)
+    _reject_common_trainer_knobs(config)
+    for key in ("use_ip_adapter", "use_easycontrol", "use_byg"):
+        _reject(
+            config,
+            f"{key} off",
+            bool(_get(config, key, False)),
+            "method adapters attach through on_network_built setup that the PP "
+            "dispatch (after the fork point) does not cover",
+        )
+    _reject(
+        config,
+        "caption_dropout_rate=0",
+        float(_get(config, "caption_dropout_rate", 0.0) or 0.0) > 0.0,
+        "conditional/unconditional mixing needs the uncond text cache and a "
+        "per-stage dropout contract not wired under PP",
+    )
+    _reject(
+        config,
+        "ip_noise_gamma off",
+        bool(_get(config, "ip_noise_gamma", False)),
+        "input-perturbation noise changes the noising arithmetic the last "
+        "stage reconstructs from the broadcast payload",
+    )
+    _reject(
+        config,
+        "network_train_unet_only=true",
+        not bool(_get(config, "network_train_unet_only", False)),
+        "the text encoder is not a PP stage; PP v0 trains only the DiT LoRA",
+    )
+    return require_pipeline_runtime(config, world_size=world_size)
+
+
 def require_family_trainer_admission(
     config: Mapping[str, Any] | object,
     *,

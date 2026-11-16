@@ -310,6 +310,65 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
     return runtime
 
 
+def build_krea2_trainer_runtime(
+    args, accelerator, network, unet, *, latent_shape, max_text_tokens=None, dtype=None
+):
+    """Build this rank's Krea-2 stage-local runtime (library-level, wired).
+
+    Differs from the Anima wrapper in two ways that matter for 16 GB cards:
+
+    * ``max_text_tokens`` is required (the Krea-2 wire declares its text length);
+    * only **this rank's** adapter modules go to the card.  ``apply_to`` creates
+      the adapter for all 28 layers and keeps it off the module tree, so a plain
+      ``network.to(device)`` would park the peer's dead weights here (measured
+      at ~98 MiB on the 13/15 split).
+    """
+
+    import torch.distributed as dist
+
+    from library.training.pp.contract import PipelineRuntimeConfig
+    from library.training.pp.krea2_runtime import (
+        adapter_modules_for_stage,
+        build_krea2_pipeline_runtime,
+    )
+
+    if max_text_tokens is None:
+        raise PipelineParallelError(
+            CODE_CONFIG_INVALID,
+            "the Krea-2 PP runtime needs max_text_tokens from the first batch's "
+            "cached text encoder output",
+        )
+    config = PipelineRuntimeConfig.from_config(args)
+    world_size = int(accelerator.num_processes)
+    rank = dist.get_rank() if _distributed() else 0
+    is_last = rank == int(config.stages) - 1
+    scaler = _last_stage_scaler(accelerator.device, is_last)
+    network.to(device=accelerator.device)
+    runtime = build_krea2_pipeline_runtime(
+        unet,
+        config=config,
+        world_size=world_size,
+        rank=rank,
+        device=accelerator.device,
+        latent_shape=latent_shape,
+        max_text_tokens=int(max_text_tokens),
+        dtype=dtype,
+        network=network,
+        scaler=scaler,
+        optimizer_factory=_stage_optimizer_factory(args),
+        max_grad_norm=getattr(args, "max_grad_norm", None),
+    )
+    # Send the peer's adapter modules back to CPU now that we know our range.
+    keep = {id(module) for module in adapter_modules_for_stage(network, runtime.layout)}
+    for module in getattr(network, "unet_loras", []) or []:
+        if id(module) not in keep:
+            module.to("cpu")
+    _release_foreign_stage_weights(
+        unet, runtime.layout, network=network, device=accelerator.device
+    )
+    return runtime
+
+
 def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) -> None:
     """One whole pipeline step with the frozen §4 semantics (family-blind)."""
 
