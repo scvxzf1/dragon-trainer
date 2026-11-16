@@ -145,7 +145,11 @@ def krea2_forward_last(
     mask4d = _mask(state.mask)
     hidden = _run_block_range(blocks, state.hidden, state.tvec, state.freqs, mask4d)
     final = model.last(hidden, state.tembed).to(compute_dtype)
-    return final[:, state.txtlen : state.txtlen + state.imglen, :]
+    # .contiguous(): the text-slice is a *view* of the padded joint sequence, so
+    # its stride still carries token_cap and [[torch pipelining]] rejects it
+    # against the frozen boundary metadata (expected (256, 64, 1), got
+    # (16384, 64, 1)).  The slice is tiny, the copy is free.
+    return final[:, state.txtlen : state.txtlen + state.imglen, :].contiguous()
 
 
 # ---------------------------------------------------------------------------

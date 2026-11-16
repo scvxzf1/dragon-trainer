@@ -58,6 +58,7 @@ class Krea2WireSpec:
     dim: int
     img_tokens: int
     heads: int
+    patch: int
 
     @property
     def batch_size(self) -> int:
@@ -128,6 +129,7 @@ def resolve_krea2_wire_spec(
         dim=dim,
         img_tokens=img_tokens,
         heads=heads,
+        patch=patch,
     )
 
 
@@ -154,7 +156,10 @@ def krea2_boundary_metas(
     boundary = (
         _meta((mb, wire.token_cap, wire.dim), dtype),
         _meta((mb, 1, 6 * wire.dim), dtype),
-        _meta(wire.freqs_shape, dtype),
+        # RoPE frequencies are produced by ``posemb`` in fp32 regardless of the
+        # activation dtype; declaring them fp16 here makes pipelining reject the
+        # real output.  Keep fp32 -- casting would change the numerics.
+        _meta(wire.freqs_shape, torch.float32),
         # torch pipelining force-enables requires_grad on received tensors, so
         # the boolean mask rides as float32 (exact for 0/1) instead of bool.
         _meta((mb, wire.token_cap), torch.float32),
@@ -162,7 +167,12 @@ def krea2_boundary_metas(
     )
     if stage.is_first:
         return (_meta(wire.microbatch_latent_shape, latent_dtype),), boundary
-    prediction = _meta((mb, wire.token_cap, KREA2_LATENT_CHANNELS), dtype)
+    # The trailing stage hands back the model's raw per-image output:
+    # [B, L_img, patch*patch*C] -- *not* the padded joint sequence.  The runtime
+    # unpatchifies it into a 5D velocity afterwards.
+    prediction = _meta(
+        (mb, wire.img_tokens, wire.patch * wire.patch * KREA2_LATENT_CHANNELS), dtype
+    )
     return boundary, (prediction,)
 
 
@@ -403,16 +413,26 @@ class Krea2PipelineRuntime:
         self,
         latents: Tensor | None,
         *,
-        timesteps: Tensor,
+        timesteps: Tensor | None = None,
         context: Tensor | None = None,
-        pos: Tensor | None = None,
         mask: Tensor | None = None,
         target: Tensor | None = None,
         losses: list | None = None,
     ):
-        """Run one 1F1B step; callers pass the full batch, the schedule chunks it."""
+        """Run one 1F1B step; callers pass the full 5D batch, the schedule chunks it.
 
-        if latents is not None:
+        The leading stage owns patchification (the stage modules talk the
+        ``SingleStreamDiT.forward`` protocol, i.e. an already-patchified
+        sequence), and the trailing stage owns the reverse: its raw output is
+        ``[B, L_img, patch*patch*C]`` and is restored to the 5D latent layout
+        here so callers see the same velocity contract as ``forward_for_loss``.
+        """
+
+        if self._layout.is_first:
+            if latents is None:
+                raise PipelineParallelError(
+                    CODE_STAGE_CONTRACT, "the first stage needs the microbatch latents"
+                )
             shape = tuple(int(value) for value in latents.shape)
             if shape != self._wire.latent_shape:
                 raise PipelineParallelError(
@@ -420,21 +440,32 @@ class Krea2PipelineRuntime:
                     f"this runtime serves exactly one whole-step latent shape "
                     f"{self._wire.latent_shape}; got {shape}",
                 )
-        kwargs: dict[str, Any] = {"timesteps": timesteps}
-        if context is not None:
-            kwargs["context"] = context
-        if pos is not None:
-            kwargs["pos"] = pos
-        if mask is not None:
-            kwargs["mask"] = mask
-        return run_pipeline_step(
+            img_tokens, pos, joint_mask = _prepare_first_stage_inputs(
+                latents, self._wire, timesteps=timesteps, context=context, mask=mask
+            )
+            kwargs: dict[str, Any] = {
+                "timesteps": timesteps,
+                "context": context,
+                "pos": pos,
+                "mask": joint_mask,
+            }
+            return run_pipeline_step(
+                self._schedule,
+                is_first=True,
+                latents=img_tokens,
+                kwargs=kwargs,
+                target=target,
+                losses=losses,
+            )
+        prediction = run_pipeline_step(
             self._schedule,
-            is_first=self._layout.is_first,
-            latents=latents,
-            kwargs=kwargs,
+            is_first=False,
+            latents=None,
+            kwargs={},
             target=target,
             losses=losses,
         )
+        return None if prediction is None else _unpatchify(prediction, self._wire)
 
     def optimizer_step(self) -> PpStepOutcome:
         if self._transaction is None:
@@ -615,3 +646,55 @@ def build_krea2_pipeline_runtime(
         optimizer=optimizer,
         group=group,
     )
+
+
+def _prepare_first_stage_inputs(
+    latents: Tensor,
+    wire: Krea2WireSpec,
+    *,
+    timesteps: Tensor | None,
+    context: Tensor | None,
+    mask: Tensor | None,
+):
+    """5D latent -> (patchified tokens, 3D pos, joint key-padding mask)."""
+
+    from library.models.krea2_raw.family import prepare_img_tokens
+
+    if timesteps is None or context is None:
+        raise PipelineParallelError(
+            CODE_STAGE_CONTRACT, "the first stage needs timesteps and context"
+        )
+    latents_4d = latents.squeeze(2)
+    batch = int(latents_4d.shape[0])
+    txtlen = int(context.shape[1])
+    if mask is None:
+        txtmask = torch.ones(batch, txtlen, dtype=torch.bool, device=latents_4d.device)
+    else:
+        txtmask = mask if mask.dtype == torch.bool else mask > 0.5
+        if txtmask.shape != (batch, txtlen):
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                f"text mask must be {(batch, txtlen)}, got {tuple(txtmask.shape)}",
+            )
+    return prepare_img_tokens(latents_4d, txtlen, int(wire.patch), txtmask)
+
+
+def _unpatchify(prediction: Tensor, wire: Krea2WireSpec) -> Tensor:
+    """``[B, L_img, patch*patch*C]`` -> 5D latent velocity, like forward_for_loss."""
+
+    from einops import rearrange
+
+    patch = int(wire.patch)
+    channels = KREA2_LATENT_CHANNELS
+    batch, _, _t, height, width = wire.latent_shape
+    latent_h, latent_w = height // patch, width // patch
+    velocity_4d = rearrange(
+        prediction,
+        "b (h w) (c ph pw) -> b c (h ph) (w pw)",
+        h=latent_h,
+        w=latent_w,
+        c=channels,
+        ph=patch,
+        pw=patch,
+    )
+    return velocity_4d.unsqueeze(2)
