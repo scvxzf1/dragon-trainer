@@ -146,3 +146,191 @@ def krea2_forward_last(
     hidden = _run_block_range(blocks, state.hidden, state.tvec, state.freqs, mask4d)
     final = model.last(hidden, state.tembed).to(compute_dtype)
     return final[:, state.txtlen : state.txtlen + state.imglen, :]
+
+
+# ---------------------------------------------------------------------------
+# Stage modules (probe level)
+# ---------------------------------------------------------------------------
+
+#: Submodules that only the leading stage needs (they feed the joint sequence).
+_FIRST_ONLY_SUBMODULES = ("first", "tmlp", "tproj", "txtfusion", "txtmlp")
+#: Submodules that only the trailing stage needs.
+_LAST_ONLY_SUBMODULES = ("last",)
+
+
+def release_foreign_submodules(model: nn.Module, *, is_first: bool) -> tuple[str, ...]:
+    """Drop the pre-block / post-block submodules this stage does not own.
+
+    ``release_foreign_blocks`` only trims ``model.blocks``; on Krea-2 the 1.24 GiB
+    that lives **outside** the block container is what actually decides whether
+    the trailing stage fits: measured 13.37 GiB with it vs 12.13 GiB without, on
+    a 16 GB card.  A leading stage keeps the fusions and drops ``last``; a
+    trailing stage keeps ``last`` and drops the fusions.
+
+    Destructive and opt-in, same contract as ``release_foreign_blocks``: call it
+    after the stage module holds its own references.
+    """
+
+    dropped: list[str] = []
+    names = _LAST_ONLY_SUBMODULES if is_first else _FIRST_ONLY_SUBMODULES
+    for name in names:
+        if getattr(model, name, None) is not None:
+            setattr(model, name, None)
+            dropped.append(name)
+    return tuple(dropped)
+
+
+class _Krea2StageBase(nn.Module):
+    """Shared plumbing for the two probe stages.
+
+    ``model`` and the block slice are attached with ``object.__setattr__`` on
+    purpose: registering them as submodules would make ``stage.to(device)`` walk
+    into the frozen base model and move weights this rank must not touch.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: nn.Module,
+        blocks,
+        stage_index: int,
+        stages: int,
+        block_range: tuple[int, int],
+        activation_dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__()
+        object.__setattr__(self, "_model", model)
+        object.__setattr__(self, "_blocks", list(blocks))
+        object.__setattr__(self, "_stage_index", int(stage_index))
+        object.__setattr__(self, "_stages", int(stages))
+        object.__setattr__(self, "_block_range", (int(block_range[0]), int(block_range[1])))
+        object.__setattr__(self, "_activation_dtype", activation_dtype)
+
+    # -- read-only views -----------------------------------------------------
+    @property
+    def model(self) -> nn.Module:
+        return self._model  # type: ignore[attr-defined]
+
+    @property
+    def blocks(self) -> list[nn.Module]:
+        return self._blocks  # type: ignore[attr-defined]
+
+    @property
+    def stage_index(self) -> int:
+        return self._stage_index  # type: ignore[attr-defined]
+
+    @property
+    def stages(self) -> int:
+        return self._stages  # type: ignore[attr-defined]
+
+    @property
+    def block_range(self) -> tuple[int, int]:
+        return self._block_range  # type: ignore[attr-defined]
+
+    @property
+    def is_first(self) -> bool:
+        return self.stage_index == 0
+
+    @property
+    def is_last(self) -> bool:
+        return self.stage_index == self.stages - 1
+
+    def trainable_parameters(self):
+        return [p for p in self._model.parameters() if p.requires_grad]  # type: ignore[attr-defined]
+
+    def _autocast(self):
+        """Mirror ``_AnimaStageBase._trainer_autocast`` for the fp16 contract.
+
+        fp16 policy promotes the residual stream to fp32 while the weights stay
+        fp16, so every Linear needs an ambient fp16 autocast region to run at
+        all.  Anything that is not fp16 (bf16 / fp32 / CPU) gets a null context.
+        """
+
+        import contextlib
+
+        dtype = self._activation_dtype  # type: ignore[attr-defined]
+        if dtype != torch.float16:
+            return contextlib.nullcontext()
+        device = next(self._model.parameters()).device  # type: ignore[attr-defined]
+        if device.type == "cpu":
+            return contextlib.nullcontext()
+        return torch.autocast(device_type=device.type, dtype=torch.float16)
+
+
+class Krea2FirstStage(_Krea2StageBase):
+    """Input/text fusion + timestep projection + the leading block range."""
+
+    def __init__(self, *, max_text_tokens: int, img_tokens: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_max_text_tokens", int(max_text_tokens))
+        object.__setattr__(self, "_img_tokens", int(img_tokens))
+
+    @property
+    def max_text_tokens(self) -> int:
+        return self._max_text_tokens  # type: ignore[attr-defined]
+
+    @property
+    def img_tokens(self) -> int:
+        return self._img_tokens  # type: ignore[attr-defined]
+
+    @property
+    def token_cap(self) -> int:
+        return krea2_token_cap(self.max_text_tokens, self.img_tokens)
+
+    def forward(
+        self,
+        img: Tensor,
+        *,
+        timesteps: Tensor,
+        context: Tensor,
+        pos: Tensor,
+        mask: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        with self._autocast():
+            state = krea2_forward_first(
+                self.model,
+                self.blocks,
+                img,
+                timesteps=timesteps,
+                context=context,
+                pos=pos,
+                mask=mask,
+            )
+        # The wire is a fixed list of tensors; the boolean mask travels as
+        # float32-encoded 0/1 so every slot has a stable dtype/shape.
+        return (
+            state.hidden,
+            state.tvec,
+            state.freqs,
+            state.mask.to(torch.float32),
+            state.tembed,
+        )
+
+
+class Krea2LastStage(_Krea2StageBase):
+    """The trailing block range + final layer + the image text-slice."""
+
+    def __init__(self, *, max_text_tokens: int, img_tokens: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        object.__setattr__(self, "_max_text_tokens", int(max_text_tokens))
+        object.__setattr__(self, "_img_tokens", int(img_tokens))
+
+    def forward(
+        self,
+        hidden: Tensor,
+        tvec: Tensor,
+        freqs: Tensor,
+        mask: Tensor,
+        tembed: Tensor,
+    ) -> Tensor:
+        state = Krea2StageState(
+            hidden=hidden,
+            tvec=tvec,
+            freqs=freqs,
+            mask=mask > 0.5,
+            tembed=tembed,
+            txtlen=self._max_text_tokens,  # type: ignore[attr-defined]
+            imglen=self._img_tokens,  # type: ignore[attr-defined]
+        )
+        with self._autocast():
+            return krea2_forward_last(self.model, self.blocks, state)
