@@ -84,6 +84,20 @@ def _run_block_range(
     return hidden
 
 
+
+
+def _txtprefix_checkpoint(
+    module: nn.Module, hidden: Tensor, mask: Tensor
+) -> Tensor:
+    """Checkpoint ``txtfusion`` so its internals do not stay resident all stage."""
+
+    from torch.utils.checkpoint import checkpoint as _checkpoint
+
+    return _checkpoint(
+        lambda h: module(h, mask=mask), hidden, use_reentrant=False
+    )
+
+
 def krea2_forward_first(
     model: nn.Module,
     blocks: nn.ModuleList | list[nn.Module],
@@ -105,7 +119,18 @@ def krea2_forward_first(
     tvec = model.tproj(t).to(compute_dtype)
 
     txtmask = _mask(mask[:, : context.shape[1]])
-    context = model.txtfusion(context.to(compute_dtype), mask=txtmask).to(compute_dtype)
+    # txtfusion is the biggest first-stage-only module (0.64 GiB) and its input is
+    # the full (B, 256, 12, 2560) text tensor, i.e. a 30720-wide sequence.  Measured
+    # on the real 12.82B weights, its *internals* pin ~890 MiB until every block
+    # finishes, because enable_gradient_checkpointing() only walks model.blocks and
+    # never covers this prefix.  Recomputing it costs one extra text pass and buys
+    # the whole 890 MiB back on the tightest stage.
+    _txt_in = context.to(compute_dtype)
+    if torch.is_grad_enabled() and model.training:
+        context = _txtprefix_checkpoint(model.txtfusion, _txt_in, txtmask)
+    else:
+        context = model.txtfusion(_txt_in, mask=txtmask)
+    context = context.to(compute_dtype)
     context = model.txtmlp(context).to(compute_dtype)
 
     txtlen, imglen = context.shape[1], img.shape[1]
