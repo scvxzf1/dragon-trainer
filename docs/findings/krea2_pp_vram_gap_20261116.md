@@ -151,6 +151,57 @@ PP=2 的 1F1B 在预热/稳态阶段，**stage0 必须同时滞留 2 个 microba
 0.89 GiB，这个阻塞点解除**，双卡 1F1B 联调在显存上已具备条件（仍需实测首段双 microbatch
 的真实开销）。剩下要考虑的是数值/正确性验证，而不是容量。
 
+## 4.5 终点：双卡真实权重 1F1B 在 4032-token 上跑通
+
+经过 §4.3b（txtfusion checkpoint）、GQA 折叠、以及 Block 内 nested attn checkpoint
+三步，**真实 12.82B 权重 + 双 V100 16GB + 4032-token + PP=2 + 1F1B 已经端到端跑通**：
+
+```
+[rank0] stage0, 13 blocks: peak 14.34 GiB, 余量 560 MB, prediction=None, losses=[]
+[rank1] stage1, 15 blocks: peak 14.10 GiB, 余量 850 MB, prediction=(2,16,1,126,128)
+                            losses=[112499.29, 162935.33]
+```
+
+验收点：两个 microbatch 各自产生 loss；跨 microbatch 梯度累加正确
+（rank1 78/78、rank0 89/87 非零）；5D 输出与 `forward_for_loss` 契约一致；
+单步 14.8s / 11.3s（未做性能优化）。
+
+### 三步优化的实际收益
+
+| 步骤 | 机制 | 实测收益 |
+|---|---|---|
+| txtfusion checkpoint | 首段独有模块此前从不被 `enable_gradient_checkpointing()` 覆盖（它只遍历 `blocks`），890 MiB 内部激活驻留整段 | stage0 反向 15.24 → 14.37 GiB |
+| GQA query-group 折叠 | V100 的 EFFICIENT 不支持 `enable_gqa`，改为把 4 个 q 头折进序列维（`view`，零拷贝，按位等价） | 省 100 MB |
+| Block 内 nested attn checkpoint | 反向是 mlp→attn，包前半段 attn 才能让两者错峰；包 mlp 等于没包 | rank0 14.98 → 14.34 GiB（省 640 MB） |
+
+### 两条被实测否定的直觉
+
+1. **「冻结前置模块的 requires_grad 就能省那 850 MB」** —— 只降 10 MB。省不掉的是
+   *前向中间激活*，必须靠 checkpoint 重算。
+2. **「Block 内平铺拆成两个 checkpoint（attn / mlp）」** —— 反而多 140 MB。
+   1F1B 下 stage0 同时有 2 microbatch × 13 层 = 26 个 Block 在途，平铺拆开会让每个
+   在途 Block 多存一份中间态 `x_after_attn`（53.5 MB），常驻涨 26 × 53.5 = 1391 MB；
+   实测只涨 140 MB，反过来说明单层重算峰值确实降了约 1.22 GiB，只是被 26 倍的常驻
+   边界张量反噬。**正解是嵌套（外层保持、内层只包 attn）**，只有当前正在反传的那 1 个
+   Block 会临时多存一份输入。
+
+### 一个实现细节：内层必须也用 `use_reentrant=False`
+
+内层 `use_reentrant=True` 会与外层 `use_reentrant=False` 的 `saved_tensors_hooks`
+冲突，直接抛 `Trying to backward through the graph a second time`。两层都用
+`use_reentrant=False` 才通过。
+
+## 4.6 还剩什么
+
+容量问题已解决，4032-token 在双 V100 16GB 上有 **560/850 MB** 余量。剩下的不是显存：
+
+1. **LoRA adapter 接线**（方向 C）：`build_krea2_stage_module` 目前明确拒绝 `network`
+   （"the Krea-2 PP probe cut does not support network adapters yet"）。上面的实测用
+   「基座冻结 + 只留 Norm/Bias 可训练」模拟了 LoRA 的梯度形态，但真正的 adapter 尚未接入。
+2. **数值验收**：当前只验证了 loss 与梯度非零，还没有与单卡 DDP 的逐步对齐。
+3. **性能**：单步 14.8s/11.3s 是首次真实权重测量，没有和 DDP 基线对比。
+
+
 ## 5. 已经排除的两个假设（都实测过，都不是缺口）
 
 ### 5.1 attention 没走快路径 —— 已修复，不是剩余缺口
