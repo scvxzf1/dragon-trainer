@@ -50,25 +50,72 @@ Krea-2 是 128 亿参数的 DiT。bf16 权重 **25 GB**，而单张 V100 只有 
 注意：规划器用的 `stage_zero_block_offset=-1` 让切分变成 **13/15**（不是 14/14），因为 stage0
 还要扛上面 1.24 GiB 的融合模块。
 
-## 4. 缺口：每张卡都差最后一点
+## 4. 缺口：不是 52 MB，是 `param.grad` 跨层累积（已用探针证伪）
 
-测试配置：4032-token bucket（latent `(1,16,1,126,128)` → 63×64 = 4032 图像 token，256 文本 token），
-**梯度检查点开启**，**attention 走 memory-efficient**，`PYTORCH_ALLOC_CONF=expandable_segments:True`。
-单卡 V100、真实权重、fp16、**全参数可训练**（见 §6 的偏差说明）。
+### 4.1 最初的错误结论
+
+第一轮实测（**全参数 `requires_grad=True`**）得到：
 
 | 切分 | stage | 权重驻留 | 前向峰值 | backward |
 |---|---|---|---|---|
-| **13/15** | stage0（13 blocks + fusions） | 11.75 GiB | 13.12 GiB 通过 | 未测（预计更紧） |
-| **13/15** | stage1（15 blocks + last） | 12.13 GiB | **13.52 GiB 通过** | **OOM，差 52 MB** |
-| 14/14 | stage0（14 blocks + fusions） | 12.56 GiB | 14.82 GiB 通过 | 未测（仅剩 0.39 GiB） |
-| 14/14 | stage1（14 blocks + last） | 11.32 GiB | 12.66 GiB 通过 | **OOM，差 192 MB** |
+| 13/15 | stage0（13 blocks + fusions） | 11.75 GiB | 13.12 GiB 通过 | — |
+| 13/15 | stage1（15 blocks + last） | 12.13 GiB | 13.52 GiB 通过 | OOM，差 52 MB |
+| 14/14 | stage0（14 blocks + fusions） | 12.56 GiB | 14.82 GiB 通过 | — |
+| 14/14 | stage1（14 blocks + last） | 11.32 GiB | 12.66 GiB 通过 | OOM，差 192 MB |
 
-**结论：最优配置（13/15）的 stage1 在 backward 阶段差 52 MB。**
+当时把 14/14 反而更差归因于「checkpoint 重算主导 backward 峰值」——**这个解释是错的**。
 
-一个反直觉但很重要的观察：14/14 的前向峰值更低（12.66 < 13.52），但 **backward 缺口更大**
-（192 MB > 52 MB）。原因是 `torch_checkpoint(use_reentrant=False)` 在重算每个 block 时会把该
-block 的全部中间态重新分配，backward 峰值由「重算瞬时峰值」主导，而不是前向残留。
-**所以切分必须按 backward 峰值挑，不能按前向挑。**
+### 4.2 真正的机理
+
+`requires_grad=True` 时，每反传完一层，PyTorch 就为该层参数**永久保留**一份 fp16 的
+`param.grad`，直到 `optimizer.zero_grad()`：
+
+```
+15 层 × 0.809 GiB = 12.13 GiB 的 .grad    ← 与权重本身一样大
+```
+
+所以「差 52 MB」并不是"跑完 15 层只差 52 MB"，而是**在倒数第 3 层被累积的 grad 撑爆时，
+压在最后一个张量上的缺口**。14/14 少一层、省下 828 MB，于是多扛过一层，死在第 4 层，
+那次的最后一个张量差 192 MB——**两个数字都只是最后一根稻草，不代表总缺口**。
+
+这也意味着：全参数微调要在 16 GB 上同时放下 12.13 GiB 权重 + 12.13 GiB 梯度
+（还不算 2×12.13 GiB 的 AdamW 状态），**物理上不可能**。
+
+### 4.3 探针：拿掉跨层累积，只保留算子峰值
+
+```python
+for p in model.parameters():
+    if p.requires_grad:
+        p.register_post_accumulate_grad_hook(
+            lambda tensor: setattr(tensor, "grad", None)
+        )
+```
+
+它保留 100% 的重算激活与 backward 算子临时显存，只去掉 `N × 828 MB` 的跨层累积——
+这正是 LoRA 训练的真实形态（base frozen，只有 adapter 有 `.grad`）。
+
+**实测结果（13/15，4032 token，checkpoint 开，EFFICIENT attention，expandable_segments）**：
+
+| stage | 权重驻留 | 前向峰值 | **backward 峰值** | 余量 |
+|---|---|---|---|---|
+| stage0（13 blocks + fusions） | 11.75 GiB | 13.97 GiB | **15.24 GiB** | **0.01 GiB（10 MB）** |
+| stage1（15 blocks + last） | 12.13 GiB | 13.52 GiB | **14.79 GiB** | 0.48 GiB |
+
+两者**都跑通了**，因此：
+
+1. **所谓 52 MB 缺口是伪缺口**——它由全参数测试的 `.grad` 累积造成，不代表 LoRA 场景。
+2. **但 stage0 才是真正的瓶颈**，不是 stage1：它只剩 **10 MB** 余量。
+3. stage0 前向峰值（13.97）比 stage1（13.52）更高，因为首段还要做
+   `prepare_img_tokens` + concat + 256 对齐 padding，这些在 4352 token 下是实打实的大张量。
+
+### 4.4 这对 1F1B 意味着什么
+
+PP=2 的 1F1B 在预热/稳态阶段，**stage0 必须同时滞留 2 个 microbatch** 的 checkpoint 边界输入
+和 stage 输出（等 stage1 反传回来），而 stage1 永远只需驻留 1 个。也就是说双卡联调时 stage0
+还要再多吃 0.4〜0.5 GiB。
+
+**按 §4.3 那 10 MB 的余量，双卡 1F1B 联调时 stage0 必崩。** 这是当前唯一真正的阻塞点，
+且它和「LoRA 还是全参数」无关——即使 LoRA 也需要先解决 stage0 的激活峰值。
 
 ## 5. 已经排除的两个假设（都实测过，都不是缺口）
 
@@ -122,9 +169,10 @@ V100 上 cuDNN MHA 不支持（`only supports sm80-sm121`），`_cudnn_attention
 
 | 方向 | 预计效果 | 代价 / 风险 |
 |---|---|---|
-| **A. 降 token bucket**（4032 → 3584 或更低） | 激活按 N² 降约 20%（远超 52 MB） | 分辨率下降；3584 在 `CONSTANT_TOKEN_BUCKETS` 里有相邻档。**风险最低** |
-| **B. 硬挤 52 MB** | 可能过 | 脆弱：换 torch 版本 / 换 bucket 就会崩；不是工程余量 |
-| **C. 接 LoRA 后重测**（§6 的偏差） | 可能直接不需要挤 | 需要先把 adapter 接进 PP 路径（工作量中等） |
+| **A. 降 token bucket**（4032 → 3584 或更低） | 激活按 N² 降约 20%；stage0 的 10 MB 余量变成 ~400 MB | 分辨率下降；3584 在 `CONSTANT_TOKEN_BUCKETS` 里有相邻档 |
+| **B. 拆细 checkpoint 粒度**：Attention 与 MLP 分别包 checkpoint | backward 时 MLP 大张量先算先释放，单层重算峰值砍半，预计省 400〜600 MB | 计算量不变（重算次数仍 1 次）；需要改 block 内部结构 |
+| **C. 接 LoRA 后重测** | §4.3 的探针已经证明 LoRA 形态下两个 stage 都能跑通，
+风险转移到 stage0 的 10 MB 余量 | 需要先把 adapter 接进 PP 路径（工作量中等），并重测 1F1B 下 stage0 的双 microbatch 开销 |
 | **D. 换 48 GB 级卡**（A100 / H100 / 90HX） | 权重问题消失 | PP 的价值从"装得下"变成"更大 batch / 更快"；方案本身不用改 |
 | **E. PP=4 或更多 stage** | 每卡权重 ~6 GB | **当前 PP v0 只支持 stages=2**（`wired_families` 报 `stages: [2]`），要扩要改运行时 |
 | **F. NF4 + PP** | 每卡 3.1 GB，非常宽裕 | **被三重硬拒**：`pp_quantization_unsupported`（`validate_no_quantization`）+ NF4 的 `COMPUTE_DTYPE` 硬编码 bf16（与 PP 只收 fp16+scaler 冲突）+ FP16/NF4 数值验收未通过（LoRA rel-L2 17.55%、输入梯度 35.6%） |
