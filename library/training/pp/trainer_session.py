@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.distributed as dist
 
 from library.training.pp.errors import (
     CODE_BACKEND_MULTIBACKEND_REQUIRED,
@@ -408,6 +409,42 @@ def build_krea2_trainer_runtime(
     return runtime
 
 
+def _loss_collective_device(runtime):
+    """Device for the loss all-reduce: the PP group is 2-D (gloo + nccl)."""
+
+    for name in ("device", "_device"):
+        candidate = getattr(runtime, name, None)
+        if isinstance(candidate, torch.device):
+            return candidate
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+def _broadcast_step_loss(local, runtime):
+    """Sum the per-rank step loss so the progress line is meaningful on every rank.
+
+    Only the trailing stage evaluates the loss, so every other rank would log
+    ``loss=None`` and the pipeline's loss curve would be invisible.  All ranks
+    run ``pp_train_step``, so this collective is safe.  The (has_loss, loss)
+    pair keeps "no rank produced a loss" distinguishable from a real zero.
+    """
+
+    if not dist.is_available() or not dist.is_initialized():
+        return local
+    group = getattr(runtime, "process_group", None) or getattr(runtime, "_group", None)
+    payload = torch.zeros(2, dtype=torch.float64, device=_loss_collective_device(runtime))
+    if local is not None:
+        payload[0] = float(local)
+        payload[1] = 1.0
+    try:
+        dist.all_reduce(payload, op=dist.ReduceOp.SUM, group=group)
+    except Exception:  # pragma: no cover - backend without the collective
+        logger.debug("loss all-reduce unavailable; keeping the local value", exc_info=True)
+        return local
+    return float(payload[0].item()) if float(payload[1].item()) > 0 else None
+
+
 def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) -> None:
     """One whole pipeline step with the frozen §4 semantics (family-blind)."""
 
@@ -446,6 +483,9 @@ def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) 
                 for value in losses
             ]
             counters.last_loss = float(sum(values))
+    # Every rank must reach this collective, so it sits outside the branches.
+    # Without it the trailing stage's loss never appears in the progress line.
+    counters.last_loss = _broadcast_step_loss(counters.last_loss, runtime)
     del prediction
 
 
