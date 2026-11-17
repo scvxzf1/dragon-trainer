@@ -37,6 +37,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [krea2_pp_webui_acceptance_20261117.md](krea2_pp_webui_acceptance_20261117.md) | PP 块交换界面、设置往返、当前草稿诊断、跨族守卫、微批建议及隔离 WebUI 训练启动验收 |
 | [dragon_next_stage_audit_verification_20260924.md](dragon_next_stage_audit_verification_20260924.md) | Dragon Next 当前只读盘点、验证阻塞、阶段性审计与功能验收矩阵 |
 | [dragon_next_s0_baseline_20260924.md](dragon_next_s0_baseline_20260924.md) | Dragon Next S0 只读门禁、四视口基线、主题/缩放与静态包哈希溯源结果 |
 | [dragon_next_s1_shell_audit_20260925.md](dragon_next_s1_shell_audit_20260925.md) | Dragon Next S1 mock E2E 进度、壳层回归补测与未关闭风险 |
