@@ -107,12 +107,13 @@ def resolve_krea2_wire_spec(
             "pp_krea2_latent_shape_invalid",
             f"Krea-2 expects (B, {KREA2_LATENT_CHANNELS}, 1, H, W); got {latent}",
         )
-    if int(microbatches) <= 0 or batch % int(microbatches):
+    from library.training.pp.krea2_batch import batch_divisibility_message
+
+    batch_error = batch_divisibility_message(batch, int(microbatches))
+    if batch_error:
         raise PipelineParallelError(
             "pp_krea2_batch_not_divisible",
-            f"train batch size {batch} is not divisible by "
-            f"pipeline_parallel_microbatches={microbatches}; PP v0 freezes the "
-            "wire buffers so every microbatch must be the same size",
+            batch_error,
         )
     patch = int(getattr(model, "PATCH_SIZE", 2))
     if height % patch or width % patch:

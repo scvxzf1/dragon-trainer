@@ -287,8 +287,13 @@ def save_distributed_settings(data: dict[str, Any]) -> dict[str, Any]:
     """Persist the [distributed] section via the existing settings channel."""
 
     settings_file = Path(SETTINGS_FILE)
-    normalized = _normalize_distributed_settings({**_default_distributed_settings(), **(data or {})})
     raw = _load_raw_settings(settings_file)
+    current = raw.get("distributed")
+    normalized = _normalize_distributed_settings({
+        **_default_distributed_settings(),
+        **(current if isinstance(current, dict) else {}),
+        **(data or {}),
+    })
     raw["distributed"] = normalized
     settings_file.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(settings_file, toml.dumps(raw))

@@ -274,6 +274,14 @@ def require_krea2_trainer_admission(
 
     _require_wired_trainer_family(config, world_size=world_size, where=where)
     _reject_common_trainer_knobs(config)
+    from .krea2_batch import batch_divisibility_message
+
+    message = batch_divisibility_message(
+        int(_get(config, "train_batch_size", 1) or 1),
+        int(_get(config, "pipeline_parallel_microbatches", 4) or 4),
+    )
+    if message:
+        raise PipelineParallelError("pp_krea2_batch_not_divisible", message)
     for key in ("use_ip_adapter", "use_easycontrol", "use_byg"):
         _reject(
             config,

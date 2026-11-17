@@ -94,6 +94,7 @@ async def handle_distributed_diagnosis(request: web.Request) -> web.Response:
             config_file=str(data.get("config_file") or "").strip() or None,
             gpu_whitelist=data.get("gpu_whitelist"),
             mode=data.get("mode"),
+            config_overrides=data.get("config_overrides"),
         )
         return web.json_response(payload)
     except Exception as e:
@@ -125,6 +126,7 @@ async def handle_preflight(request: web.Request) -> web.Response:
             config_file=config_file,
             world_size=_preflight_world_size(data.get("gpu_whitelist")),
             gpu_whitelist=data.get("gpu_whitelist"),
+            extra_args=data.get("extra_args"),
         )
         return web.json_response(result)
     except Exception as e:
@@ -191,6 +193,7 @@ async def handle_start(request: web.Request) -> web.Response:
             config_file=config_file,
             world_size=_preflight_world_size(gpu_whitelist),
             gpu_whitelist=gpu_whitelist,
+            extra_args=extra_args,
         )
         remaining, extra_args = acknowledge_request_risks(data, preflight, extra_args)
         if not remaining.get("ok", False):
@@ -295,6 +298,7 @@ async def handle_preprocess(request: web.Request) -> web.Response:
             config_file=config_file,
             world_size=_preflight_world_size(gpu_whitelist),
             gpu_whitelist=gpu_whitelist,
+            extra_args=extra_args if train_after else None,
         )
     except Exception as e:
         return web.json_response({"ok": False, "error": f"预处理预检测失败: {e}"}, status=400)
@@ -513,6 +517,7 @@ async def _handle_queue_start_data(request: web.Request, data: dict) -> web.Resp
             config_file=config_file,
             world_size=_preflight_world_size(gpu_whitelist),
             gpu_whitelist=gpu_whitelist,
+            extra_args=extra_args,
         )
         remaining, extra_args = acknowledge_request_risks(data, preflight, extra_args)
         needs_preprocess = not config_file or not is_web_runtime_config(config_file)
@@ -592,6 +597,7 @@ async def _handle_queue_batch_start_data(request: web.Request, data: dict) -> we
                 "failed_index": index,
                 "failed_item": raw,
             }, status=400)
+        item_extra_args = raw.get("extra_args")
         try:
             preflight = preflight_training_config(
                 variant,
@@ -600,6 +606,7 @@ async def _handle_queue_batch_start_data(request: web.Request, data: dict) -> we
                 config_file=config_file,
                 world_size=_preflight_world_size(gpu_whitelist),
                 gpu_whitelist=gpu_whitelist,
+                extra_args=item_extra_args,
             )
         except Exception as e:
             return web.json_response({
@@ -608,7 +615,7 @@ async def _handle_queue_batch_start_data(request: web.Request, data: dict) -> we
                 "failed_index": index,
                 "failed_item": raw,
             }, status=400)
-        remaining, extra_args = acknowledge_request_risks(raw, preflight, raw.get("extra_args") if isinstance(raw.get("extra_args"), list) else [])
+        remaining, extra_args = acknowledge_request_risks(raw, preflight, item_extra_args)
         requires_preprocess = not config_file or not is_web_runtime_config(config_file)
         confirm_preprocess = bool(
             raw.get("confirm_preprocess", True)

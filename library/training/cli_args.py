@@ -1057,8 +1057,8 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         default=False,
         help=(
             "[EXPERIMENTAL] Enable model-family pipeline parallelism. The "
-            "current release validates the topology and refuses to fall back "
-            "to DDP until the 1F1B trainer schedule is enabled."
+            "dedicated 1F1B trainer supports Anima, MOSS-Image and Krea-2 "
+            "under the PP v0 contract; unsupported configurations fail closed."
         ),
     )
     parser.add_argument(
@@ -1076,7 +1076,8 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
             "Pipeline-parallel per-stage block swap. Independent from "
             "--blocks_to_swap: PP swaps only this rank's own blocks after their "
             "backward and refuses a model that already has blocks_to_swap>0. "
-            "0 disables; when unset, KREA2_PP_SWAP_BLOCKS is used as fallback."
+            "A positive config value wins; 0 falls back to KREA2_PP_SWAP_BLOCKS. "
+            "When both are 0 or unset, swapping is disabled."
         ),
     ),
     parser.add_argument(

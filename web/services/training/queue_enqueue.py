@@ -77,7 +77,11 @@ async def enqueue_training(
             preset,
             methods_subdir,
             source_config_file=config_file,
+            extra_args=extra,
         )
+        from web.services.training.extra_args import without_materialized_dataset_arg
+
+        extra = without_materialized_dataset_arg(extra)
         runtime_config_file = runtime["runtime_config_file"]
         source_config_file = runtime.get("history_source_config_file") or source_config_file
 

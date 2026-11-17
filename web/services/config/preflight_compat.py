@@ -303,7 +303,7 @@ def _compat_web_message(
         "pipeline_parallel_experimental_runtime": (
             "流水线并行已解析到实验性的 stage-local PP v0 运行时"
             "（2 阶段 / 1F1B / fp16 事务），由 library.training.pp 驱动。"
-            "Anima 与 MOSS-Image 已接线专用 PP 训练会话（2 阶段 / 1F1B / fp16 / "
+            "Anima、MOSS-Image 与 Krea-2 已接线专用 PP 训练会话（2 阶段 / 1F1B / fp16 / "
             "plain LoRA / 完整缓存范围）；其余模型族遇到 pipeline_parallel 仍以 "
             "pp_trainer_path_unavailable 具名拒绝，绝不静默回退 DDP。"
         ),
@@ -428,7 +428,10 @@ def _compat_web_message(
         value = getattr(item, "value", None)
         target = value or "默认 Inductor mode"
         return f"blocks_to_swap 不兼容 Inductor CUDAGraph mode；训练启动时会改用 {target}。"
-    message = messages.get(item.code, item.message)
+    message = (
+        f"流水线配置无效：{item.message}" if item.code == "pipeline_parallel_config"
+        else messages.get(item.code, item.message)
+    )
     if device is not None and item.code.endswith("_requires_pre_ampere"):
         if device.selected_capabilities:
             detail = device.device_label or ", ".join(
@@ -511,8 +514,7 @@ def _check_pipeline_trainer_admission(cfg: dict[str, Any], add) -> None:
     The compat layer stays family-agnostic; this adds the trainer-path knob
     view (preview 类字段、compile、router、缓存等) so the WebUI shows the
     named refusal the queue dispatch would hit instead of failing only in the
-    worker log.  Never blocks harder than the launch itself: it is a warning
-    carrying the exact ``pp_*`` code.
+    worker log. A named trainer refusal is an error, matching the launch gate.
     """
 
     try:
@@ -524,14 +526,24 @@ def _check_pipeline_trainer_admission(cfg: dict[str, Any], add) -> None:
         return  # the compat layer above already reports pipeline_parallel_config
     from library.training.pp.errors import PipelineParallelError
     from library.training.pp.trainer_admission import require_family_trainer_admission
+    from web.services.config.preflight_pp import krea2_batch_checks
+
+    for check in krea2_batch_checks(cfg):
+        add(check["level"], check["key"], check["message"])
+    add(
+        "info", "pipeline_parallel_blocks_to_swap",
+        "PP 配置：pipeline_parallel_blocks_to_swap="
+        f"{cfg.get('pipeline_parallel_blocks_to_swap', 0)}。",
+    )
 
     try:
         require_family_trainer_admission(cfg, where="webui_preflight")
     except PipelineParallelError as exc:
         add(
-            "warning",
+            "error",
             "pipeline_parallel",
             f"PP 训练准入预检：启动时会以 {exc.code} 具名拒绝：{exc.detail}",
+            code=exc.code,
         )
 
 

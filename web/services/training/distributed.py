@@ -311,7 +311,7 @@ def diagnose_pp_dataset_readiness(cfg: dict[str, Any]) -> list[dict[str, str]]:
 
 _WIRED_FAMILY_HINT = (
     "当前模型族还没有接入流水线并行训练，请改用单卡或数据并行。"
-    "已接线的族：Anima、MOSS-Image；Krea-2 / Z-Image / Qwen-Image 2.1 暂不支持。"
+    "已接线的族：Anima、MOSS-Image、Krea-2；Z-Image / Qwen-Image 2.1 暂不支持。"
 )
 
 
@@ -482,6 +482,9 @@ def diagnose_pp_config(
         return checks
 
     compatibility = check_training_compat(cfg, world_size=world_size)
+    from web.services.config.preflight_pp import krea2_batch_checks
+
+    checks.extend(krea2_batch_checks(cfg))
     for item in compatibility.errors:
         if item.key == "pipeline_parallel":
             checks.append(_pp_check("error", "compat_error", item.message))
@@ -502,7 +505,8 @@ def diagnose_pp_config(
             "info",
             "config_admitted",
             f"PP 配置通过现有 admission：stages={pipeline.stages}, "
-            f"microbatches={pipeline.microbatches}, schedule={pipeline.schedule}。",
+            f"microbatches={pipeline.microbatches}, schedule={pipeline.schedule}, "
+            f"pipeline_parallel_blocks_to_swap={pipeline.blocks_to_swap}。",
         ))
     comm = _pp_comm_path_check(device_indices)
     if comm is not None:
@@ -518,6 +522,7 @@ def diagnose_distributed_training(
     config_file: str | None = None,
     gpu_whitelist: Any = None,
     mode: Any = None,
+    config_overrides: Any = None,
 ) -> dict[str, Any]:
     """Read-only diagnosis payload for the「分布式训练」card.
 
@@ -529,6 +534,7 @@ def diagnose_distributed_training(
     from web.services.config_service import _load_training_config_for_web_run
     from web.services.training.gpu import normalize_gpu_whitelist
     from library.runtime.launch import resolve_training_world_size_for_gpu_selection
+    from web.services.training.distributed_inputs import apply_diagnosis_overrides
 
     normalized_mode = normalize_distributed_mode(mode)
     gpu_selection = normalize_gpu_whitelist(gpu_whitelist)
@@ -539,6 +545,7 @@ def diagnose_distributed_training(
         cfg = _load_training_config_for_web_run(
             variant, preset, methods_subdir, config_file=config_file
         )
+        cfg = apply_diagnosis_overrides(cfg, config_overrides)
     except Exception as exc:  # noqa: BLE001 - diagnosis never raises
         cfg = None
         checks.append({

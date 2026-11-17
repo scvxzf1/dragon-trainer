@@ -70,6 +70,14 @@ def _resolve_display_path(*args, **kwargs):
     return _training_facade()._resolve_display_path(*args, **kwargs)
 
 
+def _training_config_argument(config_file: str) -> str:
+    """Resolve Web display paths before passing them to the standalone CLI."""
+    path = _resolve_display_path(config_file)
+    if path is None:
+        raise ValueError(f"训练配置路径无效: {config_file}")
+    return str(path.resolve())
+
+
 def _ensure_training_data_dirs(*args, **kwargs):
     return _training_facade()._ensure_training_data_dirs(*args, **kwargs)
 
@@ -82,10 +90,11 @@ def _accelerate_mixed_precision_for_training(
     config_file: str | None,
     extra_args: list[str] | None = None,
 ) -> str | None:
-    value = _command_option_value(list(extra_args or []), "--mixed_precision")
-    if value is None and config_file:
-        raw = _load_config_file_config(config_file).get("mixed_precision")
-        value = str(raw).strip() if raw is not None else None
+    from web.services.training.extra_args import merge_training_extra_args
+
+    cfg = _load_config_file_config(config_file) if config_file else {}
+    raw = merge_training_extra_args(cfg, extra_args).get("mixed_precision")
+    value = str(raw).strip() if raw is not None else None
     if value is None:
         return None
     normalized = str(value).strip().lower()

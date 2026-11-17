@@ -97,6 +97,7 @@ def _prepare_web_runtime_config(
     methods_subdir: str,
     *,
     source_config_file: str | None,
+    extra_args: list[str] | None = None,
 ) -> dict[str, Any]:
     source_path = _resolve_display_path(source_config_file or "") if source_config_file else None
     if source_config_file and (source_path is None or not _path_exists(source_path) or not source_path.is_file()):
@@ -104,8 +105,6 @@ def _prepare_web_runtime_config(
 
     stem_source = source_path.stem if source_path is not None else variant
     run_stem = _safe_run_stem(stem_source or variant or "run")
-    run_dir = _unique_runtime_dir(resolve_output_root(), run_stem)
-    layout = _ensure_runtime_dir_layout(run_dir)
 
     fallback_cfg = load_merged_config(variant, preset, methods_subdir)
     cfg = dict(fallback_cfg)
@@ -114,12 +113,17 @@ def _prepare_web_runtime_config(
         if source_cfg:
             cfg.update(source_cfg)
     cfg = apply_global_model_path_defaults(cfg, fallback=fallback_cfg)
+    from web.services.training.extra_args import merge_training_extra_args
+
+    cfg = merge_training_extra_args(cfg, extra_args)
     cfg = merge_stage_schedule_from_dataset_config(cfg)
     source_rows = _dataset_rows_for_estimate(cfg)
     if not source_rows:
         raise ValueError("请先配置至少一个数据集路径")
 
     validate_stage_schedule_or_raise(cfg, dataset_rows=source_rows)
+    run_dir = _unique_runtime_dir(resolve_output_root(), run_stem)
+    layout = _ensure_runtime_dir_layout(run_dir)
 
     runtime_rows: list[dict[str, Any]] = []
     stage_target_groups: list[list[int]] = []

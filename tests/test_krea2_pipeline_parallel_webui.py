@@ -26,7 +26,10 @@ def test_preflight_releases_anima_pipeline_and_warns_about_the_trainer_gate(tmp_
     session instead of the historical trainer-path refusal.
     """
 
-    _write_selected_checkpoint_preflight_config(tmp_path, monkeypatch, ["pipeline_parallel = true"])
+    _write_selected_checkpoint_preflight_config(tmp_path, monkeypatch, [
+        "pipeline_parallel = true", 'mixed_precision = "fp16"',
+        "network_train_unet_only = true",
+    ])
     result = _preflight()
     assert result["ok"] is True
     assert _messages(result, "pipeline_parallel") == []
@@ -41,6 +44,8 @@ def test_preflight_allows_valid_krea_pipeline_launch(tmp_path: Path, monkeypatch
     _write_selected_checkpoint_preflight_config(tmp_path, monkeypatch, [
         'model_family = "krea2_raw"', "pipeline_parallel = true",
         "pipeline_parallel_stages = 2", "pipeline_parallel_microbatches = 4",
+        "train_batch_size = 4",
+        'mixed_precision = "fp16"', "network_train_unet_only = true",
         'pipeline_parallel_schedule = "1f1b"', 'pipeline_parallel_split = "balanced"',
         "torch_compile = false", "blocks_to_swap = 0", 'selective_checkpoint = "off"',
     ])

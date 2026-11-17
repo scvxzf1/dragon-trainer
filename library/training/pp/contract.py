@@ -151,6 +151,7 @@ class PipelineRuntimeConfig:
             "schedule": self.schedule,
             "conditioning": self.conditioning,
             "mixed_precision": self.mixed_precision,
+            "blocks_to_swap": self.blocks_to_swap,
         }
         unknown = set(overrides) - set(values)
         if unknown:

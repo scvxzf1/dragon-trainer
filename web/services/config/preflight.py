@@ -245,6 +245,7 @@ def preflight_training_config(
     config_file: str | None = None,
     world_size: int | None = None,
     gpu_whitelist: Any = None,
+    extra_args: Any = None,
 ) -> dict[str, Any]:
     """Run every preflight check for one training config.
 
@@ -256,6 +257,9 @@ def preflight_training_config(
     cfg = _load_training_config_for_web_run(
         variant, preset, methods_subdir, config_file=config_file
     )
+    from web.services.training.extra_args import merge_training_extra_args
+
+    cfg = merge_training_extra_args(cfg, extra_args)
     cfg = merge_stage_schedule_from_dataset_config(cfg)
     checks: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
@@ -538,6 +542,21 @@ def preflight_training_config(
     if runtime_config:
         _check_training_images(cfg, add)
         _check_cache_sidecars(cfg, add)
+
+    from web.services.config.preflight_pp import cached_runtime_vae_is_unused
+
+    if cached_runtime_vae_is_unused(
+        cfg, checks, runtime_file=is_web_runtime_config(config_file),
+        dataset_count=len(dataset_rows),
+    ):
+        for item in list(errors):
+            if item["key"] == "vae":
+                errors.remove(item)
+                item["level"] = "info"
+                item["message"] = (
+                    "此 Krea-2 PP runtime 的 VAE/text 缓存已逐图验证完整，"
+                    "且未启用采样或 CMMD；直训不加载 VAE 权重。"
+                )
 
     return {
         "ok": not errors,

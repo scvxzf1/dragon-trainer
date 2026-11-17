@@ -33,6 +33,7 @@ from web.services.training.launcher_runtime import (
     _runtime_from_config_file,
     _runtime_meta,
     _sample_config_from_cfg,
+    _training_config_argument,
     preflight_training_config,
 )
 from web.services.training.gpu import ensure_gpu_whitelist_authorized
@@ -105,7 +106,11 @@ async def _start_unlocked(
             preset,
             methods_subdir,
             source_config_file=source_config_file,
+            extra_args=extra_args,
         )
+        from web.services.training.extra_args import without_materialized_dataset_arg
+
+        extra_args = without_materialized_dataset_arg(extra_args)
         config_file = runtime["runtime_config_file"]
     elif source_config_file and not config_file:
         config_file = source_config_file
@@ -115,7 +120,21 @@ async def _start_unlocked(
         except Exception:  # noqa: BLE001 - unreadable config fails later anyway
             launch_config = {}
         if launch_config:
+            from web.services.training.extra_args import merge_training_extra_args
+
+            launch_config = merge_training_extra_args(launch_config, extra_args)
             ensure_pipeline_parallel_family_pairing(launch_config)
+            from library.training.pp.gate import pipeline_parallel_enabled
+            from library.training.pp.trainer_admission import require_family_trainer_admission
+
+            if pipeline_parallel_enabled(launch_config):
+                require_family_trainer_admission(
+                    launch_config,
+                    world_size=resolve_training_world_size_for_gpu_selection(
+                        _normalize_gpu_whitelist(gpu_whitelist)
+                    ),
+                    where="webui_launcher",
+                )
 
     venv_python = str(_root() / ".venv" / "bin" / "python")
     if not Path(venv_python).exists():
@@ -136,7 +155,7 @@ async def _start_unlocked(
         "--methods_subdir", methods_subdir,
     ]
     if config_file:
-        cmd.extend(["--config_file", config_file])
+        cmd.extend(["--config_file", _training_config_argument(config_file)])
     if extra_args:
         cmd.extend(extra_args)
     continue_payload = _normalize_continue_lora_info(
@@ -260,15 +279,30 @@ async def _start_preprocess_unlocked(
     if not Path(venv_python).exists():
         venv_python = sys.executable
 
+    materializing = runtime is None
     runtime = runtime or _prepare_web_runtime_config(
         variant,
         preset,
         methods_subdir,
         source_config_file=config_file,
+        extra_args=extra_args if train_after else None,
     )
+    if train_after:
+        from web.services.training.extra_args import without_materialized_dataset_arg
+
+        normalized_args = without_materialized_dataset_arg(extra_args)
+        if not materializing and normalized_args != list(extra_args or []):
+            raise ValueError(
+                "已有运行配置不能在预处理后切换 dataset_config；请用该数据集重新创建队列项"
+            )
+        if materializing:
+            extra_args = normalized_args
 
     cmd = [venv_python, "tasks.py", "preprocess"]
-    cmd.extend(without_risk_flag(extra_args))
+    # Training overrides have already entered runtime TOML. Passing them to
+    # resize/VAE scripts would reinterpret trainer flags as preprocess argv.
+    if not train_after:
+        cmd.extend(without_risk_flag(extra_args))
 
     env = os.environ.copy()
     gpu_selection = _normalize_gpu_whitelist(gpu_whitelist)
@@ -334,6 +368,7 @@ async def _start_pending_training(self, pending: dict[str, Any]) -> None:
             # 预处理完成后的复检必须按任务实际可见的 GPU 判定架构，不能退回
             # Web 进程 device-0：异构机上两者可能不是同一张卡。
             gpu_whitelist=pending.get("gpu_whitelist"),
+            extra_args=pending.get("extra_args"),
         )
         preflight = pending_preflight(preflight, pending.get("extra_args"))
         if not preflight.get("ok", False):

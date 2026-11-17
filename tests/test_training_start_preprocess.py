@@ -61,7 +61,7 @@ def test_handle_start_converts_plain_config_to_preprocess_train_after(tmp_path, 
             "preset": "default",
             "methods_subdir": "imported",
             "config_file": "configs/imported/522.toml",
-            "extra_args": ["--foo"],
+            "extra_args": ["--seed", "0"],
             "gpu_whitelist": [0],
             "confirmed": True,
             "confirm_preprocess": True,
@@ -79,7 +79,7 @@ def test_handle_start_converts_plain_config_to_preprocess_train_after(tmp_path, 
     assert len(svc.preprocess_calls) == 1
     assert svc.start_calls == []
     args, kwargs = svc.preprocess_calls[0]
-    assert args[:5] == ("522", "default", "imported", ["--foo"], True)
+    assert args[:5] == ("522", "default", "imported", ["--seed", "0"], True)
     assert kwargs["config_file"] == "configs/imported/522.toml"
     assert kwargs["gpu_whitelist"] == [0]
 
@@ -249,6 +249,7 @@ def test_start_training_aligns_accelerate_mixed_precision_from_config(tmp_path, 
     _write_runtime_config_tree(tmp_path)
     _patch_runtime_service_paths(monkeypatch, tmp_path)
     monkeypatch.setenv(ACCELERATE_LAUNCH_ENV, "1")
+    monkeypatch.setenv("ANIMA_ACCELERATE_NUM_PROCESSES", "2")
     runtime_config = tmp_path / "configs" / "imported" / "522.toml"
     runtime_config.write_text(
         runtime_config.read_text(encoding="utf-8") + '\nmixed_precision = "fp16"\n',
@@ -282,6 +283,7 @@ def test_start_training_extra_args_override_accelerate_mixed_precision(tmp_path,
     _write_runtime_config_tree(tmp_path)
     _patch_runtime_service_paths(monkeypatch, tmp_path)
     monkeypatch.setenv(ACCELERATE_LAUNCH_ENV, "1")
+    monkeypatch.setenv("ANIMA_ACCELERATE_NUM_PROCESSES", "2")
     runtime_config = tmp_path / "configs" / "imported" / "522.toml"
     runtime_config.write_text(
         runtime_config.read_text(encoding="utf-8") + '\nmixed_precision = "bf16"\n',

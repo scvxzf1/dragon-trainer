@@ -4,7 +4,7 @@ Contract §5 (docs/proposal/anima_pp_trainer_wiring.md):
 
 * the WebUI preflight shows the wired Anima PP trainer session (no launch
   block), and surfaces the trainer-admission knob view (e.g. a preview field
-  under PP) as a warning carrying the exact ``pp_*`` code;
+  under PP) as an error carrying the exact ``pp_*`` code;
 * ``pipeline_parallel`` and ``model_family`` must travel **as a pair** into a
   queue/runtime config — the launcher and the resume gate both refuse a
   config that enables PP without naming the family; non-PP runs are untouched;
@@ -42,6 +42,7 @@ def _warnings(result: dict, key: str) -> list[str]:
 
 _PP_LINES = [
     "pipeline_parallel = true",
+    'mixed_precision = "fp16"',
     "pipeline_parallel_stages = 2",
     "pipeline_parallel_microbatches = 4",
     'pipeline_parallel_schedule = "1f1b"',
@@ -74,9 +75,10 @@ def test_preflight_surfaces_an_anima_admission_refusal_before_launch(tmp_path: P
         tmp_path, monkeypatch, [*_PP_LINES, 'sample_prompts = "prompts.txt"']
     )
     result = _preflight()
-    warnings = _warnings(result, "pipeline_parallel")
-    assert any("pp_config_invalid" in message for message in warnings), warnings
-    assert any("sample_prompts" in message or "preview" in message.lower() for message in warnings)
+    assert result["ok"] is False
+    errors = _messages(result, "pipeline_parallel")
+    assert any("pp_config_invalid" in message for message in errors), errors
+    assert any("sample_prompts" in message or "preview" in message.lower() for message in errors)
 
 
 # ---------------------------------------------------------------------------
