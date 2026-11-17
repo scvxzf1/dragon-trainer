@@ -35,6 +35,7 @@ import gc
 import json
 import logging
 import math
+import time
 import os
 from pathlib import Path
 from dataclasses import dataclass
@@ -448,6 +449,9 @@ def _broadcast_step_loss(local, runtime):
 def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) -> None:
     """One whole pipeline step with the frozen §4 semantics (family-blind)."""
 
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    started = time.perf_counter()
     runtime.zero_grad()
     result = runtime.step(
         inputs.wire_for(runtime),
@@ -486,6 +490,19 @@ def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) 
     # Every rank must reach this collective, so it sits outside the branches.
     # Without it the trailing stage's loss never appears in the progress line.
     counters.last_loss = _broadcast_step_loss(counters.last_loss, runtime)
+    # Per-step wall time: the only number that says whether 1F1B + block swap is
+    # worth its PCIe traffic.  Runs after every collective so it measures the
+    # whole step, and is printed every step (a mean hides the first-step cost).
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - started
+    print(
+        f"[pp] step {counters.global_step} wall={elapsed:.2f}s "
+        f"peak={torch.cuda.max_memory_allocated() / 2**30:.2f}GiB"
+        if torch.cuda.is_available()
+        else f"[pp] step {counters.global_step} wall={elapsed:.2f}s",
+        flush=True,
+    )
     del prediction
 
 
