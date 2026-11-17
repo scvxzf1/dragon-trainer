@@ -18,12 +18,19 @@
 import math
 from dataclasses import dataclass
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+# Memory-for-speed A/B switch: when the block swap has bought enough
+# headroom, the nested recompute layers stop being necessary and cost a
+# third pass over every block.
+_PP_SIMPLIFY = os.environ.get("KREA2_PP_SIMPLIFY", "0") == "1"
 
 from library.models.krea2_raw.attention_backend import (
     normalize_krea2_attention_mode,
@@ -304,6 +311,8 @@ class SwiGLU(torch.nn.Module):
         # and every 16384-dim intermediate drops from 68 MiB to 34 MiB.  The
         # splits are applied on *both* branches so the req=False precompute pass
         # never materialises the whole 4352-long sequence either.
+        if _PP_SIMPLIFY:
+            return self._mlp_chunk(x)
         chunks = x.chunk(8, dim=-2)
         if not checkpointing:
             return torch.cat([self._mlp_chunk(chunk) for chunk in chunks], dim=-2)
@@ -360,7 +369,8 @@ class Attention(torch.nn.Module):
         # whole preparation stays live.
         seq = int(qkv.shape[-2])
         checkpointed = (
-            self.training
+            not _PP_SIMPLIFY
+            and self.training
             and torch.is_grad_enabled()
             and qkv.requires_grad
             and seq % 4 == 0
@@ -545,7 +555,8 @@ class SingleStreamBlock(nn.Module):
         # torch.no_grad(), so it does not stack with the outer checkpoint's
         # saved_tensors_hooks, and it only holds this one block's input.
         if (
-            torch.is_grad_enabled()
+            not _PP_SIMPLIFY
+            and torch.is_grad_enabled()
             and self.training
             and self.gradient_checkpointing
             and x.requires_grad

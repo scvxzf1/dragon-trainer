@@ -13,6 +13,8 @@ from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
+_PP_SIMPLIFY = os.environ.get("KREA2_PP_SIMPLIFY", "0") == "1"
+
 logger = logging.getLogger(__name__)
 
 KREA2_ATTENTION_MODES = frozenset({"torch", "flash"})
@@ -311,9 +313,9 @@ def _cudnn_attention(
             # the total *up*: more live graph nodes.  Wrapping each chunk lets
             # the transient q_part/mask_part/attn_bias be freed before the next
             # one starts.
-            chunks = 8 if length % 8 == 0 and length >= 4096 else 1
+            chunks = 1 if _PP_SIMPLIFY else (8 if length % 8 == 0 and length >= 4096 else 1)
             step = length // chunks
-            use_checkpoint = torch.is_grad_enabled() and (
+            use_checkpoint = (not _PP_SIMPLIFY) and torch.is_grad_enabled() and (
                 q.requires_grad or k.requires_grad or v.requires_grad
             )
             folded_parts: list[Tensor] = []
