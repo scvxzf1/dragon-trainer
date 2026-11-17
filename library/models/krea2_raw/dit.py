@@ -32,6 +32,15 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 # third pass over every block.
 _PP_SIMPLIFY = os.environ.get("KREA2_PP_SIMPLIFY", "0") == "1"
 
+# Incremental teardown bookkeeping (see docs/findings §4.9.3).  Each layer of
+# nested recompute is ~a third of the block's forward work, so they are removed
+# one at a time with its own switch instead of all at once.
+#   _PP_MLP_CKPT=0  -> tear down (4) the SwiGLU inner checkpoint
+#   _PP_MLP_CHUNKS  -> sequence chunks for the MLP; 4 = 1088 = 17*64, the
+#                      tensor-core aligned choice (8 gives 544, misaligned)
+_PP_MLP_CKPT = os.environ.get("KREA2_PP_MLP_CKPT", "1") != "0"
+_PP_MLP_CHUNKS = int(os.environ.get("KREA2_PP_MLP_CHUNKS", "8"))
+
 from library.models.krea2_raw.attention_backend import (
     normalize_krea2_attention_mode,
     run_krea2_attention,
@@ -302,7 +311,8 @@ class SwiGLU(torch.nn.Module):
         # MulBackward0 needs the pre-update ``u`` and would raise "modified by
         # an inplace operation".
         checkpointing = (
-            self.gradient_checkpointing
+            _PP_MLP_CKPT
+            and self.gradient_checkpointing
             and self.training
             and torch.is_grad_enabled()
             and x.requires_grad
@@ -316,7 +326,7 @@ class SwiGLU(torch.nn.Module):
         # materialises the whole 4352-long sequence either.
         if _PP_SIMPLIFY:
             return self._mlp_chunk(x)
-        chunks = x.chunk(8, dim=-2)
+        chunks = x.chunk(_PP_MLP_CHUNKS, dim=-2)
         if not checkpointing:
             return torch.cat([self._mlp_chunk(chunk) for chunk in chunks], dim=-2)
         return torch.cat(
