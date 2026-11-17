@@ -6,20 +6,18 @@ Frozen entrypoint.  What this file proves:
   constant (no separate availability flag exists), the balanced plan over 42
   layers comes from the existing registry planner, and the compat matrix
   releases a legal MOSS PP config to the experimental-runtime warning;
-* families without a stage-local runtime (krea2_raw / z_image / qwen_image_2_1)
+* families without a stage-local runtime (z_image / qwen_image_2_1)
   keep their named rejections; unknown PP knobs for MOSS (block swap, compile)
   are refused by the shared family contract;
-* the production trainer entry admission admits only the wired MOSS family to
-  the dedicated PP trainer path (dispatch in train_session), every other family
-  and every DDP-interior code path keep the ``pp_trainer_path_unavailable``
-  refusal (fail-closed), and
+* the production trainer entry admission admits the wired PP families
+  (moss_image / anima / krea2_raw) to the dedicated PP trainer path (dispatch
+  in train_session), unwired families and every DDP-interior code path keep
+  their named refusals (fail-closed), and
   ``moss_compat`` no longer blanket-rejects the ``pipeline_parallel`` key --
   the gate, not the family shim, decides whether the config is servable.
 """
 
 from __future__ import annotations
-
-import dataclasses
 
 import pytest
 
@@ -37,7 +35,6 @@ from library.training.pp.gate import (
     require_pipeline_runtime,
     require_trainer_topology,
 )
-
 from tests.moss_pp_test_support import HEIGHT, MAX_TEXT_TOKENS, WIDTH
 
 
@@ -81,7 +78,7 @@ def test_moss_family_publishes_the_shared_runtime_backend():
 
 
 def test_families_without_a_runtime_stay_fail_closed():
-    for family in ("krea2_raw", "z_image", "qwen_image_2_1"):
+    for family in ("z_image", "qwen_image_2_1"):
         spec = MODEL_FAMILY_REGISTRY[family].pipeline_parallel
         if spec is None:
             continue
@@ -122,7 +119,7 @@ def test_compat_matrix_still_names_the_microbatch_floor_for_moss():
     assert [item.code for item in issues] == ["pipeline_parallel_microbatches_below_stages"]
 
 
-@pytest.mark.parametrize("family", ["krea2_raw", "z_image"])
+@pytest.mark.parametrize("family", ["z_image"])
 def test_families_without_a_runtime_keep_the_named_refusal(family):
     result = check_training_compat(_config(model_family=family), world_size=2)
     issues = [item for item in result.errors if item.key == "pipeline_parallel"]
@@ -179,12 +176,12 @@ def test_wired_moss_passes_entry_admission_but_ddp_interior_stays_refused():
 def test_unwired_families_keep_the_entry_refusal():
     from library.training.pp.gate import require_trainer_pp_admission
 
-    # anima is wired since the Anima trainer-level PP adapter landed
-    # (_archive/docs/proposal/anima_pp_trainer_wiring.md §3): admission accepts it.
-    # Families without any runtime are refused one step earlier by the shared
-    # gate. Either way nothing reaches a DDP fallback.
-    require_trainer_pp_admission(_config(model_family="anima"), where="unit-test")
-    for family in ("krea2_raw", "z_image"):
+    # anima and krea2_raw are wired alongside moss_image: admission accepts them.
+    # Families without any runtime (z_image) are refused one step earlier by the
+    # shared gate. Either way nothing reaches a DDP fallback.
+    for wired in ("anima", "krea2_raw"):
+        require_trainer_pp_admission(_config(model_family=wired), where="unit-test")
+    for family in ("z_image",):
         with pytest.raises(PipelineParallelError) as excinfo:
             require_trainer_pp_admission(_config(model_family=family), where="unit-test")
         assert excinfo.value.code == "pp_runtime_unavailable"

@@ -42,8 +42,9 @@
   3. 第 2 轮新增的 **A 类硬错误** `loss_type_huber_schedule_unsupported`（§2.2）；
   4. 第 2 轮把 qwen `mixed_precision` 拆出的两个子 code
      `qwen_image_2_1_mixed_precision_flash` / `qwen_image_2_1_mixed_precision_nf4`
-     （原 code 在这两个组合下同样为 error，只是 code 名更具体，§2.3）。
-  除以上四类，strict 与 origin/dev 的 code/key 多重集逐条一致。
+     （原 code 在这两个组合下同样为 error，只是 code 名更具体，§2.3）；
+  5. 2026-11-16 `krea2_raw` 上线 stage-local 1F1B PP runtime（`runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B`），合法 Krea-2 PP 配置不再产出 `pipeline_parallel_runtime_unavailable`（未接线族如 `z_image` 仍保持该硬错误）。
+  除以上五类，strict 与历史 `origin/dev` 快照的 code/key 多重集逐条一致。
 
 ## 2. warn 档放行的 7 个 C1 code（严格限定，不得扩大）
 

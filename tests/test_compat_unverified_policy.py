@@ -822,7 +822,8 @@ STRICT_PARITY_BATTERY = {
     'z_image_offload': [
         'z_image_checkpoint_offload',
     ],
-    'pp_krea2': [
+    'pp_krea2': [],
+    'pp_z_image': [
         'pipeline_parallel_runtime_unavailable',
     ],
 }
@@ -1032,6 +1033,18 @@ def _battery() -> dict[str, dict]:
         },
         "pp_krea2": {
             "model_family": "krea2_raw",
+            "pipeline_parallel": True,
+            "pipeline_parallel_stages": 2,
+            "pipeline_parallel_microbatches": 2,
+            "pipeline_parallel_schedule": "1f1b",
+            "pipeline_parallel_balance": "balanced",
+            "network_train_unet_only": True,
+            "blocks_to_swap": 0,
+            "torch_compile": False,
+            "selective_checkpoint": "off",
+        },
+        "pp_z_image": {
+            "model_family": "z_image",
             "pipeline_parallel": True,
             "pipeline_parallel_stages": 2,
             "pipeline_parallel_microbatches": 2,

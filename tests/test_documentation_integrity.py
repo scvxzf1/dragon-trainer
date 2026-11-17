@@ -11,7 +11,6 @@ import tasks
 from library.models.family_registry import MODEL_FAMILY_REGISTRY
 from library.training.pp.gate import TRAINER_PP_WIRED_FAMILIES
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = ROOT / "docs"
 ARCHIVE_ROOT = ROOT / "_archive"
@@ -44,13 +43,16 @@ UNTRACKED_LINK_PREFIXES = (
 
 def _tracked_files() -> set[Path]:
     result = subprocess.run(
-        ["git", "ls-files"],
+        ["git", "ls-files", "-z"],
         cwd=ROOT,
         check=True,
         capture_output=True,
-        text=True,
     )
-    return {(ROOT / line).resolve() for line in result.stdout.splitlines() if line}
+    return {
+        (ROOT / raw.decode("utf-8")).resolve()
+        for raw in result.stdout.split(b"\0")
+        if raw
+    }
 
 
 def _markdown_files() -> list[Path]:
@@ -91,11 +93,12 @@ def _content_lines(path: Path):
 
 def _iter_raw_links(path: Path):
     for line_number, line in _content_lines(path):
-        for match in LINK_RE.finditer(line):
+        stripped_code = re.sub(r"`[^`]*`", "", line)
+        for match in LINK_RE.finditer(stripped_code):
             raw = match.group(1).strip()
             raw = raw.split(' "', 1)[0].split(" '", 1)[0]
             yield line_number, raw
-        ref_match = REF_DEF_RE.match(line)
+        ref_match = REF_DEF_RE.match(stripped_code)
         if ref_match:
             raw = ref_match.group(1).strip().strip("<>")
             yield line_number, raw

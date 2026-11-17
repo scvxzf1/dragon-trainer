@@ -8,7 +8,6 @@ import pytest
 
 from library.models.family_registry import model_family_capability_catalog
 
-
 ROOT = Path(__file__).resolve().parents[1]
 NEXT_DOMAIN = ROOT / "web" / "frontend-next" / "src" / "features" / "training-config" / "domain"
 SNAPSHOT = ROOT / "_archive" / "docs" / "configuration" / "dragon-training-config-215.md"
