@@ -17,6 +17,7 @@ Current training compilation is selected after adapter apply/load in
 | Krea-2 | Fixed sequence lengths and resident block computation; no Anima flatten or sequence bands |
 | Qwen-Image 2.1 | Separate [block compiler](../../library/models/qwen_image_2_1/compile.py) |
 | Z-Image | `torch_compile=true` is rejected by the [compatibility layer](../../library/training/compat_matrix.py) |
+| MOSS-Image (`moss_image`) | `torch_compile=true` is rejected by [`moss_compat.py`](../../library/training/moss_compat.py) |
 
 The historical record follows unchanged.
 
@@ -285,7 +286,9 @@ Wired through `LoRAModule`, `HydraLoRAModule`, `OrthoLoRAModule`, `OrthoHydraLoR
 
 **sd-scripts**: No equivalent — plain `F.linear(x.float(), ...)` retains the fp32 cast unconditionally.
 
-**Default-on:** `use_custom_down_autograd = true` lives in `configs/base.toml` and is on for every method. Opt out per run with `--network_args use_custom_down_autograd=false` if the legacy path is needed for debugging.
+**Default-on (historical snapshot):** At the time of this implementation record, `use_custom_down_autograd = true` lived in `configs/base.toml` and was on for every method, with opt-out via `--network_args use_custom_down_autograd=false`.
+
+> **Current live default:** `configs/base.toml` now sets `use_custom_down_autograd = false` by default (see [`../optimization-configs-current.md`](../optimization-configs-current.md)); opt in explicitly when desired.
 
 ---
 

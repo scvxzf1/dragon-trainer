@@ -1,8 +1,10 @@
-# 训练预览 VAE 解码策略
+# 训练预览 VAE 解码与块交换策略
 
-适用于 Anima、Krea-2、Z-Image 与 Qwen Image 2.1 的训练内预览和训练停止后的延迟解码。
-前端 `/next/training` 的「训练计划 / 训练预览」提供通用字段「预览 VAE 解码」。
-这是 VAE 解码策略；各模型族的 DiT 块交换仍按现有训练/预览契约执行。
+状态：稳定
+
+适用于全部 5 个已注册模型族（Anima、Krea-2、Z-Image、Qwen Image 2.1 与 MOSS-Image / `moss_image`）的训练内预览和训练停止后的延迟解码。
+前端 `/next/training` 的「训练计划 / 训练预览」提供通用字段「预览 VAE 解码」；Qwen Image 2.1 另提供专属预览块交换覆盖。
+通用 `sample_vae_decode` 仅控制 VAE 解码阶段；各模型族的 DiT 块交换默认沿用训练期配置，仅 Qwen 支持见下文的采样期覆盖。
 
 ```toml
 sample_vae_decode = "tiled"
@@ -25,6 +27,34 @@ sample_vae_decode = "tiled"
   其默认 tiling 阈值等于配置中的 1024，开启 tiling 后解码 1024 图仍可能走整图。
   预览策略因此临时将像素 tile 上限设为 512，并按 VAE 空间倍率同步 latent tile，退出恢复原阈值。
 - Qwen Image 2.1 保留专属 64 通道 latent、mean/std 和编辑参考图结果保存逻辑。
+- MOSS-Image（`moss_image`）使用专属 Flux.2 VAE 解码 `[B, 128, H, W]` 归一化 latent（`library/models/moss_image/latent.py::decode_moss_latents`），复用同一套放置、分块、OOM 回退与恢复策略。
+
+## Qwen 预览块交换覆盖
+
+训练内采样默认继承当前训练 DiT 的块交换数量、传输精度与恢复方式。针对 Qwen Image 2.1，`/next/training` 的「训练计划 / 训练预览」及 CLI/TOML 额外提供独立的采样期 DiT 块交换覆盖（其他模型族隐藏并拒绝这两个 Qwen 专属键）：
+
+| 配置键 | 默认值 | 行为 |
+| --- | --- | --- |
+| `qwen_sample_swap_mode` | `"inherit"` | `"inherit"` 继承训练 `blocks_to_swap`；`"custom"` 启用自定义采样交换数量 |
+| `qwen_sample_blocks_to_swap` | `0` | 自定义交换块数，合法整数范围 `0..30`（`0` 表示采样时全部块驻留 GPU） |
+
+切回 `"inherit"` 会忽略已保存的合法 `qwen_sample_blocks_to_swap`，便于后续再次切回 `"custom"`。TOML、CLI 与 Web 预检共用同一套校验（`library/models/qwen_image_2_1/preview_memory.py`）：
+
+```toml
+blocks_to_swap = 24
+block_swap_transfer_dtype = "bf16"
+qwen_sample_swap_mode = "custom"
+qwen_sample_blocks_to_swap = 28
+sample_vae_decode = "tiled"
+```
+
+核心运行契约：
+
+- **BF16 无损传输要求**：当 `"custom"` 目标块数与训练 `blocks_to_swap` 不同时，仅允许 `block_swap_transfer_dtype = "bf16"` 无损传输，并要求当前训练更新已提交、梯度已清空；它不改写训练配置文件，也不替换 adapter / optimizer 对象。
+- **`count=0` 调度入口预装**：当训练关闭块交换（`blocks_to_swap = 0`）而预览配置为 `"custom"` 且 `qwen_sample_blocks_to_swap > 0` 时，模型加载阶段会在 adapter 挂载和 `torch.compile` 之前预装 `count=0` 的块交换调度入口，避免采样阶段动态重包装已编译 forward。
+- **退出恢复与跨 rank 协调**：采样结束后必须恢复原训练交换块数、训练模式与 RNG 状态；入口切换、采样或退出恢复发生错误均视为致命错误并汇总同步到所有 rank，绝不带着不确定的块驻留状态继续训练或让其他 rank 卡在尾部 barrier。
+- **不做去噪 OOM 自动增块**：Qwen 当前不设去噪 OOM 自动上调交换块数的动态契约；采样默认保留 B 路径，不启用 DiT K/V 缓存。
+- **独立基准脚本**：`scripts/qwen_image_2_1/sampling_benchmark.py` 读取训练配置的 `blocks_to_swap`、传输精度和恢复方式，并复用上述 `qwen_sample_swap_*` 覆盖与 `sample_vae_decode` 策略，记录训练/采样有效块数及实际解码分支（逐图 `decode_s` 包含策略切换与设备迁移耗时；固定条件对照脚本 `sampling_prepare_ab.py` 仍保持原 `swap24/BF16/slab` 契约不变）。
 
 ## 恢复与失败
 
@@ -60,13 +90,9 @@ success 表示解码返回图像；若随后的状态恢复失败，还会记录
 
 ## 验证边界
 
-单元测试覆盖所有族的策略校验、别名合并、新键优先、latent 归一化、PNG 成功后删除、失败保留和恢复错误传播。
-Qwen 1024 双图的 tiled/normal 实测见本地测试目录 `output/tests/qwen-vae-tiled-ab-20261004-r1/REPORT.md`。
+单元测试覆盖各注册模型族的策略校验、`qwen_sample_swap_*` 切换/恢复、别名合并、新键优先、latent 归一化、PNG 成功后删除、失败保留和跨 rank 恢复错误传播。
 
-2026-10-04 已使用四族真实 VAE，在 CMP 90HX 上验证 1024×1024、BF16 解码。
-每策略预热一次、正式三次；下表为解码耗时中位数和 PyTorch allocated 峰值，
-计时包含设备迁移、PIL 转换与状态恢复，不包含权重加载和 PNG 保存。
-`auto` 在这些测量中均未触发 OOM，实际使用整图 GPU 解码。
+CMP 90HX 上的 1024×1024 BF16 真实 VAE 解码测量（每策略预热 1 次、正式 3 次中位数；计时含设备迁移与状态恢复，`auto` 未触发 OOM 即走整图 GPU）：
 
 | 模型族 | 整图 → 分块耗时 | 整图 → 分块峰值 GiB |
 | --- | --- | --- |
@@ -75,25 +101,4 @@ Qwen 1024 双图的 tiled/normal 实测见本地测试目录 `output/tests/qwen-
 | Z-Image | 0.63 → 0.87 秒 | 2.55 → 0.77 |
 | Qwen Image 2.1 | 1.68 → 2.40 秒 | 7.21 → 1.07 |
 
-每次分块解码均确认进入真实 tiled 路径，设备、精度、tiling 与 tile 阈值恢复通过。
-同一 latent 的整图/分块 PNG 对比中，Anima/Krea-2 差异较小；Z-Image 有轻微区域亮度变化，
-当前样本未见明显硬接缝。需要优先保持整图解码结果时可选择 `auto`。
-这是单一内容样本的解码验证，不代表任意内容、硬件、尺寸均有相同表现。
-
-原始记录、像素指标和对比图见本地 `output/tests/all-family-vae-preview-20261004-r2/REPORT.md`。
-Anima/Krea-2/Z-Image 使用原图重建 latent；Qwen 使用此前 LoRA 生成 latent，
-不据此比较各模型的生成质量。该 1024 矩阵尚未覆盖真实 CPU 解码完成、CUDA OOM 后回退、
-训练内完整采样后继续反向传播、续训或在线浏览器操作。
-
-同日另补 Anima 真实 Qwen VAE 的 CPU BF16 小图验收：固定 `[1,16,1,8,8]` latent，
-CPU 直接解码与 `auto` 的 GPU → tiled GPU → CPU 链均生成有限像素的 64×64 PNG，
-保存后删除 latent，恢复 VAE 原设备/精度/tiling/tile 参数，训练配置未变。
-两个 GPU 阶段各请求 2×目标总显存并产生真实 CUDA OOM；这是容量故障注入，
-不能作为自然 1024 解码溢出的证据。CPU 阶段使用真实主机预算，未 mock 放行。
-
-完整复跑 exit 0、无超时、无项目训练 supervisor 通知；CPU / auto 耗时 87.89 / 80.95 秒，
-每秒采样 GPU 峰值 480 MiB、进程树 RSS 峰值约 1.20 GiB。CPU BF16 回退只是保底路径，
-这个小图测试也较慢，不承诺大尺寸实用吞吐。其他族 CPU 解码及完整训练采样后的 backward
-未据此验收。脚本、逐阶段事件、监控和 PNG 在本地
-`output/tests/preview-cpu-fallback-90hx-20261004-r2/`；首轮脚本误断言记录保留。
-完整恢复与预览证据见 [交付报告](../findings/anima_committed_oom_preview_delivery_20261004.md)。
+分块解码验证了真实 tiled 分支进入及设备/精度/tiling/tile 阈值恢复；需要严格保持整图解码像素时可显式选 `auto`。另有 Anima 真实 Qwen VAE 的小图容量故障注入验证（`auto` 完整走通 GPU → tiled GPU → CPU BF16 回退链、保存 PNG 后删除 latent 并恢复原状态；CPU BF16 仅作保底路径，不承诺大图吞吐）。本地归档路径为 `output/tests/qwen-vae-tiled-ab-20261004-r1/REPORT.md`、`output/tests/all-family-vae-preview-20261004-r2/REPORT.md` 与 `output/tests/preview-cpu-fallback-90hx-20261004-r2/`；完整恢复与预览证据见 [交付报告](../findings/anima_committed_oom_preview_delivery_20261004.md)。

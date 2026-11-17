@@ -1,5 +1,7 @@
 # Qwen Image 2.1 Edit 低显存预处理
 
+状态：稳定
+
 Qwen Image 2.1 Edit 的 VAE latent、reference latent 和文本条件需要成对生成。使用完整 `preprocess` 任务，它会按数据集配置 resize、复制对应 caption，再生成 Edit 缓存；不要把 Edit 当作普通 TE 或 VAE 缓存任务运行。
 
 ## 使用方式
@@ -63,10 +65,6 @@ Qwen Image 2.1 的 VAE 下采样 16 倍，DiT 再按 2×2 latent 分组，因此
 
 WebUI 启动训练时会把 `TORCHINDUCTOR_CACHE_DIR` 和 `TRITON_CACHE_DIR` 转成绝对路径，以便编译子进程切换工作目录后仍可找到生成文件。页面和任务元数据仍可显示相对路径。低显存预处理不要求关闭 DiT 的块交换或编译；它们作用于不同阶段。
 
-## 验证状态
+## 验证边界
 
-2026-09-28 策略配置另行完成保存、运行时传递与真实编码验证：四个枚举值均通过 API 保存并读回，非法值被拒绝；前端真实下拉框交互测试通过。CMP 90HX 10 GiB 上，以隔离的单对图片、256 分辨率配置运行完整预处理，`cpu_offload` 日志确认 CUDA 计算及 CPU 卸载，TE 编码约 9.07 秒；`cpu` 日志确认 CPU 计算且无卸载，TE 编码约 20.13 秒。两次均完成后续 VAE 缓存，文本缓存形状相同且数值有限，mask 和 image slots 一致；CPU/CUDA BF16 hidden states 不逐位相等，本次不作质量等价声明。
-
-验收记录位于本机 `output/tests/qwen-cache-policy-20260928/verification.json`，对应运行目录后缀分别为 `20260928-124634` 和 `20260928-124856`。强制 GPU 常驻模式只验证配置及路由，未在 10 GiB 卡上加载约 15.17 GiB 的完整 core；自动模式的阈值分支有单元测试。浏览器自动化因认证错误不可用，本次未完成页面截图验收，已完成前端交互测试、类型检查、构建及服务部署。
-
-2026-09-28 已在 CMP 90HX 10 GiB 上完成真实 50 对样本的缓存及 WebUI 端到端 1 轮/50 步编辑训练，保留 BF16、swap24 和编译；最终 checkpoint 保存与 CPU 严格重载通过。该结论不包含编辑采样质量或其他硬件组合，详见[热训练验收报告](../findings/qwen_edit_hot_training_20260928.md)。
+四个缓存策略枚举值（`auto`、`cpu_offload`、`gpu`、`cpu`）的配置校验、API 读写与阈值分支均由单元测试覆盖。CMP 90HX 10 GiB 真机已完成 `cpu_offload` / `cpu` 完整配对预处理对照，以及 50 对样本缓存与 1 轮 / 50 步 BF16 编辑训练（含 `blocks_to_swap=24`、编译、checkpoint 保存与 CPU 严格重载）；验证详情与适用边界见[热训练验收报告](../findings/qwen_edit_hot_training_20260928.md)。

@@ -14,7 +14,6 @@
 | --- | --- |
 | [fa4.md](fa4.md) | Flash Attention 4 评估和移除原因 |
 | [adamw_fused.md](adamw_fused.md) | AdamW8bit 切换到 fused AdamW 的原因 |
-| [hydra_analysis.md](hydra_analysis.md) | HydraLoRA + ReFT nsys 优化记录 |
 | [training_profiling.md](training_profiling.md) | 训练性能 profiling 落地流程 |
 
 ## 历史实现记录
@@ -22,6 +21,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [for_compile.md](for_compile.md) | Anima 为 torch.compile / dynamo 做过的结构调整；历史代码和测量值不外推到其他模型族 |
+| [hydra_analysis.md](hydra_analysis.md) | HydraLoRA + ReFT 早期 nsys 剖析与微优化快照（2026-05-03） |
 
 ## 维护规则
 
