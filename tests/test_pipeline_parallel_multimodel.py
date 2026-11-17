@@ -78,11 +78,14 @@ def test_capability_catalog_exposes_all_registered_pipeline_planners() -> None:
 
     assert set(catalog) == set(MODEL_FAMILY_REGISTRY)
     assert catalog["anima"]["pipeline_parallel"]["known_num_blocks"] == [28, 40]
-    assert catalog["krea2_raw"]["pipeline_parallel"]["runtime_available"] is False
+    # Krea-2 PP is wired end-to-end (50 steps at 896x1200, §4.8/§4.12 of
+    # docs/findings/krea2_pp_vram_gap_20261116.md), so the catalog must not
+    # keep advertising it as unavailable.
+    assert catalog["krea2_raw"]["pipeline_parallel"]["runtime_available"] is True
     assert catalog["z_image"]["pipeline_parallel"]["block_container"] == "layers"
 
 
-@pytest.mark.parametrize("family", ["krea2_raw", "z_image"])
+@pytest.mark.parametrize("family", ["z_image"])
 def test_compat_matrix_keeps_every_family_runtime_fail_closed(family: str) -> None:
     result = check_training_compat(_pipeline_config(family), world_size=2)
     pipeline_codes = {
@@ -107,7 +110,7 @@ def test_compat_matrix_releases_only_the_anima_runtime() -> None:
     assert warnings == {"pipeline_parallel_experimental_runtime"}
 
 
-@pytest.mark.parametrize("family", ["krea2", "zimage"])
+@pytest.mark.parametrize("family", ["zimage"])
 def test_compat_matrix_accepts_declared_family_aliases(family: str) -> None:
     result = check_training_compat(_pipeline_config(family), world_size=2)
     pipeline_codes = {
@@ -116,6 +119,24 @@ def test_compat_matrix_accepts_declared_family_aliases(family: str) -> None:
 
     assert "invalid_model_family" not in {item.code for item in result.errors}
     assert pipeline_codes == {"pipeline_parallel_runtime_unavailable"}
+
+
+@pytest.mark.parametrize("family", ["krea2", "krea2_raw"])
+def test_compat_matrix_releases_the_krea2_runtime(family: str) -> None:
+    """Krea-2's PP runtime is wired, so the compat gate must stop blocking it.
+
+    The fail-closed gate still guards every *other* family, and v0's hard
+    limits (bf16 / nf4 / stages != 2 / torch_compile / batch divisibility) keep
+    their own codes -- this test only covers the runtime-availability code.
+    """
+
+    result = check_training_compat(_pipeline_config(family), world_size=2)
+    pipeline_codes = {
+        item.code for item in result.errors if item.key == "pipeline_parallel"
+    }
+
+    assert "invalid_model_family" not in {item.code for item in result.errors}
+    assert pipeline_codes == set()
 
 
 def test_shared_validator_reports_one_cross_family_config_error_code() -> None:

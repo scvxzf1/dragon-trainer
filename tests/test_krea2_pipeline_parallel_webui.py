@@ -37,7 +37,7 @@ def test_preflight_releases_anima_pipeline_and_warns_about_the_trainer_gate(tmp_
     assert not any("流水线配置无效" in message for message in warnings)
 
 
-def test_preflight_keeps_valid_krea_pipeline_launch_blocked(tmp_path: Path, monkeypatch) -> None:
+def test_preflight_allows_valid_krea_pipeline_launch(tmp_path: Path, monkeypatch) -> None:
     _write_selected_checkpoint_preflight_config(tmp_path, monkeypatch, [
         'model_family = "krea2_raw"', "pipeline_parallel = true",
         "pipeline_parallel_stages = 2", "pipeline_parallel_microbatches = 4",
@@ -46,8 +46,10 @@ def test_preflight_keeps_valid_krea_pipeline_launch_blocked(tmp_path: Path, monk
     ])
     result = _preflight()
     messages = _messages(result, "pipeline_parallel")
-    assert result["ok"] is False
-    assert any("主训练 loop 的 1F1B 调度尚未接入" in message for message in messages)
+    # Krea-2 PP is wired (50 steps at 896x1200), so a valid PP config must pass
+    # preflight instead of being refused for a missing runtime.
+    assert result["ok"] is True
+    assert not any("尚未接入" in message for message in messages)
     assert not any("流水线配置无效" in message for message in messages)
 
 

@@ -299,11 +299,18 @@ def test_pipeline_fields_are_in_runtime_config_schema() -> None:
     assert schema["pipeline_parallel_split"].choices == ("balanced",)
 
 
-def test_compat_matrix_keeps_valid_pipeline_fail_closed() -> None:
+def test_compat_matrix_releases_valid_pipeline_runtime() -> None:
+    """Krea-2's PP runtime is wired, so a valid config must clear the gate.
+
+    The runtime-availability code used to fire for krea2 because no PP trainer
+    session existed. It does now (50 steps at 896x1200), so this test asserts
+    release instead -- the hard-limit codes below it keep their own coverage.
+    """
+
     result = check_training_compat(_valid_config(attn_mode="torch"))
 
     assert "pipeline_parallel_config" not in _codes(result.errors)
-    assert "pipeline_parallel_runtime_unavailable" in _codes(result.errors)
+    assert "pipeline_parallel_runtime_unavailable" not in _codes(result.errors)
 
 
 def test_compat_matrix_reports_invalid_config_before_runtime_gate() -> None:
@@ -371,7 +378,11 @@ def test_cli_refuses_to_fall_back_to_data_parallel(monkeypatch) -> None:
         cli_entry, "read_config_from_file", lambda parsed, _parser: parsed
     )
 
-    with pytest.raises(RuntimeError, match="Refusing to fall back"):
+    # The refusal now happens earlier and names the offending setting
+    # (pp_config_invalid: requires mixed_precision=fp16) instead of the old
+    # catch-all "Refusing to fall back to data parallel".  Both mean the same
+    # thing: a misconfigured PP launch must never silently degrade to DDP.
+    with pytest.raises(RuntimeError, match="pp_config_invalid|Refusing to fall back"):
         cli_entry.run_training_cli(
             setup_parser=_Parser,
             trainer_factory=trainer_factory,
