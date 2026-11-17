@@ -524,6 +524,13 @@ class Krea2PipelineRuntime:
                 ph=_patch,
                 pw=_patch,
             )
+        # Every rank returns ``(prediction, losses)``: the trailing stage yields
+        # the unpatchified velocity, the leading one ``None``, but the *shape* of
+        # the return value must not depend on the rank -- the trainer unpacks the
+        # tuple unconditionally (moss does the same with ``return prediction,
+        # bucket``).  Returning a bare ``None`` from the first stage made that
+        # unpack fail with "cannot unpack non-iterable NoneType object".
+        bucket = losses if losses is not None else []
         prediction = run_pipeline_step(
             self._schedule,
             is_first=self._layout.is_first,
@@ -531,12 +538,12 @@ class Krea2PipelineRuntime:
             # the positional latents is a named contract violation.
             latents=latents if self._layout.is_first else None,
             kwargs=kwargs,
-            target=target,
-            losses=losses,
+            target=target if self._layout.is_last else None,
+            losses=bucket,
         )
-        if self._layout.is_first or prediction is None:
-            return prediction
-        return _unpatchify(prediction, self._wire)
+        if self._layout.is_last and prediction is not None:
+            prediction = _unpatchify(prediction, self._wire)
+        return prediction, bucket
 
     def topology(self) -> dict[str, Any]:
         """Stage shape and adapter set, as the PP checkpoint writer records it.
