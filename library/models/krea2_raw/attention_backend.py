@@ -61,11 +61,18 @@ def _attn_diag(q, k, v, mask, gqa, scale) -> str:
     return "\n  ".join(parts)
 
 
-def set_krea2_attn_fp16(enabled: bool) -> None:
+def set_krea2_attn_fp16(
+    enabled: bool,
+    device: torch.device | int | str | None = None,
+) -> None:
     """启用 Krea-2 attention 的 fp16 内层 + GQA 展开（sm<80 专用）。"""
     global _ATTN_FP16_ENABLED
     if enabled and torch.cuda.is_available():
-        major = torch.cuda.get_device_capability()[0]
+        if device is not None:
+            dev = torch.device(device) if not isinstance(device, torch.device) else device
+            major = torch.cuda.get_device_capability(dev)[0] if dev.type == "cuda" else 0
+        else:
+            major = torch.cuda.get_device_capability()[0]
         if major >= 8:
             raise ValueError(
                 f"Krea-2 attention fp16 路径只对 sm<80 有收益；当前 sm_{major}0 "
@@ -441,7 +448,7 @@ def _flash_varlen_attention(
     from networks import attention_dispatch
 
     _validate_flash_qkv(q, k, v)
-    if not attention_dispatch.flash_attn_available_for_dtype(q.dtype):
+    if not attention_dispatch.flash_attn_available_for_tensor(q):
         raise RuntimeError(
             f"Krea-2 FlashAttention does not support Q/K/V dtype {q.dtype}"
         )

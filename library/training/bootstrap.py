@@ -296,7 +296,7 @@ class TrainingBootstrap:
         return True
 
     @staticmethod
-    def maybe_enable_nf4_dir1(args) -> bool:
+    def maybe_enable_nf4_dir1(args, *, device=None) -> bool:
         """Enable NF4 dir1 (inner fp16 GEMM) when ``--nf4_dir1`` is set.
 
         Must run after the DiT is loaded and before any forward / ``compile_blocks``:
@@ -311,7 +311,7 @@ class TrainingBootstrap:
             return False
         from library.quantization.nf4 import set_dir1_enabled
 
-        set_dir1_enabled(True)
+        set_dir1_enabled(True, device=device)
         logger.info(
             "NF4 dir1 enabled: inner GEMM runs fp16 with per-layer frexp/ldexp "
             "scaling; compute_dtype stays bfloat16. Only beneficial on sm<80."
@@ -319,7 +319,7 @@ class TrainingBootstrap:
         return True
 
     @staticmethod
-    def maybe_enable_krea2_attn_fp16(args) -> bool:
+    def maybe_enable_krea2_attn_fp16(args, *, device=None) -> bool:
         """Enable Krea-2 attention fp16 inner path + GQA expansion.
 
         Only meaningful on sm<80: sm70 has no usable bf16 SDPA kernel at all, and
@@ -332,7 +332,7 @@ class TrainingBootstrap:
             return False
         from library.models.krea2_raw.attention_backend import set_krea2_attn_fp16
 
-        set_krea2_attn_fp16(True)
+        set_krea2_attn_fp16(True, device=device)
         logger.info(
             "Krea-2 attention fp16 enabled: GQA expanded to MHA, inner SDPA runs "
             "fp16 with frexp/ldexp backward rescaling; compute_dtype stays bfloat16."
@@ -748,14 +748,16 @@ class TrainingBootstrap:
         # (apply_to/load/grad-ckpt/fp32 residual) and before compile_blocks.
         self.maybe_apply_convrot_base(args, network, unet=unet)
 
+        target_dev = getattr(accelerator, "device", None)
+
         # Optional NF4 dir1 (inner fp16 GEMM). MUST run before compile_blocks so
         # dynamo traces the dir1 branch, and before the first forward so the
         # flag is final. compute_dtype stays bfloat16.
-        self.maybe_enable_nf4_dir1(args)
+        self.maybe_enable_nf4_dir1(args, device=target_dev)
 
         # Optional Krea-2 attention fp16 + GQA expansion (sm<80 only). Same
         # ordering constraint: the flag must be final before any forward.
-        self.maybe_enable_krea2_attn_fp16(args)
+        self.maybe_enable_krea2_attn_fp16(args, device=target_dev)
 
         from library.models.qwen_image_2_1.training_blocks import install_training_block_projections
 

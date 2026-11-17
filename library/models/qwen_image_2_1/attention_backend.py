@@ -196,7 +196,7 @@ def _flash_varlen_attention(query, key, value, *, mask):
     """Pack the actual valid K/V positions outside compiled checkpoint blocks."""
     from networks import attention_dispatch
 
-    if not attention_dispatch.flash_attn_available_for_dtype(query.dtype):
+    if not attention_dispatch.flash_attn_available_for_tensor(query):
         raise RuntimeError(
             f"Qwen Image 2.1 FlashAttention does not support Q/K/V dtype {query.dtype}"
         )

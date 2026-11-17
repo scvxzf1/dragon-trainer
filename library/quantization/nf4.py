@@ -17,18 +17,31 @@ from .constants import STATE_KEYS
 _DIR1_ENABLED = False
 
 
-def dir1_supported() -> bool:
-    """当前设备是否属于 dir1 有收益的架构（无原生 bf16 tensor core）。"""
+def _cuda_major_capability(device: torch.device | int | str | None = None) -> int | None:
     if not torch.cuda.is_available():
-        return False
-    return torch.cuda.get_device_capability()[0] < 8
+        return None
+    if device is not None:
+        dev = torch.device(device) if not isinstance(device, torch.device) else device
+        if dev.type != "cuda":
+            return None
+        return torch.cuda.get_device_capability(dev)[0]
+    return torch.cuda.get_device_capability()[0]
+
+
+def dir1_supported(device: torch.device | int | str | None = None) -> bool:
+    """目标/当前设备是否属于 dir1 有收益的架构（无原生 bf16 tensor core）。"""
+    major = _cuda_major_capability(device)
+    return major is not None and major < 8
 
 
 def is_dir1_enabled() -> bool:
     return _DIR1_ENABLED
 
 
-def set_dir1_enabled(enabled: bool) -> None:
+def set_dir1_enabled(
+    enabled: bool,
+    device: torch.device | int | str | None = None,
+) -> None:
     """启用/关闭 NF4 Linear 的内层 fp16 GEMM（dir1）。
 
     证据见 ``docs/proposal/krea2_nf4_fp16_layer_scaling.md``：V100 上算子级
@@ -38,7 +51,9 @@ def set_dir1_enabled(enabled: bool) -> None:
     if enabled:
         if not torch.cuda.is_available():
             raise RuntimeError("dir1 需要 CUDA 设备")
-        major = torch.cuda.get_device_capability()[0]
+        major = _cuda_major_capability(device)
+        if major is None:
+            raise RuntimeError("dir1 需要 CUDA 设备")
         if major >= 8:
             raise ValueError(
                 f"dir1 只对 sm<80（无原生 bf16 tensor core）有收益；"

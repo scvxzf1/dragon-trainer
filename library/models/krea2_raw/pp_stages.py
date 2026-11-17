@@ -633,8 +633,8 @@ def enable_block_probes(stage_blocks, rank: int) -> int:
     for index, block in enumerate(stage_blocks):
         original = block._forward
 
-        def _traced(x, *args, _orig=original, _idx=index, **kwargs):
-            outer = not getattr(block, "_in_outer_forward", True)
+        def _traced(x, *args, _orig=original, _idx=index, _blk=block, **kwargs):
+            outer = not getattr(_blk, "_in_outer_forward", True)
             print(
                 f"[blk] r{rank} idx={_idx} enter outer={not outer} "
                 f"alloc={_alloc_gib():.2f}GiB",

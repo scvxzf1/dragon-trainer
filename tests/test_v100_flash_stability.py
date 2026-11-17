@@ -223,6 +223,33 @@ def test_v100_provider_keeps_pre_ampere_support(monkeypatch):
     assert attention_dispatch.flash_attn_device_supported()
 
 
+def test_heterogeneous_multi_gpu_queries_target_device(monkeypatch):
+    """When cuda:0 is sm_61 (GTX 1050) and cuda:1 is sm_70 (V100), querying cuda:1 succeeds."""
+    from library.quantization import nf4
+    from networks import attention_dispatch
+
+    def fake_capability(dev=None):
+        if dev is None:
+            return (6, 1)
+        idx = torch.device(dev).index
+        return (7, 0) if idx == 1 else (6, 1)
+
+    monkeypatch.setattr(attention_dispatch, "flash_attn_func", object())
+    monkeypatch.setattr(attention_dispatch, "flash_attn_varlen_func", object())
+    monkeypatch.setattr(attention_dispatch, "flash_attn_v100_provider", True)
+    monkeypatch.setattr(attention_dispatch.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        attention_dispatch.torch.cuda, "get_device_capability", fake_capability
+    )
+    assert not attention_dispatch.flash_attn_device_supported()
+    assert attention_dispatch.flash_attn_device_supported("cuda:1")
+    assert attention_dispatch.flash_attn_available_for_dtype(torch.float16, device="cuda:1")
+
+    monkeypatch.setattr(nf4.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(nf4.torch.cuda, "get_device_capability", fake_capability)
+    assert nf4.dir1_supported("cuda:1")
+
+
 def test_v100_dispatch_rejects_bf16_before_kernel(monkeypatch):
     from networks import attention_dispatch
 

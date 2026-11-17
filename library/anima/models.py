@@ -3024,8 +3024,8 @@ class LLMAdapterAttention(nn.Module):
                 key_states.transpose(1, 2), cos, sin
             ).transpose(1, 2)
 
-        can_use_flash = attention_dispatch.flash_attn_available_for_dtype(
-            query_states.dtype
+        can_use_flash = attention_dispatch.flash_attn_available_for_tensor(
+            query_states
         )
 
         if can_use_flash and q_mask is None and kv_mask is None:

@@ -99,8 +99,10 @@ def sdpa_backend_context(attn_mode: Optional[str]):
     return nullcontext()
 
 
-def flash_attn_device_supported() -> bool:
-    """Return whether the installed Flash build can run on the current GPU.
+def flash_attn_device_supported(
+    device: torch.device | int | str | None = None,
+) -> bool:
+    """Return whether the installed Flash build can run on the target/current GPU.
 
     The dtype/provider checks below only prove that a Python provider exists.
     A wheel built for Ampere+ still imports on Turing and then raises
@@ -112,7 +114,13 @@ def flash_attn_device_supported() -> bool:
     if not torch.cuda.is_available():
         return False
     try:
-        major, _minor = torch.cuda.get_device_capability()
+        if device is not None:
+            dev = torch.device(device) if not isinstance(device, torch.device) else device
+            if dev.type != "cuda":
+                return False
+            major, _minor = torch.cuda.get_device_capability(dev)
+        else:
+            major, _minor = torch.cuda.get_device_capability()
     except (RuntimeError, AssertionError, ValueError):
         return False
     if flash_attn_v100_provider:
@@ -120,15 +128,36 @@ def flash_attn_device_supported() -> bool:
     return major >= 8
 
 
-def flash_attn_available_for_dtype(dtype: torch.dtype) -> bool:
+def flash_attn_available_for_dtype(
+    dtype: torch.dtype,
+    device: torch.device | int | str | None = None,
+) -> bool:
     """Return whether the imported Flash provider supports this dtype here."""
     if flash_attn_func is None or flash_attn_varlen_func is None:
         return False
-    if not flash_attn_device_supported():
+    if device is None:
+        supported = flash_attn_device_supported()
+    else:
+        try:
+            supported = flash_attn_device_supported(device)
+        except TypeError:
+            supported = flash_attn_device_supported()
+    if not supported:
         return False
     if dtype == torch.float16:
         return True
     return dtype == torch.bfloat16 and not flash_attn_v100_provider
+
+
+_ORIG_FLASH_ATTN_AVAILABLE_FOR_DTYPE = flash_attn_available_for_dtype
+
+
+def flash_attn_available_for_tensor(tensor: torch.Tensor) -> bool:
+    """Check Flash availability against ``tensor.dtype`` and ``tensor.device``."""
+    if flash_attn_available_for_dtype is not _ORIG_FLASH_ATTN_AVAILABLE_FOR_DTYPE:
+        return flash_attn_available_for_dtype(tensor.dtype)
+    dev = tensor.device if tensor.device.type == "cuda" else None
+    return flash_attn_available_for_dtype(tensor.dtype, device=dev)
 
 
 _FLASH_HALF_DTYPES = (torch.float16, torch.bfloat16)
