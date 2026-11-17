@@ -47,11 +47,11 @@ guard 和 final guard 均启用。保存权重有限，续训后 392 个浮点 L
 `stage2.toml` 保留各段配置快照。续训读取第一段 `native-state`，该目录随后
 被 step5 收尾保存更新；独立 step3/step5 检查点均保留。
 
-- [机器汇总](../../output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/summary.json)
-- [原始监控](../../output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/monitor.jsonl)
-- [首段精度报告](../../output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/precision_report.json)
-- [续训精度报告](../../output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/precision_report.89d91f00d109415ab140124e27bf1903.json)
-- [最终独立 CPU 验收](../../output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/final-independent-audit.json)
+- 机器汇总：`output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/summary.json`
+- 原始监控：`output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/monitor.jsonl`
+- 首段精度报告：`output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/precision_report.json`
+- 续训精度报告：`output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/precision_report.89d91f00d109415ab140124e27bf1903.json`
+- 最终独立 CPU 验收：`output/runs/anima-native-fp16-production-resume-90hx-20261002-hot1/final-independent-audit.json`
 
 ## 验收与边界
 

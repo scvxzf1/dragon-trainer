@@ -1,7 +1,7 @@
 # Soft Tokens — AGSM: bounded dual-token alignment guidance
 
-Status: **proposal** (2026-05-22). Builds on [soft_tokens.md](../experimental/soft_tokens.md)
-and supersedes the InfoNCE direction in [soft_tokens_contrastive.md](soft_tokens_contrastive.md)
+Status: **半活跃提案 / 探针后已由 softrank 取代** (2026-05-22 提案；2026-05-30 实测 `w_matched` 钉死随机基线后由 `softrank` 接替，见 [soft_tokens.md](../experimental/soft_tokens.md)). Builds on [soft_tokens.md](../experimental/soft_tokens.md)
+and supersedes the InfoNCE direction in [soft_tokens_contrastive.md](../../_archive/docs/proposal/soft_tokens_contrastive.md)
 *conditionally* — see "Relationship to the contrastive proposal". Reuses the
 cached-TE negative plumbing already shipped for that proposal
 (`library/datasets/base.py::setup_contrastive_negatives`, `IdentityPairSampler`).
@@ -126,8 +126,7 @@ not run in parallel.** They share all infrastructure; only the loss math differs
 
 AGSM's reward is the **denoising likelihood**, and we have a hard, repeatedly
 confirmed finding that **FM-MSE does not track quality on Anima**
-([[project_fm_val_loss_uninformative]]; why we moved to CMMD,
-[[project_cmmd_val_signal]]). AGSM's entire alignment signal is built from exactly
+(which is why validation moved to CMMD). AGSM's entire alignment signal is built from exactly
 that quantity.
 
 The saving grace is that Plackett–Luce uses it as a **relative ranking across
@@ -209,9 +208,8 @@ checked before any training:
 - Negative sourcing (reuse): `library/datasets/base.py::setup_contrastive_negatives`
   / `_load_te_for_stem`, `library/datasets/identity_pairs.py::IdentityPairSampler`
 - Reward-premise probe to add: `bench/soft_tokens_contrastive/negative_audit.py`
-- Sibling proposal (gates this one): [soft_tokens_contrastive.md](soft_tokens_contrastive.md)
-- Method doc: `docs/experimental/soft_tokens.md`
-- Quality-signal context: [[project_fm_val_loss_uninformative]],
-  [[project_cmmd_val_signal]]
+- Sibling proposal (gates this one): [soft_tokens_contrastive.md](../../_archive/docs/proposal/soft_tokens_contrastive.md)
+- Method doc: [../experimental/soft_tokens.md](../experimental/soft_tokens.md)
+- Quality-signal context: FM val-MSE is uninformative on Anima; evaluate with CMMD and sample quality.
 - Papers: AGSM (ICML 2026, https://jaayeon.github.io/AGSM/); SoftREPA
   (arXiv:2503.08250, NeurIPS 2025)

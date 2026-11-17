@@ -1,5 +1,7 @@
 # 前端健康治理与配置优化 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不改训练语义的前提下，把 WebUI 前端从健康分 61(D) 推到 >=78，并同时还清关键工程债与配置体验债。

@@ -2,7 +2,7 @@
 
 状态：验证报告（round-1 至 round-3 attempt6 六轮真实失败逐轮收敛 F1–F8，全部为测试侧缺陷、实现侧行为持续正确；round-3 attempt7（t11 第 9 轮，hot SHA `07da5ddf…`）**rc=0 完整通过**——MOSS 主训练 PP 接线在真实生产入口 tiny 双 V100 上取得全套热验证证据）
 适用版本：分支 `codex/moss-pp-v0-20261112`，工作树基线 HEAD `6610f710`（t2 实现为工作树未提交改动）
-验收依据：[docs/proposal/moss_image_pp_trainer_wiring.md](../proposal/moss_image_pp_trainer_wiring.md)（**v2**，SHA256 `50c3e4d0f6737f4cc5d23fcedf0069de7cd0d8421677dc86d0bf651d391fa4c9`；v1 的 Anima builder/CLI guard 不变/旧 wiring60 口径一律不作验收依据）
+验收依据：[moss_image_pp_trainer_wiring.md（已归档契约）](../../_archive/docs/proposal/moss_image_pp_trainer_wiring.md)（**v2**，SHA256 `50c3e4d0f6737f4cc5d23fcedf0069de7cd0d8421677dc86d0bf651d391fa4c9`；v1 的 Anima builder/CLI guard 不变/旧 wiring60 口径一律不作验收依据）
 验证者：trainer-verifier（独立于 t2 实现者）
 
 ---

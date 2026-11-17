@@ -174,6 +174,6 @@ saved4 相对 off 额外占用约 1.76–1.82 GiB allocated；allocator reserved
 
 开发、机制、数值、文件兼容、状态恢复与三轮性能验收分别完成；性能采用结论为“不推荐默认开启阶段 3”，不是宣称达到了约 5% 目标。无需为了获得正向推荐继续增加改动。
 
-关联：[开发设计与数学契约](../proposal/qwen_image_2_1_training_block_stage3_20260927.md)、[实验使用说明](../experimental/qwen_image_2_1_fused_projections.md)。
+关联：[开发设计与数学契约（已归档）](../../_archive/docs/proposal/qwen_image_2_1_training_block_stage3_20260927.md)、[实验使用说明](../experimental/qwen_image_2_1_fused_projections.md)。
 
 最终独立完成审阅见本地产物 `final_completion_review.md`：12 组结果全量只读重算一致、60-step Flash 文件抽查通过、46 项 CPU 测试及 Ruff/Pyright 通过，无阻塞项。结论 PASS，完成本阶段验收；保持实验默认 off/0/0。

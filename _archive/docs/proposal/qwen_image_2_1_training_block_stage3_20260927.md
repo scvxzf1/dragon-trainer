@@ -1,7 +1,7 @@
 # Qwen Image 2.1 专用训练 block：阶段 3 开发与验收
 
 日期：2026-09-27
-状态（更新于 2026-09-28）：3A/3B/3C 已实现并集成，默认关闭。数学/梯度、真实 swap/compile、生产保存加载、完整模型确定性续训、compiled 重算计数及三轮 400-step 热测验收完成。性能采用门槛未达到：torch 约 2.2%、Flash 约 0.6–1.2%，保留实验 opt-in，不推荐默认开启。
+状态：已归档（2026-09-28 收口）——3A/3B/3C 已实现并集成，默认关闭。数学/梯度、真实 swap/compile、生产保存加载、完整模型确定性续训、compiled 重算计数及三轮 400-step 热测验收完成。性能采用门槛未达到：torch 约 2.2%、Flash 约 0.6–1.2%，保留实验 opt-in，不推荐默认开启。
 范围：BF16 frozen base、attention-only plain LoRA、90HX、swap24、compile；不叠加 INT8 传输，不增加 MLP LoRA，不改变默认配置。
 
 ## 交付顺序
@@ -65,7 +65,7 @@ B=1、4107 tokens、hidden=4096、BF16 时，hidden 约 32.09 MiB，QKV 约 96.2
 
 开发工作树：`codex/qwen-stage3-20260927`，基于 HEAD `4df001242` 和开始开发时的当前源码改动快照。集成只带回本任务白名单文件，保留主工作树中其他正在进行的修改。
 
-关联：[结构性优化审阅](qwen_image_2_1_90hx_optimization_20260927.md)、[INT8 首轮热测](../findings/qwen_image_2_1_int8_swap_90hx_20260927.md)。
+关联：[结构性优化审阅](../../../docs/proposal/qwen_image_2_1_90hx_optimization_20260927.md)、[INT8 首轮热测](../../../docs/findings/qwen_image_2_1_int8_swap_90hx_20260927.md)。
 
 开发验收、完整模型显存与续训差异的最新证据见
-[阶段 3 验收记录](../findings/qwen_image_2_1_stage3_acceptance_20260928.md)。
+[阶段 3 验收记录](../../../docs/findings/qwen_image_2_1_stage3_acceptance_20260928.md)。

@@ -1,5 +1,7 @@
 # Preprocess Cache Reuse Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 WebUI 在数据集不变时复用 dataset_cache 拷贝 / VAE / TE，并通过配置级三开关与 light/content 指纹控制，同时保证删历史不误删仍被引用的共享池。

@@ -24,6 +24,10 @@
 这是按模块划分的首版策略，没有照搬Anima热点层号，也不宣称三族全部MLP均不敏感。
 各族后续的层敏感度、量化误差与长期质量需要分别评估。
 
+> **第 5 模型族 `moss_image` 与 `--nf4_dir1` 边界说明：**
+> - **`moss_image` 不在主干 mixed-NF4 范围内**：`convert_mixed_nf4.py` 仅转换 `krea2_raw`、`z_image`、`qwen_image_2_1`（Anima 沿用独立固定策略）；MOSS-Image 仅在文本编码器离线缓存阶段支持 NF4（`_moss_image_te_nf4.safetensors`），主干 DiT 不提供 mixed-NF4 转换或加载。
+> - **`nf4_dir1` 与 mixed-NF4 的边界**：`--nf4_dir1`（搭配 `krea2_attn_fp16`，见 `configs/methods/krea2_lora_nf4_fp16.toml`）仅对 `model_family = "krea2_raw"` 且 `base_compute = "nf4"` 的全 Linear NF4 路径生效（面向 sm70/sm75 卡的内层 FP16 Tensor Core 恢复）；通过 `pretrained_model_name_or_path` 自动识别的主干 MLP mixed-NF4 保持 `base_compute = "bf16"`，不消费 `--nf4_dir1`。
+
 `BF16AutocastLinear4bit` 共享Anima已验证的autocast修复，避免BF16运算后的输出
 被恢复成FP32并放大LoRA及checkpoint激活。Krea旧全NF4在线构造和预量化加载也
 接入该类；旧v1/v2格式的结构完整性检查保留，无autocast时仍使用bnb原输出语义。

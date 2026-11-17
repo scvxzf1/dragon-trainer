@@ -98,8 +98,7 @@ Two motivations stack:
   untouched. A VR-trained checkpoint inferences identically to a standard one.
 - **Not the AsymFlow parameterization.** The rank-asymmetric `u_A = Pε − x_0`
   target swap is a *separate* idea from the same paper and is not on the table
-  here — Anima's per-patch noise/hidden ratio is too small for it to matter
-  (see [[project_fm_val_loss_uninformative]] context).
+  here — Anima's per-patch noise/hidden ratio is too small for it to matter.
 - **Not a replacement for FECL.** FeRA's frequency-energy consistency loss
   (`library/training/losses.py:278`) uses the same FEI band kernel but solves
   a different problem (directional alignment of adapter correction). VR and

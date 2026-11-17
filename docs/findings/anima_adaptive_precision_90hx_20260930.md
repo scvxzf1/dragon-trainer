@@ -1,5 +1,7 @@
 # Anima 自适应精度首阶段 CMP 90HX 探针（2026-09-30）
 
+状态：实验 / 阶段探针记录（非生产精度认证）
+
 ## 结论
 
 本轮只完成实验 CLI 与首模型 disposable probe，不是 production precision 认证，

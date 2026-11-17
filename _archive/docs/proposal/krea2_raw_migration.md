@@ -265,8 +265,8 @@ Krea-2 钉死 `transformers==4.57.1`、`torch>=2.9`、Python>=3.12。Anima 训�
 - **[`../multi_model_support.md`](../../../docs/multi_model_support.md)**：当前实现事实入口。本提案是历史
   设计来源；`model_family`、cache 隔离和 family-specific forward 已落地，但最终形态是
   `ModelFamilySpec` registry + 显式 handler，不是本文草拟的动态 Protocol/factory 目录树。
-- **[`convrot_w8a_optimization_roadmap.md`](../../../docs/proposal/convrot_w8a_optimization_roadmap.md)** / **[`convrot_w8a_training_plan.md`](../../../docs/proposal/convrot_w8a_training_plan.md)**：ConvRot 优化绑 Anima cross-attn / AdaLN 假设，Krea-2 首日不做 ConvRot，互不阻塞。
-- **[`turbo_anima_dmd_lora.md`](../../../docs/proposal/turbo_anima_dmd_lora.md)**：Turbo 蒸馏绑 Anima，Krea-2 首日不做，互不阻塞。Krea-2 自家有 Turbo 变体（`krea/Krea-2-Turbo`），官方工作流是"LoRA 在 Raw 上训练，直接在 Turbo 上推理"，但本提案首日只支持 Raw。
+- **[`convrot_w8a_optimization_roadmap.md`](../../../docs/proposal/convrot_w8a_optimization_roadmap.md)** / **[`convrot_w8a_training_plan.md`](convrot_w8a_training_plan.md)**：ConvRot 优化绑 Anima cross-attn / AdaLN 假设，Krea-2 首日不做 ConvRot，互不阻塞。
+- **[`turbo_anima_dmd_lora.md`](turbo_anima_dmd_lora.md)**：Turbo 蒸馏绑 Anima，Krea-2 首日不做，互不阻塞。Krea-2 自家有 Turbo 变体（`krea/Krea-2-Turbo`），官方工作流是"LoRA 在 Raw 上训练，直接在 Turbo 上推理"，但本提案首日只支持 Raw。
 
 ## 10. 不在本提案范围
 

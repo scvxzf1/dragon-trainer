@@ -94,8 +94,8 @@
 
 特别复查以下历史遗留证据；它们是复验线索，不是当前代码已经失败的结论：
 
-- [9 月 13 日审计收尾](../findings/uncommitted_audit_closure_20260913.md)：Core 300 秒超时；后续 fail-fast 有 bitsandbytes CPU backend 失败，单测独立通过但整套污染原因未定位；完整 E2E 修复后未全量重跑；vendor 尚未同步。
-- [9 月 25 日 S5 记录](../findings/dragon_next_s5_release_candidate_20260925.md)：HTTP raw-config 契约测试失败、S1 人工/读屏矩阵及 S4 部署态联通未关闭，整体为 `BLOCKED`。
+- [9 月 13 日审计收尾](../../../docs/findings/uncommitted_audit_closure_20260913.md)：Core 300 秒超时；后续 fail-fast 有 bitsandbytes CPU backend 失败，单测独立通过但整套污染原因未定位；完整 E2E 修复后未全量重跑；vendor 尚未同步。
+- [9 月 25 日 S5 记录](../../../docs/findings/dragon_next_s5_release_candidate_20260925.md)：HTTP raw-config 契约测试失败、S1 人工/读屏矩阵及 S4 部署态联通未关闭，整体为 `BLOCKED`。
 - Next README 当前描述根路径默认进入 Next，而 S5 历史记录没有完成入口切换签收。核查当前路由、默认入口、实际部署文档是否一致；历史报告保留其时间语义，在新报告中关闭或继续列明缺口。
 - revision 隔离已有阶段证据，但不带 revision 的旧客户端兼容写入不等同 Next 并发保证。针对跨标签保存、旧客户端和根切换重新核验。
 

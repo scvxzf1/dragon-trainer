@@ -1,7 +1,7 @@
 # Anima Linear精度交付批次1：CMP 90HX
 
 日期：2026-10-01。状态：有界筛选、热测及独立CPU数值验收完成；生产计划未开放。
-依据：[交付收敛计划](../proposal/adaptive_precision_delivery_reset_20261001.md)。
+依据：[交付收敛计划（已归档）](../../_archive/docs/proposal/adaptive_precision_delivery_reset_20261001.md)。
 
 ## 结论
 
@@ -164,8 +164,8 @@ timeout 90 .venv/bin/python -m pytest -q \
   tests/test_adaptive_training_replay.py tests/test_adaptive_training_capture.py
 ```
 
-全部证据位于
-[结果目录报告](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch1/REPORT.md)：
+全部证据位于结果目录报告
+`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch1/REPORT.md`：
 `summary.json`、`candidate-table.json`、`environment.json`、`final-audit.json`，以及每个worker
 的result/supervisor/telemetry/log、training capture、实际update capture/comparison。
 参考目录另存training replay。数据与失败结果保持原样，未提交或发布本批代码。

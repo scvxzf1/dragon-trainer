@@ -25,7 +25,7 @@
 使用说明与代码事实：[训练指南](../guidelines/training.md)（多卡节）。
 原始未提交研究报告（保留、未改写）：[Lulynx 多卡实现对照](lulynx_multigpu_comparison_20261107.md)、
 [本机 2×V100 NVLink 基线](multigpu_v100_nvlink_baseline_20261107.md)、
-[多卡训练研究计划](../proposal/multi_gpu_training_plan.md)。
+[多卡训练研究计划（已归档）](../../_archive/docs/proposal/multi_gpu_training_plan.md)。
 
 ---
 

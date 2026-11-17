@@ -1,5 +1,7 @@
 # WebUI 设计系统控制台升级 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建立可复用设计系统（token + primitives + patterns），先接入训练监控与历史，在不改 IA、不减配置项、不加功能的前提下把控制台密度/组件一致性/骨架/质感再升一级。

@@ -27,7 +27,7 @@
 ### 八页总览
 
 以下是已退役 Dragon 界面的历史路由示例，不是当前可访问入口。当前配置工作台请从
-[`web/frontend-next/README.md`](../../web/frontend-next/README.md) 开始；下列路由仅记录采集时的旧入口。
+[`web/frontend-next/README.md`](../../../web/frontend-next/README.md) 开始；下列路由仅记录采集时的旧入口。
 
 | 编号 | 导航名称 / 页面标题 | 路由 | 核心职责 | 主要输出 |
 | --- | --- | --- | --- | --- |
@@ -417,21 +417,21 @@ flowchart TD
 | 数据蓝图保存和应用 | 历史 `dataset-editor.js`，约 710 行；`/dataset-presets/apply` |
 | 模型库的 revision 保存 | 历史 `model-config.js`，约 440 行 |
 | 实时指标、日志工具与停止提示 | 历史 `live-training-view.js`，`renderLiveTrainingPage()` / `renderConsole()` |
-| 队列操作的文件保留语义 | 历史 `queue.js`，约 184、226、275 行；[queue_control.py](../../web/services/training/queue_control.py) |
-| 入队冻结与运行蓝图 | [queue_enqueue.py](../../web/services/training/queue_enqueue.py)，`enqueue_training()`；[runtime_prepare.py](../../web/services/training/runtime_prepare.py)，约 196 行 |
+| 队列操作的文件保留语义 | 历史 `queue.js`，约 184、226、275 行；[queue_control.py](../../../web/services/training/queue_control.py) |
+| 入队冻结与运行蓝图 | [queue_enqueue.py](../../../web/services/training/queue_enqueue.py)，`enqueue_training()`；[runtime_prepare.py](../../../web/services/training/runtime_prepare.py)，约 196 行 |
 | 历史合并查看切 classic | 历史 `history.js`，`data-history-classic` 处理器，约 84 行 |
 | 删除历史分组不删任务 | 历史 `history-collections-controller.js`，`deleteCollection()`，约 244 行 |
-| 历史续训使用快照和检查点 | 历史 `history-detail.js`，约 230 行；[history_resume.py](../../web/services/training/history_resume.py) |
-| 打标子流程与候选写回 | 历史 `tagging.js`、`tagging-results-page.js`；[storage.py](../../web/services/tagging/storage.py)，`image.with_suffix(".txt")` |
+| 历史续训使用快照和检查点 | 历史 `history-detail.js`，约 230 行；[history_resume.py](../../../web/services/training/history_resume.py) |
+| 打标子流程与候选写回 | 历史 `tagging.js`、`tagging-results-page.js`；[storage.py](../../../web/services/tagging/storage.py)，`image.with_suffix(".txt")` |
 | 全局设置四组字段 | 历史 `global-settings.js`，`SETTING_GROUPS` |
 
 相关说明：
 
 - [Dragon 界面与兼容回退](dragon-ui.md)
-- [配置工作台](config-workbench.md)、[数据集编辑器](dataset-editor.md)
-- [打标工作台](tagging-workbench.md)、[缓存复用](preprocess-cache-reuse.md)
-- [训练队列](training-queue.md)、[历史任务与集合](history-collections.md)
-- [全局模型配置](global-model-configs.md)、[全局设置](global-settings.md)、[多模型支持现状](../multi_model_support.md)
+- [配置工作台](../../../docs/features/config-workbench.md)、[数据集编辑器](../../../docs/features/dataset-editor.md)
+- [打标工作台](../../../docs/features/tagging-workbench.md)、[缓存复用](../../../docs/features/preprocess-cache-reuse.md)
+- [训练队列](../../../docs/features/training-queue.md)、[历史任务与集合](../../../docs/features/history-collections.md)
+- [全局模型配置](../../../docs/features/global-model-configs.md)、[全局设置](../../../docs/features/global-settings.md)、[多模型支持现状](../../../docs/multi_model_support.md)
 
 这些专题文档可能同时描述 classic 和 Dragon。本文对当前导航、历史原生操作和模型格式的判断以当日页面/源码为准，
 不把旧文档中出现的功能入口无条件套用到当前 Dragon。

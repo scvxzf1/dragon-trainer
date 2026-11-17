@@ -1,8 +1,32 @@
 # Archived Documentation Proposals
 
-这里放从 `docs/proposal/` 退下来的历史提案，或用于记录当前文档中提到但已经不再维护的旧设计线索。
+状态：已归档
 
-本目录的材料默认不是当前实现说明。实现状态以 `docs/README.md` 指向的 `guidelines/`、`methods/`、`experimental/`、`structure/`、`configuration/`、`features/`、`findings/` 和 `optimizations/` 文档为准。
+这里放从 `docs/proposal/`（及早期 `docs/`、`_archive/proposals/`）退下来的历史提案与已收口契约。
+
+本目录的材料默认不是当前实现说明。实现状态以 [docs/README.md](../../../docs/README.md) 指向的 `guidelines/`、`methods/`、`experimental/`、`structure/`、`configuration/`、`features/`、`findings/` 和 `optimizations/` 文档为准。
+
+## 2026-11-18 归档（提案治理与历史设计收口）
+
+| 文档 | 原因 |
+| --- | --- |
+| [adaptive_precision_delivery_reset_20261001.md](adaptive_precision_delivery_reset_20261001.md) | 2026-10-01 自动精度交付收敛批次计划已执行，结论沉淀于 `docs/findings/` 与 `docs/experimental/adaptive-runtime.md` |
+| [anima_pp_trainer_wiring.md](anima_pp_trainer_wiring.md) | Anima trainer 级 PP 接线 t1 冻结契约已落地并验收，现行入口见 `docs/experimental/anima_pp_trainer_wiring.md` |
+| [convrot_90hx_development_validation_plan_20261002.md](convrot_90hx_development_validation_plan_20261002.md) | CMP 90HX 六阶段筛选计划已收尾（S5 条件跳过），结论见 `docs/findings/convrot_90hx_validation_20261002.md` |
+| [convrot_w8a_training_plan.md](convrot_w8a_training_plan.md) | ConvRot W8A16/W8A8 核心训练路径已落地，现行说明见 `docs/experimental/convrot_int8_training.md` |
+| [dev_push_audit_plan_20260927.md](dev_push_audit_plan_20260927.md) | 2026-09-27 一次性待推送变更审计计划，基线已成历史 |
+| [dpdmd.md](dpdmd.md) | DP-DMD 少步蒸馏迁移提案已落地，现行说明见 `docs/experimental/dpdmd.md` |
+| [dragon_config_progressive_disclosure.md](dragon_config_progressive_disclosure.md) | 旧静态 Dragon 配置渐进披露探索，原则已由 Next 训练配置计划吸收 |
+| [krea2_pipeline_parallel.md](krea2_pipeline_parallel.md) | 早期双卡 PP 阶段规划；Anima / MOSS / Krea-2 三族 1F1B 专用会话现已上线 |
+| [moss_image_pipeline_parallel_v0.md](moss_image_pipeline_parallel_v0.md) | MOSS-Image 库级 PP v0 需求冻结契约已落地并验收，现行说明见 `docs/experimental/moss_image_pipeline_parallel_v0.md` |
+| [moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md) | MOSS-Image 主训练 PP 接线冻结契约（保留原始字节指纹），现行说明见 `docs/experimental/moss_image_pp_trainer_wiring.md` |
+| [multi_gpu_training_plan.md](multi_gpu_training_plan.md) | `codex/multi-gpu-training` 分支已并入 `dev` 收口，逐点验收见 `docs/findings/multigpu_reference_validation_20261107.md` |
+| [optimization-roadmap.md](optimization-roadmap.md) | 早期优化路线图已由 `docs/optimization-configs-current.md` 取代 |
+| [qwen_image_2_1_training_block_stage3_20260927.md](qwen_image_2_1_training_block_stage3_20260927.md) | Qwen 2.1 阶段 3 冻结投影融合已落地并完成热测，现行说明见 `docs/experimental/qwen_image_2_1_fused_projections.md` |
+| [separation_plan.md](separation_plan.md) | `anima_lora` 可安装包门面与 CLI 分离已落地 |
+| [soft_tokens_contrastive.md](soft_tokens_contrastive.md) | Soft Tokens B=1 InfoNCE 早期提案已并入 `docs/experimental/soft_tokens.md` |
+| [soft_tokens_softrank.md](soft_tokens_softrank.md) | Soft Tokens soft-rank 早期提案已落地并并入 `docs/experimental/soft_tokens.md` |
+| [turbo_anima_dmd_lora.md](turbo_anima_dmd_lora.md) | CA-decoupled DMD2 旧蒸馏提案已被 DP-DMD 方案取代 |
 
 ## 2026-11-09 归档
 
@@ -29,7 +53,8 @@
 
 | 文档 | 原因 |
 | --- | --- |
-| [anima-app-deglobalization.md](anima-app-deglobalization.md) | 阶段 0-3 已落地（85 轮，`globalThis` 从 1075 降到 270），剩余收尾工作由 `anima-app-legacy-bridge-cleanup.md` 接续 |
+| [anima-app-deglobalization.md](anima-app-deglobalization.md) | 阶段 0-3 已落地（85 轮，`globalThis` 从 1075 降到 270），剩余收尾工作由下行文档接续 |
+| [anima-app-legacy-bridge-cleanup.md](anima-app-legacy-bridge-cleanup.md) | `anima-app` legacy bridge 收尾已完成，仅保留历史实施上下文 |
 
 ## 2026-07-07 归档
 

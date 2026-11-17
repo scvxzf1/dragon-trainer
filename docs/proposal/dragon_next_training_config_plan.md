@@ -25,7 +25,7 @@
 实施顺序为 **字段对账 → 选择与禁用规则 → 分组和布局 → 补充入口 → 来源与变更审查 → 综合验收**。
 优先交付 T0–T2：先建立可信的字段规则和可用编辑空间，再扩充表单。
 
-沿用此前[渐进披露提案](dragon_config_progressive_disclosure.md)的唯一归属、隐藏值保留和能力约束原则。
+沿用此前[渐进披露提案（已归档）](../../_archive/docs/proposal/dragon_config_progressive_disclosure.md)的唯一归属、隐藏值保留和能力约束原则。
 该提案主要描述旧 Dragon，不能把其「已实现」直接当作 Next 的验收证据，也不沿用其中历史字段数量和已经变化的 family 限制。
 Next 现有四阶段采用 tab 切换；本计划保留这个交互，不同时改为长页滚动导航。
 

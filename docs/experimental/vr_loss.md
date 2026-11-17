@@ -380,7 +380,4 @@ can run VR — they just pay the ~+40% compute.
   variance-reduction section; §6.1 covers the `σ_min` clamp.
 - [archived headroom findings](../../_archive/docs/findings/vr-loss-headroom/README.md) — the diagnostic that gated v1.
 - [archived integration proposal](../../_archive/docs/findings/vr-loss-headroom/proposal.md) — full integration plan.
-- `docs/methods/hydra-lora.md` — FEI routing background.
-- `[[project_fera_probe_2band_decision]]` — why we use 2 bands, not 3.
-- `[[project_fm_val_loss_uninformative]]` — why Stage 1 needs HPSv3/VQA,
-  not just val FM curves.
+- [../methods/hydra-lora.md](../methods/hydra-lora.md) — FEI routing background (including why Anima uses a bimodal 2-band split rather than 3 bands, and why Stage 1 relies on HPSv3/VQA rather than uninformative val FM curves).

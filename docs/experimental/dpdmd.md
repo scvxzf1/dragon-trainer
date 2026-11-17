@@ -12,14 +12,14 @@ inference-side turbo code; you load it through the normal LoRA path and run
 > **History.** This replaced the CA-decoupled DMD2 ("CFG-as-Spear, Distribution-
 > Matching-as-Shield", Liu et al. arXiv:2511.22677) objective on **2026-05-30**.
 > The whole turbo program had been spent managing the CA branch's standing CFG
-> bias (it never reaches a fixed point — see [[project_turbo_alpha4_overdistill]]),
+> bias (it never reaches a fixed point under α=4 over-distillation),
 > and every CA-side lever came back inert or harmful
-> ([[project_turbo_fei_gap_phase0]], `ca_band`). DP-DMD removes the CA branch
+> (Phase-0 FEI gap probe, `ca_band`). DP-DMD removes the CA branch
 > entirely. The structural walkthrough (diversity-anchor / DMD gradient split,
 > flow-matching velocity↔x0 math, the per-step schedule) lives at
-> `docs/structure/dpdmd.md`; the CA-era decision log is summarized in this page
+> [../structure/dpdmd.md](../structure/dpdmd.md); the CA-era decision log is summarized in this page
 > and the structure doc. The original migration proposal is archived at
-> `_archive/proposals/dpdmd.md`.
+> [../../_archive/docs/proposal/dpdmd.md](../../_archive/docs/proposal/dpdmd.md).
 
 - **Training:** `scripts/distill_turbo/distill.py` — bespoke single-GPU loop
   (bypasses `train.py`/accelerate, like `distill-mod` / `distill-spd`).
@@ -32,15 +32,16 @@ inference-side turbo code; you load it through the normal LoRA path and run
 ## Quick start
 
 ```bash
-make exp-turbo                                       # configs/methods/turbo.toml defaults
-make exp-turbo ARGS="--student_rank 128 --iterations 5000"
-make exp-turbo ARGS="--single_prompt_idx 0"          # Phase 0 single-prompt overfit
-make exp-turbo PRESET=low_vram                        # grad ckpt + offload + sample_ratio
+python tasks.py exp-turbo                                       # configs/methods/turbo.toml defaults
+python tasks.py exp-turbo ARGS="--student_rank 128 --iterations 5000"
+python tasks.py exp-turbo ARGS="--single_prompt_idx 0"          # Phase 0 single-prompt overfit
+python tasks.py exp-turbo PRESET=low_vram                       # grad ckpt + offload + sample_ratio
 
-make exp-test-turbo                                   # infer latest student LoRA @ 2 steps, cfg=1.0
+python tasks.py exp-test-turbo                                  # infer latest student LoRA @ 2 steps, cfg=1.0
+# (`make exp-turbo ...` / `make exp-test-turbo` remain supported as forwarding aliases.)
 ```
 
-`make exp-turbo` honors `PRESET` (translates `blocks_to_swap` /
+`python tasks.py exp-turbo` honors `PRESET` (translates `blocks_to_swap` /
 `gradient_checkpointing` / `sample_ratio` from `configs/presets.toml` into CLI
 flags) and appends `ARGS` last so user overrides win. The output is
 `output/ckpt/<output_name>.safetensors` — a normal LoRA — plus the standard
@@ -99,7 +100,8 @@ Per training step:
 The teacher uncond is the **T5("") sidecar** (`library/inference/uncond.py`), *not*
 a zero tensor — a zero crossattn is fed-out-of-distribution and the resulting
 `v_real_uncond` amplified at (α−1)=3× drives the student off-manifold (saturated
-white output). Staged by `make distill-prep` / `make preprocess-te`; shared with the
+white output). Staged by `python tasks.py distill-prep` / `python tasks.py preprocess-te`
+(`make distill-prep` / `make preprocess-te` compatible); shared with the
 mod-guidance distill.
 
 A **fake (critic) head-start** runs `fake_warmup_steps` fake-only updates before the
@@ -117,13 +119,13 @@ Sectioned, bespoke. Every key has a matching CLI override flag (see
 |---|---|---|---|
 | top | `output_name` | `anima_turbo_I` | output stem under `output/ckpt/` |
 | top | `iterations` | `2000` | |
-| top | `use_custom_down_autograd` | `true` | keeps activation memory down so swap can stay 0 (see [[project_custom_down_autograd_distill_lever]]) |
+| top | `use_custom_down_autograd` | `true` | keeps activation memory down so swap can stay 0 |
 | top | `use_masked_loss` | `true` | **student-only** mask on the DMD grad; fake/critic stays full-frame |
-| top | `use_prep_list` | `false` | gate training on the curation keep_list ([[project_item5_turbo_curation_phase0]]) |
+| top | `use_prep_list` | `false` | gate training on the curation `keep_list` |
 | `[network]` | `student_rank` / `fake_rank` | `64` / `64` | `fake_rank ≥ student_rank` (fake is a score *tracker*, capacity ceiling on DM strength) |
 | `[dmd]` | `student_steps` (N) | `2` | Euler steps the student rolls; inference matches (`--infer_steps 2`) |
 | `[dmd]` | `teacher_cfg` (α) | `4` | CFG scale baked into the teacher anchor + DMD real score (Anima prod CFG=4) |
-| `[dmd]` | `dm_x0_norm` | `true` | per-sample x0-space magnitude normalization of the DM grad ([[project_turbo_dmd_x0_norm_wins]]) |
+| `[dmd]` | `dm_x0_norm` | `true` | per-sample x0-space magnitude normalization of the DM grad |
 | `[dmd]` | `norm_floor` | `0.05` | clamp_min for the `dm_x0_norm` denominator (latent scale) |
 | `[dpdmd]` | `k_anchor` (K) | `14` | teacher steps rolled to the diversity anchor |
 | `[dpdmd]` | `teacher_anchor_steps` | `28` | teacher σ-grid the K is counted against |
@@ -148,7 +150,7 @@ matched schedule. **However**, an under-trained / lightly-distilled student beha
 like a continuous velocity field (the DMD quality loss is trained at *random* τ, not
 on the 2-step grid; only step 0 is grid-anchored), so it can integrate **better** at
 more Euler steps — at 2 steps the entire detail-forming band below σ≈0.5
-([[project_sigma_signal_resolves_by_045]]) is crossed by a single `0.75→0` Euler
+(where fine structure resolves around σ≤0.45) is crossed by a single `0.75→0` Euler
 jump, while at 4 steps it gets a function evaluation at σ=0.5 *and* preserves the
 σ=0.75 anchor. If a checkpoint looks better at 4 steps than 2, that's the tell that
 distillation hasn't reached a true 2-step map yet — train longer or raise
@@ -175,7 +177,7 @@ the teacher anchor. The live TB scalars:
 
 - **Plain-LoRA bake is the hard constraint.** Anything needing a step-size or
   per-t input at inference (Shortcut / MeanFlow Δt-conditioning, timestep-conditioned
-  T-LoRA — its mask is training-only, see [[project_tlora_inference_full_rank]])
+  T-LoRA — its mask is training-only and runs full-rank at inference)
   gives nothing after the bake.
 - **Spectrum:** incompatible by construction — Spectrum's Chebyshev cache assumes
   ≥16 steps. Don't stack.
@@ -185,8 +187,7 @@ the teacher anchor. The live TB scalars:
   turbo student may have re-learned the modulation pathway implicitly. Test, don't
   assume.
 - **Block swap.** The student rolls `N` forwards and the teacher `K` anchor
-  forwards per step (multi-forward); the offloader desyncs on a 2nd DiT forward
-  ([[project_blockswap_extra_forwards_gradcache]]). The loop calls
+  forwards per step (multi-forward); the offloader desyncs on an unprepared 2nd DiT forward. The loop calls
   `prepare_block_swap_before_forward(free_cache=False)` before each forward, but the
   default path keeps `blocks_to_swap=0` (`use_custom_down_autograd=true` keeps
   activation memory low enough to run full-res on 16 GB without swap). Audit the
@@ -196,11 +197,11 @@ the teacher anchor. The live TB scalars:
 
 - Wu, Li, Zhang, Ma — arXiv:2602.03139, *Diversity-Preserved Distribution Matching
   Distillation*. Reference impl: `dpdmd/train_sd35_dpdmd.py` (SD3.5-M, flow-matching).
-- `_archive/proposals/dpdmd.md` — the migration proposal (Phase 0 GO, the
+- [../../_archive/docs/proposal/dpdmd.md](../../_archive/docs/proposal/dpdmd.md) — the migration proposal (Phase 0 GO, the
   pose-vs-pooled-cosine metric caveat, the depth-m fallback).
-- `docs/structure/dpdmd.md` — structural walkthrough: the diversity-anchor / DMD
+- [../structure/dpdmd.md](../structure/dpdmd.md) — structural walkthrough: the diversity-anchor / DMD
   gradient split, the flow-matching velocity↔x0 conversion, and the sign convention.
 - CA-era decision log — summarized above; the old standalone proposal file is
   not present in the current tree.
-- `docs/findings/asymflow_parameterization.md` — Anima's `u = ε − x0` velocity path
+- [../findings/asymflow_parameterization.md](../findings/asymflow_parameterization.md) — Anima's `u = ε − x0` velocity path
   (the conversion the renoise/grad-assembly relies on).

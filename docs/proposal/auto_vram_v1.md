@@ -1,8 +1,8 @@
 # AutoVram v1 正式规格书
 
-状态：提案 / 未实现
-适用版本：当前 main（设计冻结用）
-入口命令：无（实现后预计挂到训练 bootstrap / loop，WebUI 配置项默认关闭）
+状态：提案 / 未实现（与已落地 `--block_swap_auto` 独立，见下方边界说明）
+适用版本：当前 `dev`（设计冻结用）
+入口命令：无（本规格书描述的高向低搜索锁定 + 近 OOM 紧急升档闭环尚未实现；当前已上线的进程内单向水位晋升调优器请使用 `--block_swap_auto` / `--block_swap_auto_stop_ratio`，见 [block_swap_macro_pipeline_plan.md](block_swap_macro_pipeline_plan.md) 与 `library/runtime/block_swap_auto.py`）
 相关代码：
 
 - `library/anima/models.py`（`enable_block_swap` / pause-resume）

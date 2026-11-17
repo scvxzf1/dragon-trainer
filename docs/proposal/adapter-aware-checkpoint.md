@@ -1,11 +1,11 @@
 # Adapter-aware Checkpoint 可行性探索文档
 
-状态：半活跃提案
-适用版本：当前 main 的可行性探索；尚非默认能力
+状态：半活跃提案（P0 size-based 策略已接入 Anima；P1–P3 仍为提案）
+适用版本：当前 `dev`；默认关闭（`selective_checkpoint = "off"`）
 
 ## 核心结论
 
-Adapter-aware checkpoint 在本项目中**可行，且值得作为实验型显存优化方向推进**；但它应先定位为“选择性激活重计算策略”，不要一开始就默认替换现有 checkpoint 方案。
+Adapter-aware checkpoint 在本项目中**可行，且 P0（基于张量尺寸的 SAC 策略）已在 Anima 族落地为显式实验开关**（`--selective_checkpoint adapter_aware` / `peak_blocks_adapter_aware`，配 `--selective_checkpoint_blocks`）；默认仍保持关闭，P1–P3（显式 adapter-tag 标注、routing sparse、激活压缩）继续作为后续探索提案。
 
 ## 1. 目标定义
 
@@ -439,13 +439,12 @@ selective_checkpoint = "adapter_aware"
 selective_checkpoint = "peak_blocks_adapter_aware"
 ```
 
-推荐优先级：
+推荐优先级与当前状态：
 
-1. 先做 P0 size-based SAC policy
-2. 加单元测试和 2-step smoke benchmark
-3. 收集显存/速度数据
-4. 如果收益明确，再做 P1 adapter-tag aware
-5. routing sparse 和 activation compression 放后续研究分支
+1. P0 size-based SAC policy（**已在 Anima 落地**：`--selective_checkpoint adapter_aware` / `peak_blocks_adapter_aware`）
+2. 单元测试和短步 smoke 对照（持续补充多分辨率/多变体数据）
+3. 若后续收益明确，再推进 P1 adapter-tag aware（仍为提案）
+4. P2 routing sparse 和 P3 activation compression 放后续研究分支（仍为提案）
 
 ## 8. 最终判断
 

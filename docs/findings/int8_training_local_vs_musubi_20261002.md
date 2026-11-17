@@ -1,5 +1,6 @@
 # INT8 训练：本地 ConvRot 与 musubi 实现对比
 
+状态：调研记录 / 阶段快照
 查阅日期：2026-10-02。范围：当前源码、历史实验文档、固定提交的线上源码与讨论。本轮没有运行 GPU、启动训练或修改训练实现。
 
 ## 结论
@@ -168,7 +169,7 @@ W8A8 scale 降到 BF16 也有超过 5% gate 的记录，当前仍保留 FP32（`
 
 ## 证据入口
 
-- [本地 ConvRot 架构/规格](../proposal/convrot_w8a_training_plan.md)
+- [本地 ConvRot 架构/规格（已归档）](../../_archive/docs/proposal/convrot_w8a_training_plan.md)
 - [优化路线与历史否决条件](../proposal/convrot_w8a_optimization_roadmap.md)
 - [实验记录](../experimental/convrot_int8_training.md)、[1710-step 长训](convrot_longrun_bf16_w8a8_w8a16_20260727.md)
 - [上一份扩散量化线上调研](diffusion_mixed_quant_post_training_survey_20261002.md)

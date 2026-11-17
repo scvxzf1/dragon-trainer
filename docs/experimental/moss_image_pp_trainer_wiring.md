@@ -3,7 +3,7 @@
 状态：实验（CPU/Gloo 双 rank 与双 V100 CUDA tiny 热测均已独立验收通过——
 `tests/test_moss_image_pp_trainer_hot.py::test_two_rank_cuda_trainer_resume`
 t11 第 9 轮 rc=0/1 passed/33.35s，真实生产入口、无 mock；真实大模型权重训练未验收）
-适用版本：分支 `codex/moss-pp-v0-20261112`
+适用版本：当前 `dev`（原开发分支 `codex/moss-pp-v0-20261112` 已合入）
 入口命令：见下文「启动」；普通非 PP 训练入口与行为完全不变
 相关代码：`library/training/pp/trainer_session.py`（唯一执行派发）、
 `library/training/pp/trainer_admission.py`（入口预检）、
@@ -11,7 +11,7 @@ t11 第 9 轮 rc=0/1 passed/33.35s，真实生产入口、无 mock；真实大�
 `library/training/pp/trainer_resume.py`（trainer 级恢复元数据）、
 `library/training/train_session.py`（冻结分叉点）、
 `library/training/cli_entry.py`、`library/runtime/accelerator.py`
-需求契约：`docs/proposal/moss_image_pp_trainer_wiring.md`（t1 冻结原文）
+需求契约：[../../_archive/docs/proposal/moss_image_pp_trainer_wiring.md](../../_archive/docs/proposal/moss_image_pp_trainer_wiring.md)（t1 冻结归档原文）
 
 一句话：已验收的 MOSS 库级 PP runtime（`moss_runtime.py`）现在由正式
 CLI / `AnimaTrainer.train` 调用链真实进入：`train_session._run_training_session`
@@ -31,7 +31,7 @@ CLI / `AnimaTrainer.train` 调用链真实进入：`train_session._run_training_
 | 缓存 | `cache_latents` / `cache_text_encoder_outputs` 完整磁盘缓存 |
 | loss | 标准 flow-matching MSE（`loss_type=l2`、`weighting_scheme=none`），microbatch 归一化只在 schedule owner 一处 |
 | accumulation | `gradient_accumulation_steps=1` |
-| 其他 | 无 preview/compile/stage_schedule/adaptive OOM/epoch 级保存计划/persistent workers；未接线族（krea2_raw / z_image / qwen_image_2_1）维持 `pp_trainer_path_unavailable`。**Anima 状态**：本接线的四个 trainer 模块已泛化为族适配器（`pp/trainer_adapters.py`），Anima 已接线专用 PP 训练会话并独立热测验收（rc=0）——见 [anima_pp_trainer_wiring.md](anima_pp_trainer_wiring.md)；MOSS 分支行为冻结不变 |
+| 其他 | 无 preview/compile/stage_schedule/adaptive OOM/epoch 级保存计划/persistent workers；未接线族（`z_image` / `qwen_image_2_1`）维持 `pp_runtime_unavailable` / `pp_trainer_path_unavailable`。**跨族状态**：本接线的四个 trainer 模块已泛化为族适配器（`pp/trainer_adapters.py`），`anima`（见 [anima_pp_trainer_wiring.md](anima_pp_trainer_wiring.md)）与 `krea2_raw`（见 [distributed-training-card.md](distributed-training-card.md)）均已接线专用 PP 训练会话并完成热测验收；MOSS 分支行为冻结不变 |
 
 进程组：首次（也是唯一一次）初始化在 `prepare_accelerator` 构造 Accelerator
 **之前** 注入多后端组 `cpu:gloo,cuda:nccl`（CPU 标量走 gloo、设备激活走 nccl，
@@ -105,15 +105,14 @@ CUDA_VISIBLE_DEVICES=<uuid0>,<uuid1> PYTORCH_CUDA_ALLOC_CONF="" \
   resume_step=2 接续（step-2 bundle，scale 32768）→ step3 消费放大批次真实
   skip（→16384）、step4 loss 与 straight 逐位相同；final_param_digest 跨 phase
   双 rank 全等、final_lr 全等 [0.001]、batch_digests 全等；显存 allocated
-  22.0/21.0 MB、reserved 27.3 MB ≪ 2 GiB。证据（docs/findings）：moss_pp_trainer_wiring_validation_20261114.md §6g、
-  moss_pp_trainer_wiring_cuda_hot_t11r9_run.log、
-  moss_pp_trainer_wiring_cuda_gate_t11r9.json、t11r9_phase_receipts/、
-  独立审阅 moss_pp_trainer_wiring_review_20261114.md（verdict=pass）。
+  22.0/21.0 MB、reserved 27.3 MB ≪ 2 GiB。证据见 [moss_pp_trainer_wiring_validation_20261114.md](../findings/moss_pp_trainer_wiring_validation_20261114.md) §6g、
+  `docs/findings/moss_pp_trainer_wiring_cuda_hot_t11r9_run.log`、
+  `docs/findings/moss_pp_trainer_wiring_cuda_gate_t11r9.json`、
+  独立审阅 [moss_pp_trainer_wiring_review_20261114.md](../findings/moss_pp_trainer_wiring_review_20261114.md)（verdict=pass）。
 
-## 集成状态与字节绑定（t5）
+## 首次验收字节绑定（t5 历史记录）
 
-工作树：分支 `codex/moss-pp-v0-20261112`（基线 HEAD `6610f710`，未提交开发成果，
-无 commit/push）。本轮审阅通过并绑定的关键字节（SHA256，t4/t11r9 一致）：
+首次独立审阅通过并合入 `dev` 时绑定的关键字节摘要（SHA256，t4/t11r9 一致；后续跨族泛化在 `trainer_adapters.py` 之上扩展）：
 
 | 文件 | SHA256 前 8 |
 | --- | --- |
@@ -141,5 +140,5 @@ WebUI/配置链（t5/t6/t9 轮）已补齐并独立验证：compat 预检按族�
 `model_family` 成对键强制（启动链 + 续训 gate 双侧）、队列链路真实发起证据
 （enqueue → accelerate 双进程 → 逐级具名拒绝/准入通过）、gpu_whitelist 守卫
 （2026-11-15 放开为解析级 fail-closed：全卡可选，仅索引解析不到物理卡时具名拒绝，
-非授权卡改建议级警告，见 `docs/experimental/distributed-training-card.md`）。从 WebUI 发起 PP 训练的配置
+非授权卡改建议级警告，见 [distributed-training-card.md](distributed-training-card.md)）。从 WebUI 发起 PP 训练的配置
 面已可用；真实大模型权重的端到端训练仍未验收。

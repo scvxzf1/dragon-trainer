@@ -1,8 +1,9 @@
 # 自动精度交付收敛计划
 
+状态：已归档
 日期：2026-10-01。用户要求查阅全局并加快推进。本文件记录重新排序后的执行建议及批次状态，
 不修改现有精度门槛及生产默认。
-依据：当前源码、[阶段路线图](adaptive_training_roadmap.md)、16份Anima数值阶段报告。
+依据：当前源码、[阶段路线图](../../../docs/proposal/adaptive_training_roadmap.md)、16份Anima数值阶段报告。
 
 ## 批次2执行状态（2026-10-01）
 
@@ -12,9 +13,9 @@ adapter与AdamW状态的矩阵。05/04与同路径FP32控制各12/12通过原严
 四组实际train.py各完成5次有效更新、零跳步，实际dtype、loss、更新、最终权重与资源
 已落盘；最终独立CPU审计四组通过。候选05/04显存峰值5730/5674MiB，仍高于
 FP32控制5232MiB；生产BF16为3104MiB。实用显存收益未成立，短步时不作稳态结论。
-完整结果见[批次2报告](../findings/anima_precision_delivery_batch2_90hx_20261001.md)。
+完整结果见[批次2报告](../../../docs/findings/anima_precision_delivery_batch2_90hx_20261001.md)。
 
-另已完成[旧Anima FP16 AMP补测](../findings/anima_legacy_fp16_comparison_90hx_20261001.md)：
+另已完成[旧Anima FP16 AMP补测](../../../docs/findings/anima_legacy_fp16_comparison_90hx_20261001.md)：
 同条件五步有效、零跳步，独立审核通过，步2..5均值2.694s、整卡峰3524MiB，
 短窗明显优于主体FP32的05/04。此路径保留原生AMP与FP32必要保护，初始scale单独覆盖1024；
 此五步补测当时未覆盖严格矩阵；后续集中验收结果见下节。旧默认scale、长期质量及Turing尚未验证。
@@ -28,9 +29,9 @@ FP32控制5232MiB；生产BF16为3104MiB。实用显存收益未成立，短步�
 12格全部finite、真实有效更新、零跳步，独立FP64来源与数学审核通过。
 原严格数值 **0/12通过**：prediction最大relL2 .00132449，input/adapter梯度最大2.08984/.653535，
 实际AdamW更新最大relL2 .732434（额外指标，未新增接受阈值）。完整见
-[集中验收报告](../findings/anima_native_fp16_acceptance_90hx_20261001.md)。
+[集中验收报告](../../../docs/findings/anima_native_fp16_acceptance_90hx_20261001.md)。
 本轮结束05/04默认扩张和逐层/scale追加，不将旧FP16作为通过原严格标准的自动计划。
-[质量协议](../experimental/anima-native-fp16-acceptance.md)已提前登记并绑定SHA，
+[质量协议](../../../docs/experimental/anima-native-fp16-acceptance.md)已提前登记并绑定SHA，
 独立数据/prompt仍待绑定，quality=not_run；未启动50更新或生成任务。
 严格误差失败不改写为训练质量失败，finite也不改写为质量通过。
 
@@ -41,7 +42,7 @@ FP32控制5232MiB；生产BF16为3104MiB。实用显存收益未成立，短步�
 （21..27）进入shortlist，全部候选及两个控制组的张量已由Sol独立用NumPy FP64复算。
 候选05的理论源权重payload减少5.616%，GPU峰值却高于全FP32控制；尚未证明实用收益。
 单输入、sigma=.5、初始LoRA、空AdamW状态的单步结果不开放生产自动选择。
-完整候选表、实现、资源与失败记录见[批次1报告](../findings/anima_precision_delivery_batch1_90hx_20261001.md)。
+完整候选表、实现、资源与失败记录见[批次1报告](../../../docs/findings/anima_precision_delivery_batch1_90hx_20261001.md)。
 当时的下一批保留集与真实训练链路现已完成，见上节；不继续默认扩张token/head研究。
 
 ## 判断
@@ -77,10 +78,10 @@ FP32控制5232MiB；生产BF16为3104MiB。实用显存收益未成立，短步�
 4. **不以单个局部响应比作选层依据。** 高误差top42局部替换距full仍有12%--15%残差，
    它不是完整模型梯度，更不是可部署dtype干预。
 
-相关证据：[初始对照](../findings/anima_adaptive_precision_90hx_20260930.md)、
-[scale/分支](../findings/anima_adaptive_precision_diagnostics_90hx_20260930.md)、
-[base-dx](../findings/anima_backward_counterfactual_90hx_20260930.md)、
-[局部K](../findings/anima_k_local_90hx_20261001.md)。
+相关证据：[初始对照](../../../docs/findings/anima_adaptive_precision_90hx_20260930.md)、
+[scale/分支](../../../docs/findings/anima_adaptive_precision_diagnostics_90hx_20260930.md)、
+[base-dx](../../../docs/findings/anima_backward_counterfactual_90hx_20260930.md)、
+[局部K](../../../docs/findings/anima_k_local_90hx_20261001.md)。
 
 ## 第一批：直接回答是否存在有收益的Linear精度组合
 

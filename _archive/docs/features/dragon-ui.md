@@ -7,7 +7,7 @@
 
 当前 WebUI 使用 Next 工作台。访问服务根路径 `/` 会跳转到 `/next`；旧 `/?ui=dragon` 和
 `/?ui=classic` 地址会兼容重定向到 Next，不再选择或加载旧界面。用户操作、开发和验证入口见
-[Next 前端 README](../../web/frontend-next/README.md)。
+[Next 前端 README](../../../web/frontend-next/README.md)。
 
 当前兼容重定向不等于旧静态源码或历史资源已删除，也不证明任何既有部署端口已经切换。
 本页只保留旧界面的背景事实，不提供启动、切换、回退或故障排查步骤。Next 自身故障时使用
@@ -23,11 +23,11 @@ Next 错误页提供的恢复入口；不要将旧 Dragon/classic 当作可用�
 迁移期间，`/` 曾根据浏览器偏好在旧界面间选择，Dragon 初始化失败时也曾尝试加载 classic。
 现行路由已改为将根路径和历史 `ui` 参数统一导向 `/next`。旧哈希资源或历史入口副本可能仍
 作为静态发布回退材料留存；它们不是可选用户入口。部署和静态资源发布细节见
-[Next 前端 README](../../web/frontend-next/README.md)。
+[Next 前端 README](../../../web/frontend-next/README.md)。
 
 ## 相关历史材料
 
 - [旧 Dragon 功能图谱](dragon-ui-functional-map.md)
 - [Dragon Next 实施记录](dragon-next-implementation.md)
-- [前端性能记录](../findings/dragon_frontend_performance_20260826.md)
-- [Dragon 响应式硬编码审计](../findings/dragon_responsive_hardcoding_audit_20260824.md)
+- [前端性能记录](../../../docs/findings/dragon_frontend_performance_20260826.md)
+- [Dragon 响应式硬编码审计](../../../docs/findings/dragon_responsive_hardcoding_audit_20260824.md)

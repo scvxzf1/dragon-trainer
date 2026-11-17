@@ -104,8 +104,8 @@ Inductor default，保留 eager 精度 cast 并关闭 persistent reductions；�
 
 完整状态恢复时，`random.setstate` 返回即刻的 Python RNG 原始 tuple 与保存值
 完全相同；随后 Accelerate 的两条 Rich 日志生成源文件超链接，真实消费全局
-Python RNG。独立 CPU 因果复现与新 GPU 观察均记录此边界，见
-[日志随机状态诊断](../../output/tests/qwen_nf4_compile_rng_review_20261006/report.md)。
+Python RNG。独立 CPU 因果复现与新 GPU 观察均记录此边界，见日志随机状态诊断
+`output/tests/qwen_nf4_compile_rng_review_20261006/report.md`。
 因此本次只确认状态加载与续训生命周期，完整连续轨迹逐位等价仍未验收；
 没有给恢复算法补偿性设置 RNG，也未修改全局日志行为。
 

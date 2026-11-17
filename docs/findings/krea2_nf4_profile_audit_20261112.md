@@ -22,7 +22,7 @@
 
 ## 1. 历史数据与算术边界（L0，引用历史 L3）
 
-来源：[旧 launch 报告](krea2_nf4_fp16_launch_profile_20261110.md#L75-L91)。
+来源：[旧 launch 报告](krea2_nf4_fp16_launch_profile_20261110.md#gpu-利用率三种口径的差异)（原文第 75–91 行）。
 本轮在主工作区检查历史 `/tmp/prof`，目录不存在（glob exit 2）；已有其他 nsys
 资产不能替代这份时间线。本轮未恢复旧 CUPTI 原始事件，84.8% 仍是报告中的历史记录。
 

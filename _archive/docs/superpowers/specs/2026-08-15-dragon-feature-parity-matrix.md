@@ -6,7 +6,7 @@
 
 > 2026-10-04 整理：下文状态和证据保留 2026-08-15 至 2026-08-19 的迁移阶段记录，
 > 不是当前功能目录或待办清单。现行入口见 [Next README](../../../../web/frontend-next/README.md)，
-> 后续工程记录见 [Next 实施记录](../../../../docs/features/dragon-next-implementation.md)。
+> 后续工程记录见 [Next 实施记录](../../features/dragon-next-implementation.md)。
 > 未核验项不因 Next 成为唯一入口而自动转为已验证；新增验收应单独记录日期和证据。
 
 ## 状态定义
