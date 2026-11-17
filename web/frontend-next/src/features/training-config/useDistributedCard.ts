@@ -83,6 +83,8 @@ export function useDistributedCard({ state, open }: Props) {
         pipeline_parallel_microbatches: settings?.pipeline_parallel_microbatches ?? 4,
         pipeline_parallel_schedule: settings?.pipeline_parallel_schedule ?? "1f1b",
         pipeline_parallel_split: settings?.pipeline_parallel_split ?? "balanced",
+        pipeline_parallel_blocks_to_swap:
+          settings?.pipeline_parallel_blocks_to_swap ?? 0,
       }));
       settingsSave.mutate({
         mode: "pp",
@@ -103,9 +105,18 @@ export function useDistributedCard({ state, open }: Props) {
     state.preflight.reset();
   }
 
-  function updatePpNumber(key: "pipeline_parallel_stages" | "pipeline_parallel_microbatches", raw: string) {
+  function updatePpNumber(
+    key:
+      | "pipeline_parallel_stages"
+      | "pipeline_parallel_microbatches"
+      | "pipeline_parallel_blocks_to_swap",
+    raw: string,
+  ) {
     const value = Number.parseInt(raw, 10);
-    if (!Number.isFinite(value) || value < 1) return;
+    // 0 is a legal value for the swap count (it disables swapping), unlike the
+    // stage/microbatch counts which must stay >= 1.
+    const min = key === "pipeline_parallel_blocks_to_swap" ? 0 : 1;
+    if (!Number.isFinite(value) || value < min) return;
     state.setDraft((current) => ({ ...current, [key]: value }));
     settingsSave.mutate({ [key]: value });
   }

@@ -184,6 +184,7 @@ def _default_distributed_settings() -> dict[str, Any]:
         "pipeline_parallel_microbatches": 4,
         "pipeline_parallel_schedule": "1f1b",
         "pipeline_parallel_split": "balanced",
+        "pipeline_parallel_blocks_to_swap": 0,
     }
 
 
@@ -214,6 +215,17 @@ def _normalize_distributed_settings(data: dict[str, Any]) -> dict[str, Any]:
             f"distributed.pipeline_parallel_split 必须是 {'/'.join(DISTRIBUTED_SPLITS)} 之一"
         )
 
+    def _non_negative_int(value: Any, default: int, field: str) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise DistributedSettingsError(
+                f"distributed.{field} 必须是非负整数"
+            ) from None
+        if parsed < 0:
+            raise DistributedSettingsError(f"distributed.{field} 必须是非负整数")
+        return parsed
+
     def _positive_int(value: Any, default: int) -> int:
         try:
             parsed = int(value)
@@ -242,6 +254,15 @@ def _normalize_distributed_settings(data: dict[str, Any]) -> dict[str, Any]:
         ),
         "pipeline_parallel_schedule": schedule,
         "pipeline_parallel_split": split,
+        # 0 is legal (disabled), so this is non-negative rather than positive.
+        "pipeline_parallel_blocks_to_swap": _non_negative_int(
+            data.get(
+                "pipeline_parallel_blocks_to_swap",
+                defaults["pipeline_parallel_blocks_to_swap"],
+            ),
+            defaults["pipeline_parallel_blocks_to_swap"],
+            "pipeline_parallel_blocks_to_swap",
+        ),
     }
 
 

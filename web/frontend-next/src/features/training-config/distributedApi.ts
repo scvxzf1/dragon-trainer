@@ -45,6 +45,7 @@ export type DistributedSettings = {
   pipeline_parallel_microbatches: number;
   pipeline_parallel_schedule: string;
   pipeline_parallel_split: string;
+  pipeline_parallel_blocks_to_swap: number;
 };
 
 export type DistributedSettingsPayload = Partial<DistributedSettings>;

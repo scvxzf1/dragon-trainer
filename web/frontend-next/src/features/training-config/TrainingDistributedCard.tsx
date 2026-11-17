@@ -115,6 +115,13 @@ function TrainingDistributedPopover({ card, popoverId, anchorRef, onClose }: Pop
               disabled={card.busy || card.settingsSaving}
               onChange={(event) => card.updatePpNumber("pipeline_parallel_microbatches", event.target.value)} />
           </label>
+          <label>PP 块交换
+            <input type="number" min={0} value={card.settings?.pipeline_parallel_blocks_to_swap ?? 0}
+              disabled={card.busy || card.settingsSaving}
+              onChange={(event) => card.updatePpNumber("pipeline_parallel_blocks_to_swap", event.target.value)} />
+          </label>
+          <small>PP 块交换与普通 Block Swap 是两套机制：普通 Block Swap 必须保持 0，否则 PP 会拒绝启动。
+            仅 Krea-2 PP 生效；16GB 双卡 896×1200 建议 4（0 会 OOM）。</small>
           <small>PP 参数保存在本机设置 [distributed] 节，仅作为卡片缺省值；真正拦截由训练入口兜底。</small>
         </div>
       )}
