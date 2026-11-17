@@ -1,11 +1,13 @@
 # Anima Tagger — multi-label tagger trained on Anima's caption distribution
 
+状态：实验（v1 权重已随附，训练与 DirectEdit 入口实验性）
+
 A small classifier that maps an image to a comma-separated tag string in
 exactly the format Anima's training-time T5 saw. Used as the case-1 ψ_src
 provider for DirectEdit, and as a standalone captioner for LoRA dataset
 prep / prompt scaffolding via the `comfyui-anima-tagger` ComfyUI node.
 
-Status: **shipped**. A trained checkpoint lives at
+A trained checkpoint lives at
 `models/captioners/anima-tagger-v1/` (4,937-tag vocab, residual macro-F1
 ~0.192 on val with softmax groups argmax-only). End-to-end PE-LoRA training
 path, typed tag-group routing, and a curator-side role-marker scanner are

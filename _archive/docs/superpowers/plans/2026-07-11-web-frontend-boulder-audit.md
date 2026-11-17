@@ -1,5 +1,7 @@
 # Web 前端石山只读体检 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 按已确认 spec 对当前工作树做一次全前端只读健康体检，填实审计快照（四域分数、Top10 债、先别动/可先动、命令摘要），不改任何业务代码。

@@ -40,47 +40,49 @@
 
 ## 不改代码即可运行的基线
 
-下面是独立用户 TOML 的骨架；不要覆盖 `configs/base.toml`。数值只是第一个实验点，必须消融。
+下面是独立用户 TOML 的骨架（包含 `[[stage_schedule]]` 与两段 `[[datasets]]` 定义）；不要覆盖 `configs/base.toml`。数值只是第一个实验点，必须消融。
 
-    masked_loss = true
-    inverted_mask_prior_weight = 0.05  # 区域阶段：仅 mask 外的 base 锚点
-    prior_preservation_weight = 0.05  # 整图阶段：扫描 0/.02/.05/.1
+```toml
+masked_loss = true
+inverted_mask_prior_weight = 0.05  # 区域阶段：仅 mask 外的 base 锚点
+prior_preservation_weight = 0.05  # 整图阶段：扫描 0/.02/.05/.1
 
-    stage_schedule_enabled = true
-    [[stage_schedule]]
-    name = "区域归因"
-    subset_index = 0
-    start_pct = 0.0
-    end_pct = 0.35
+stage_schedule_enabled = true
+[[stage_schedule]]
+name = "区域归因"
+subset_index = 0
+start_pct = 0.0
+end_pct = 0.35
 
-    [[stage_schedule]]
-    name = "整图回归"
-    subset_index = 1
-    start_pct = 0.35
-    end_pct = 1.0
+[[stage_schedule]]
+name = "整图回归"
+subset_index = 1
+start_pct = 0.35
+end_pct = 1.0
 
-    [general]
-    caption_extension = ".txt"
+[general]
+caption_extension = ".txt"
 
-    # 行 0：同图同 caption，带 mask，独立缓存
-    [[datasets]]
-    batch_size = 1
-      [[datasets.subsets]]
-      image_dir = "post_image_dataset/resized"
-      cache_dir = "post_image_dataset/lora_region"
-      mask_dir = "post_image_dataset/masks"
-      alpha_mask = true
-      recursive = true
+# 行 0：同图同 caption，带 mask，独立缓存
+[[datasets]]
+batch_size = 1
+  [[datasets.subsets]]
+  image_dir = "post_image_dataset/resized"
+  cache_dir = "post_image_dataset/lora_region"
+  mask_dir = "post_image_dataset/masks"
+  alpha_mask = true
+  recursive = true
 
-    # 行 1：同图同 caption，明确没有 mask，独立缓存
-    [[datasets]]
-    batch_size = 1
-      [[datasets.subsets]]
-      image_dir = "post_image_dataset/resized"
-      cache_dir = "post_image_dataset/lora_full"
-      mask_dir = ""
-      alpha_mask = false
-      recursive = true
+# 行 1：同图同 caption，明确没有 mask，独立缓存
+[[datasets]]
+batch_size = 1
+  [[datasets.subsets]]
+  image_dir = "post_image_dataset/resized"
+  cache_dir = "post_image_dataset/lora_full"
+  mask_dir = ""
+  alpha_mask = false
+  recursive = true
+```
 
 运行前：
 
@@ -89,8 +91,10 @@
 3. 用短 smoke run 确认日志有两个 `[stage]` 事件，切换后整图 batch 不带 `alpha_masks`；切换点保存 checkpoint 和同一套 sample prompt。
 4. 复制并按本机路径调整 [`docs/examples/personalization_region_to_full.toml`](../examples/personalization_region_to_full.toml)，例如：
 
-       .venv/bin/python tasks.py lora METHOD=lora PRESET=default \
-         --dataset_config docs/examples/personalization_region_to_full.toml
+```bash
+.venv/bin/python tasks.py lora METHOD=lora PRESET=default \
+  --dataset_config docs/examples/personalization_region_to_full.toml
+```
 
    若完整训练 TOML 已提供数据块，不要再以另一份 `--dataset_config` 重复定义；开训前用 `print-config` 审计。
 
@@ -137,7 +141,9 @@
 
 先运行 CPU 合约基线：
 
-    rtk test timeout 180 .venv/bin/python -m pytest tests/test_personalization_baselines.py -q
+```bash
+timeout 180 .venv/bin/python -m pytest tests/test_personalization_baselines.py -q
+```
 
 结果为 5 passed，覆盖全程整图、区域 foreground_mean、区域→整图、区域→整图+prior 的有限 loss/stage/cache 合约。
 

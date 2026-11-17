@@ -4,15 +4,15 @@
 `tests/test_anima_pp_trainer_hot.py::test_two_rank_cuda_trainer_resume`
 run14/15/16 rc=0（≈11.1s，straight+resume 参数 digest 全等），真实生产入口、
 无 mock；真实大模型权重训练未验收）
-适用版本：分支 `codex/moss-pp-v0-20261112`（基线 HEAD `6610f710` + 未提交接线成果）
+适用版本：当前 `dev`（Anima / MOSS-Image / Krea-2 三族 PP trainer 接线均已合入）
 入口命令：见下文「启动」；普通非 PP 训练入口与行为完全不变
-相关代码：`library/training/pp/trainer_adapters.py`（族适配器表，本轮新增）、
+相关代码：`library/training/pp/trainer_adapters.py`（族适配器表）、
 `library/training/pp/trainer_session.py`（族盲派发）、
 `library/training/pp/trainer_admission.py`（族准入）、
 `library/training/pp/trainer_inputs.py`（族盲 batch/噪声同步引擎）、
 `library/training/pp/trainer_resume.py`（按族格式戳）、
 `library/training/train_session.py`（冻结分叉点）、`library/training/cli_entry.py`
-需求契约：`docs/proposal/anima_pp_trainer_wiring.md`（t1 冻结原文）
+需求契约：[../../_archive/docs/proposal/anima_pp_trainer_wiring.md](../../_archive/docs/proposal/anima_pp_trainer_wiring.md)（t1 冻结归档原文）
 上位文档：[moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md)
 （MOSS 原始接线）、[anima_pipeline_parallel_v0.md](anima_pipeline_parallel_v0.md)
 （库级 runtime）
@@ -46,8 +46,8 @@ persistent workers/torch_compile），加 Anima 专属具名拒绝（`pp_config_
 `none`、`use_moe_style`）、method adapters（`use_ip_adapter`/`use_easycontrol`/
 `use_byg`）、caption dropout、`ip_noise_gamma`（last-stage 重建算术前提）、
 `network_train_unet_only=true`。单 token bucket 硬约束由 runtime 的
-`pp_token_bucket_mismatch` 承担；`pp_trainer_path_unavailable` 仍挡 krea2_raw /
-z_image / qwen_image_2_1 与一切 DDP 内部误路由。
+`pp_token_bucket_mismatch` 承担；`pp_runtime_unavailable` / `pp_trainer_path_unavailable`
+仍挡未接线的 `z_image` / `qwen_image_2_1` 与一切 DDP 内部误路由（`krea2_raw` 随后也已通过同一族适配器表接入专用 PP 会话，见 [distributed-training-card.md](distributed-training-card.md)）。
 
 ## WebUI/配置链
 

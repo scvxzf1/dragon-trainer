@@ -1,5 +1,6 @@
 # Compile/Dynamic-Seq 安全补丁分析报告
 
+状态：已归档
 **生成时间**: 2026-06-24
 **对比范围**: main vs upstream-snapshot/main
 **聚焦范围**: compile cache/wrapper 检测、token budget 自动扩展、EasyControl compile 保护

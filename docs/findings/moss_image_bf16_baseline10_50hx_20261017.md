@@ -78,12 +78,12 @@ swap、attention、optimizer 和计时范围；1024 分辨率与长提示词有�
 
 ## 复查与复测输入
 
-运行目录：`output/runs/moss-image-bf16-baseline10-20261017-085341`。
+运行目录：`output/runs/moss-image-bf16-baseline10-20261017-085341`（以下均为本地未入库产物）。
 
-- [汇总 result.json](../../output/runs/moss-image-bf16-baseline10-20261017-085341/result.json)、[逐步 JSONL](../../output/runs/moss-image-bf16-baseline10-20261017-085341/steps.jsonl)、[逐步 CSV](../../output/runs/moss-image-bf16-baseline10-20261017-085341/steps.csv)。
-- [完整训练日志](../../output/runs/moss-image-bf16-baseline10-20261017-085341/train.log)、[训练 progress](../../output/runs/moss-image-bf16-baseline10-20261017-085341/progress.jsonl)、[原始遥测](../../output/runs/moss-image-bf16-baseline10-20261017-085341/telemetry.jsonl)、[退出状态](../../output/runs/moss-image-bf16-baseline10-20261017-085341/exit.json)。
-- [精度与有效更新报告](../../output/runs/moss-image-bf16-baseline10-20261017-085341/adapter/precision_report.json)、[环境信息](../../output/runs/moss-image-bf16-baseline10-20261017-085341/environment.json)、[缓存形状](../../output/runs/moss-image-bf16-baseline10-20261017-085341/cache-shapes.json)。
-- [实际命令与环境覆盖](../../output/runs/moss-image-bf16-baseline10-20261017-085341/command.json)、[计时 launcher](../../output/runs/moss-image-bf16-baseline10-20261017-085341/launch.py)、[运行配置](../../output/runs/moss-image-bf16-baseline10-20261017-085341/config.toml)、[数据配置](../../output/runs/moss-image-bf16-baseline10-20261017-085341/dataset.toml)、[源方法配置](../../output/runs/moss-image-bf16-baseline10-20261017-085341/source-method.toml)。
+- 汇总与逐步记录：`output/runs/moss-image-bf16-baseline10-20261017-085341/result.json`、`output/runs/moss-image-bf16-baseline10-20261017-085341/steps.jsonl`、`output/runs/moss-image-bf16-baseline10-20261017-085341/steps.csv`。
+- 日志与遥测：`output/runs/moss-image-bf16-baseline10-20261017-085341/train.log`、`output/runs/moss-image-bf16-baseline10-20261017-085341/progress.jsonl`、`output/runs/moss-image-bf16-baseline10-20261017-085341/telemetry.jsonl`、`output/runs/moss-image-bf16-baseline10-20261017-085341/exit.json`。
+- 精度、环境与缓存形状：`output/runs/moss-image-bf16-baseline10-20261017-085341/adapter/precision_report.json`、`output/runs/moss-image-bf16-baseline10-20261017-085341/environment.json`、`output/runs/moss-image-bf16-baseline10-20261017-085341/cache-shapes.json`。
+- 命令与配置快照：`output/runs/moss-image-bf16-baseline10-20261017-085341/command.json`、`output/runs/moss-image-bf16-baseline10-20261017-085341/launch.py`、`output/runs/moss-image-bf16-baseline10-20261017-085341/config.toml`、`output/runs/moss-image-bf16-baseline10-20261017-085341/dataset.toml`、`output/runs/moss-image-bf16-baseline10-20261017-085341/source-method.toml`。
 
 复测使用新的运行目录，复制 launcher 与配置，更新 `dataset_config`、`output_dir` 和
 `progress_jsonl` 到新目录。配置中的模型与缓存路径指向本机既有资源；

@@ -1,5 +1,7 @@
 # Qwen Image 2.1 NF4 eager Edit 真机 smoke（2026-10-05）
 
+状态：研究记录 / 阶段快照（单步 smoke，非完整收敛或 compile 验收）
+
 ## 结论
 
 真实 50 对 Edit 数据在 CMP 90HX 10 GiB 上完成了 Qwen Image 2.1 全量 NF4、BF16 compute、plain LoRA 的单步 eager 训练，并成功保存 checkpoint。这个结果确认 Edit eager 训练链路可行；它不等于 50 步收敛、图片质量或 `torch.compile` 数值一致性验收。

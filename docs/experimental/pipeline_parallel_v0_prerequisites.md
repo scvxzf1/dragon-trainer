@@ -1,14 +1,15 @@
 # 流水线并行 v0：上手条件与硬件前提
 
 状态：实验
-适用版本：`dev` @ `5a4716fd`（2026-11-16）
-入口命令：`python tasks.py web`（WebUI 卡片）/ `python train.py --pipeline_parallel ...`
+适用版本：当前 `dev`（含 Anima / MOSS-Image / Krea-2 三族 PP 接线）
+入口命令：`python tasks.py web`（WebUI 卡片）/ `accelerate launch --num_processes 2 --multi_gpu train.py --config <pp-config.toml>`
 相关代码：`library/training/pp/`、`library/training/train_session.py`、
 `library/training/cli_entry.py`、`web/services/training/distributed.py`
 
 本文只回答一件事：**换一台机器、换一个人，怎样才能真的把 PP=2 跑起来，以及跑起来会看到什么数字。**
-实现细节见 [Anima PP v0](anima_pipeline_parallel_v0.md)、[Anima trainer 接线](anima_pp_trainer_wiring.md)、
-[MOSS-Image PP v0](moss_image_pipeline_parallel_v0.md)。
+实现与交互细节见 [分布式训练卡片](distributed-training-card.md)、[Anima PP v0](anima_pipeline_parallel_v0.md)、
+[Anima trainer 接线](anima_pp_trainer_wiring.md)、[MOSS-Image PP v0](moss_image_pipeline_parallel_v0.md)、
+[MOSS trainer 接线](moss_image_pp_trainer_wiring.md)。
 
 ## 1. 默认不是 PP
 
@@ -25,36 +26,52 @@ DEFAULT_DISTRIBUTED_MODE = "ddp"
 ## 2. 最小可用配置
 
 ```toml
+mixed_precision = "fp16"                # PP v0 仅支持 fp16（配 GradScaler + fp32 LoRA master）
 pipeline_parallel = true
 pipeline_parallel_stages = 2
-pipeline_parallel_microbatches = 2      # 必须 >= stages
+pipeline_parallel_microbatches = 2      # 必须 >= stages，且整除 train_batch_size
 pipeline_parallel_schedule = "1f1b"
 pipeline_parallel_split = "balanced"
+pipeline_parallel_blocks_to_swap = 0    # 仅 krea2_raw 支持 > 0 的每阶段换层（如双 16GB 卡常用 4）
 torch_compile = false                   # 与 PP 互斥
-blocks_to_swap = 0                      # 与 PP 互斥
+blocks_to_swap = 0                      # 普通整网换层与 PP 互斥
 ```
 
-WebUI 侧对应「分布式训练」卡片的三态选择（单卡 / DDP / PP），GPU 可选全部卡，
+WebUI 侧对应 [分布式训练卡片](distributed-training-card.md) 的三态选择（单卡 / DDP / PP），GPU 可选全部卡，
 多选只在卡片内部生效，外层选择保持单选。
 
 ## 3. 硬性约束（违反即 fail-closed）
 
 | 约束 | 行为 / 错误码 |
 | --- | --- |
-| `stages` 只支持 **2** | 端点 `wired_families` 报 `stages: [2]` |
+| `stages` 只支持 **2** | 端点 `wired_families` 报 `stages: [2]`；`world_size` 必须等于 `stages`（`pp_world_size_mismatch`） |
 | `microbatches >= stages` | `pp_microbatches_below_stages`（torch 2.10 两种 Single schedule 都在 `__init__` 抛） |
-| `microbatch_size` 硬编码为 **1** | global batch 恒等于 `microbatches` 数，不是配置项 |
-| 与 `torch_compile` 互斥 | 配置校验直接报 `Anima pipeline_parallel currently cannot be combined with: torch_compile` |
-| 与 `blocks_to_swap` 互斥 | `pipeline_parallel cannot own a block-swap model` |
-| 族白名单 | 仅 `anima`、`moss_image`；其余族报 `pp_trainer_path_unavailable` |
+| `train_batch_size` 必须整除 `pipeline_parallel_microbatches` | 正式 trainer 路径将一个完整 batch 均分为 `microbatches` 份（如 `batch=4` 可配 `microbatches=2` 或 `4`，并非硬编码 global batch = microbatches；仅独立探针 `pp_v0_bench.py` 固定每微批 1 样本）。不整除时 Krea-2 入口报 `pp_krea2_batch_not_divisible`，其余族 wire 切分报 `pp_shape_contract_violation` |
+| `mixed_precision` 仅限 **`"fp16"`** | `contract.py::validate_mixed_precision` 与 `trainer_admission.py` 硬拒 `bf16` 与 `fp32`（`pp_mixed_precision_unsupported`） |
+| 与 `torch_compile` 互斥 | 配置校验直接报 `<Family> pipeline_parallel currently cannot be combined with: torch_compile` |
+| 与普通 `blocks_to_swap` 互斥 | 普通 `blocks_to_swap > 0` 被配置校验与 `placement.py` 拒绝；**Krea-2（`krea2_raw`）专属支持 `pipeline_parallel_blocks_to_swap`**（其余族设为 `> 0` 在预检即报错） |
+| 族白名单（`TRAINER_PP_WIRED_FAMILIES`） | 已开放 `anima`、`moss_image`、`krea2_raw`（均绑定 `PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B`）；未接线的 `z_image` / `qwen_image_2_1` 报 `pp_runtime_unavailable` / `pp_trainer_path_unavailable` |
 | CUDA PP 需要多后端进程组 | 必须 `cpu:gloo,cuda:nccl`，否则 `pp_backend_multibackend_required` |
 
-## 4. 硬件前提
+### 三族 PP 实现差异简表
+
+| 维度 | `anima` | `moss_image` | `krea2_raw` |
+| --- | --- | --- | --- |
+| 主干容器与双阶段切分 | `blocks`：28 层 → `(0:14, 14:28)`，40 层 → `(0:20, 20:40)` | `layers`：42 层 → `(0:21, 21:42)` | `blocks`：28 层，`stage_zero_block_offset=-1` → `(0:13, 13:28)` |
+| Wire latent 与边界 dtype | 5D `[B,C,1,H,W]`；残差流与边界 `fp32`、预测 `fp16` | 4D `[B,128,H,W]` packed；边界与激活同为 `fp16` | 4D latent；单流 MMDiT 双阶段边界传输 |
+| 文本条件处理 | 缓存 max-padded `crossattn_emb` 保留 attention sinks（各 rank 本地读缓存） | per-sample 真实长度 mask/RoPE，transport padding 不进 attention | 缓存 `_krea2_te.safetensors`（Qwen3-VL），禁 `caption_dropout_rate` |
+| 每阶段块交换 | 不支持（`pipeline_parallel_blocks_to_swap` 必须为 `0`） | 不支持（必须为 `0`） | **支持 `pipeline_parallel_blocks_to_swap >= 0`**（双 V100 16GB 基线常用 `4`，见 [显存实验记录](../findings/krea2_pp_vram_gap_20261116.md)） |
+| 准入专属拦截 | 额外禁 `router_source!="none"`、`use_moe_style`、分档编译、method adapters | 单 `(batch,H,W)` wire 形状、仅 plain LoRA | 入口显式校验 `train_batch_size % pipeline_parallel_microbatches == 0`（`pp_krea2_batch_not_divisible`）、禁 method adapters |
+
+## 4. 硬件与精度前提
 
 **双卡即可，不需要 NVLink。** NCCL 自己会按 `NVLink → PCIe P2P → host 中转` 回退，PP 不额外写检测逻辑。
 
-精度不限 fp16：`PpComputePolicy.from_dtype()` 接受 fp32/fp16/bf16 任一种，所以 3090/4090 上 bf16 可用；
-V100 没有原生 bf16，必须 fp16（`mixed_precision="fp16"` 会自动要求 fp32 master weights）。
+**精度严格限定 `mixed_precision = "fp16"`**（配 `GradScaler` 与 fp32 可训练 LoRA master weights）。
+源码 `library/training/pp/contract.py::validate_mixed_precision` 与 `trainer_admission.py` 均硬性拒绝 `bf16` 与 `fp32`
+（报错 `pp_mixed_precision_unsupported`）：PP v0 依赖跨 stage 对称的 `GradScaler` overflow/skip 事务协议，bf16 无 scaler，
+因此在 RTX 3090 / 4090 等具备原生 bf16 的 GPU 上运行 PP v0 时也**必须**设置 `mixed_precision = "fp16"`
+（注：`PpComputePolicy.from_dtype()` 接受多 dtype 仅服务库内 CPU/fp32 等价性单测夹具，不对训练入口开放 bf16/fp32）。
 
 ## 5. 实测基线（双 V100-SXM2 16GB / 200 W 限功耗 / fp16）
 
@@ -73,7 +90,7 @@ V100 没有原生 bf16，必须 fp16（`mixed_precision="fp16"` 会自动要求 
 要点：
 
 - **单卡 batch=8 直接 OOM，PP=2 每卡 4.33 GB 跑通** —— 这是 PP 存在的理由。
-- PP 的显存几乎不随 batch 增长（2→8→16 只从 4.10 涨到 4.62 GB），因为 `microbatch_size=1`。
+- 当固定每微批 1 样本（即 `train_batch_size == pipeline_parallel_microbatches`）时，PP 的显存几乎不随 batch 增长（2→8→16 只从 4.10 涨到 4.62 GB）。
 - 单卡真正的低显存手段是**梯度累积**（`batch_size=1` + `grad_accum=N`），5.65 GB 就能跑等效 bs8；
   block swap 优先级在它之后。这也说明 **PP 相对「单卡 + 梯度累积」的优势是速度（1.77×），不是显存**。
 
@@ -124,9 +141,11 @@ p2p 是延迟敏感、带宽不敏感的，且流水线把传输掩盖掉了。�
 
 | 现象 | 处置 |
 | --- | --- |
-| `pp_microbatches_below_stages` | 把 `microbatches` 提到 ≥ 2 |
-| `Anima pipeline_parallel ... torch_compile` | 关掉 `torch_compile` |
-| `pipeline_parallel cannot own a block-swap model` | `blocks_to_swap = 0` |
-| `pp_trainer_path_unavailable` | 当前族未接线，换 `anima` / `moss_image` |
+| `pp_microbatches_below_stages` | 把 `pipeline_parallel_microbatches` 提到 ≥ 2 |
+| `pp_krea2_batch_not_divisible` / `pp_shape_contract_violation` | 令 `train_batch_size`（或子集 `batch_size`）≥ 2 且整除 `pipeline_parallel_microbatches` |
+| `pp_mixed_precision_unsupported` | 改设 `mixed_precision = "fp16"`（PP v0 硬拒 `bf16` / `fp32`） |
+| `<Family> pipeline_parallel ... torch_compile` | 关掉 `torch_compile` |
+| `pipeline_parallel cannot own a block-swap model` | 设 `blocks_to_swap = 0`；Krea-2 每阶段换层改用 `pipeline_parallel_blocks_to_swap` |
+| `pp_runtime_unavailable` / `pp_trainer_path_unavailable` | 当前族未接线（`z_image` / `qwen_image_2_1`），换 `anima` / `moss_image` / `krea2_raw` |
 | `pp_backend_multibackend_required` | 进程组后端要同时含 `gloo` 与 `nccl` |
 | 单卡 batch 一大就 OOM | 这是预期：先降 `batch_size` 提 `grad_accum`，PP 才有意义 |

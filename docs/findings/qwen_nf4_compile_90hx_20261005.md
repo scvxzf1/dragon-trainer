@@ -808,11 +808,11 @@ checkpoint 的 `ss_model_family`/`ss_network_spec` 正确；通用 `modelspec.ar
 原比较门槛未放宽。CPU 合同测试 35 项通过；不同代理独立复测零 dropout 字符串与
 非法 network_args 的 10 项边界，Ruff/Pyright/diff-check 通过。
 
-证据：[真实入口报告](../../output/tests/qwen_nf4_compile_train_entry_20261006/report.md)、
+证据（本地未入库产物）：真实入口报告 `output/tests/qwen_nf4_compile_train_entry_20261006/report.md`、
 同目录 `attempt2-result.json`、日志、退出码和 checkpoint；
-[前端构建报告](../../output/tests/qwen_nf4_compile_frontend_finish_20261006/report.md)
+前端构建报告 `output/tests/qwen_nf4_compile_frontend_finish_20261006/report.md`
 记录当时的摘要检查、TypeScript 与隔离 Vite 构建。随后
-[前端正式构建报告](../../output/tests/qwen_nf4_compile_frontend_acceptance_20261006/report.md)
+前端正式构建报告 `output/tests/qwen_nf4_compile_frontend_acceptance_20261006/report.md`
 记录 checkbox 定向检查、273 项摘要、TypeScript 和本地正式构建通过，
 `web/static/dragon-next` 已更新，旧资源与备份保留。未做浏览器验收或线上发布。
 
@@ -852,10 +852,10 @@ Python RNG 在 `random.setstate` 原函数返回时，原始 tuple 与保存值�
 `view(uint8)` 报错，训练进程 exit 1；修复临时哈希的 `reshape(-1)` 后，在新
 目录完成正常退出复验，没有因此修改生产源码。
 
-原始证据：[生命周期报告](../../output/tests/qwen_nf4_compile_preview_resume_clean_exit_20261006/report.json)、
+原始证据（本地未入库产物）：生命周期报告 `output/tests/qwen_nf4_compile_preview_resume_clean_exit_20261006/report.json`、
 同目录 `preview-result.json`、`resume-result.json`、`artifacts-verification.json`、
 `commands.txt`、`final-source-hashes.json`；
-[Python RNG 因果报告](../../output/tests/qwen_nf4_compile_rng_review_20261006/report.md)。
+Python RNG 因果报告 `output/tests/qwen_nf4_compile_rng_review_20261006/report.md`。
 
 主要原始证据（均只读模型、输出到新时间戳目录）：
 

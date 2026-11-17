@@ -1,8 +1,9 @@
 # 已退役 Dragon 训练器 215 项配置快照
 
+状态：已归档
 重组探索：[Dragon 训练配置渐进披露重组提案](../proposal/dragon_config_progressive_disclosure.md)
 
-> 范围说明：下文“当前”“可用”等表述仅指快照采集时该配置的页面状态，不代表现在或所有模型族的能力。当前配置工作台请参阅 [Next README](../../web/frontend-next/README.md) 和[多模型支持说明](../multi_model_support.md)；各模型族参数兼容性以当前入口为准。
+> 范围说明：下文“当前”“可用”等表述仅指快照采集时该配置的页面状态，不代表现在或所有模型族的能力。当前配置工作台请参阅 [Next README](../../../web/frontend-next/README.md) 和[多模型支持说明](../../../docs/multi_model_support.md)；各模型族参数兼容性以当前入口为准。
 
 > 快照日期：2026-09-03（Asia/Shanghai）
 >

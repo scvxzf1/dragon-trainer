@@ -123,7 +123,7 @@ node --check web/static/js/dragon-ui/{index,nav,router,theme,animations}.js
 
 ## 阶段 3：文档与使用引导
 
-本阶段新增 [Dragon UI 与 classic 兼容界面](../features/dragon-ui.md)，并同步根 README、文档总索引、功能索引、预览、全局设置、全局模型配置和 Linux 部署指南：
+本阶段新增 [Dragon UI 与 classic 兼容界面（已归档）](../../_archive/docs/features/dragon-ui.md)，并同步根 README、文档总索引、功能索引、预览、全局设置、全局模型配置和 Linux 部署指南：
 
 - 明确没有有效选择时默认 Dragon，`?ui=classic` / `?ui=dragon` 优先于 `localStorage.anima_ui_mode`。
 - 记录 Dragon 左上角界面菜单和 classic **新版界面**按钮的双向切换入口。

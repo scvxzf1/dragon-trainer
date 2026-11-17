@@ -1,5 +1,7 @@
 # History Manager Extra Filters Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在「训练 → 历史任务」全局搜索下新增「训练变体 / 预处理精度 / 块交换精度」三个下拉筛选，语义与历史详情概览实时指标 chip 一致。

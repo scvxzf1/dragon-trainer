@@ -20,10 +20,10 @@ python tasks.py lora ... --base_compute w8a16_convrot   # 显式开启
 
 相关文档：
 
-- 研究记录：[`../experimental/convrot_int8_training.md`](../experimental/convrot_int8_training.md)
-- **后续优化路线图：** [`convrot_w8a_optimization_roadmap.md`](convrot_w8a_optimization_roadmap.md)
-- 旧 int8 审计：[`../findings/anima_int8_base_linear_audit.md`](../findings/anima_int8_base_linear_audit.md)
-- adapter 侧预缩放：[`../methods/channel_scaling.md`](../methods/channel_scaling.md)
+- 研究记录：[`../../../docs/experimental/convrot_int8_training.md`](../../../docs/experimental/convrot_int8_training.md)
+- **后续优化路线图：** [`../../../docs/proposal/convrot_w8a_optimization_roadmap.md`](../../../docs/proposal/convrot_w8a_optimization_roadmap.md)
+- 旧 int8 审计：[`../../../docs/findings/anima_int8_base_linear_audit.md`](../../../docs/findings/anima_int8_base_linear_audit.md)
+- adapter 侧预缩放：[`../../../docs/methods/channel_scaling.md`](../../../docs/methods/channel_scaling.md)
 - outlier 证据：`bench/channel_stats/`
 
 > **一句话：** 在 DiT 冻结 base 上自建 **group-wise Regular Hadamard（ConvRot）+ W8A16 / W8A8** 训练路径，挂在现有 LoRA `org_forward` 补丁缝上。
@@ -622,7 +622,7 @@ timeout 60 .venv/bin/python -m pytest tests/test_convrot_rht.py tests/test_convr
 | 2026-07-24 | 补跑 full-checkpoint + short-train 的 **W8A8**；experimental 文档合并 W8A16/W8A8 验证矩阵 |
 | 2026-07-24 | 任务1+2：默认 free base bf16 权重（meta）；W8A8 真 int8 GEMM（`_int_mm`/float 回退）；mem/speed：free 后 peak 低于 bf16，端到端仍慢于 bf16 |
 | 2026-07-24 | 任务3：`fused.py` + `group_fwht`；单 autograd 融合 RHT+quant+GEMM。本机 3080 实测 FWHT/`_weight_int8pack_mm` 慢于 dense+dequant（W8A16 曾到 47s/step），默认改回 dense RHT + dequant；FWHT/int8pack 仅 env opt-in |
-| 2026-07-24 | 新增后续优化提案 [`convrot_w8a_optimization_roadmap.md`](convrot_w8a_optimization_roadmap.md)：P0 profile/prequant/口径；P1 混精/缩小 scope；P2 真 Triton 融合门槛 |
+| 2026-07-24 | 新增后续优化提案 [`../../../docs/proposal/convrot_w8a_optimization_roadmap.md`](../../../docs/proposal/convrot_w8a_optimization_roadmap.md)：P0 profile/prequant/口径；P1 混精/缩小 scope；P2 真 Triton 融合门槛 |
 | 2026-07-24 | P0-A 落地：`scripts/experiments/convrot_step_profile_probe.py`；本机饼图否决立刻 Triton（convrot tax~14%）；下一步 W8A16 bf16 计算 dtype |
 | 2026-07-24 | P0-A2：W8A16 dequant/`F.linear` 改 bf16 计算；mem_speed ~3.0→~2.0 s/step |
 | 2026-07-25 | P0-C：`prequant_checkpoint` 原生 v1 加载/导出（`library/runtime/convrot/prequant.py`）；act RHT 仍在线 |

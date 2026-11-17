@@ -333,3 +333,5 @@ training (vs Phase 1.5's >16 GiB OOM at the same bucket).
 | `bench/easycontrol/step0_equivalence.py` | `b_cond=-10` init recipe + two-stream verification     |
 | `bench/easycontrol/step1p5_lse_equivalence.py` | LSE-decomposed Function vs masked-SDPA reference |
 | `bench/easycontrol/two_stream_smoke.py`  | End-to-end forward+backward smoke + peak memory        |
+| [EasyControl 适配器开发指南](../../easycontrol_adapters/ADAPTER_GUIDE.cn.md) | Paired-dataset prep & custom EasyControl adapter guide |
+| [上色适配器说明](../../easycontrol_adapters/colorization/README.md) | Manga/lineart colorization adapter recipe & tools |

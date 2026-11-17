@@ -16,7 +16,7 @@
 
 CPU关联集合90通过/14 CUDA跳过；另一组loop/master/mixed/tiled回归38通过/12 CUDA跳过。deferred cleanup接入后追加CPU回归72通过/4 CUDA跳过。新生命周期及验证模块Ruff通过、Pyright无错误。独立审阅后修正由主代理复核与测试；会话上限导致没有新的第二轮独立审阅，不标称全量独立最终验收。
 
-证据目录：[本轮结果](../../output/convrot-lifecycle-fix-20261003/summary.md)。replay工具先后修正了标量step hash和预览分支缺少BF16 autocast的问题，失败日志均保留；它们未在生产用例中出现。初次生产用例错误地设置`save_every_n_steps=0`，触发modulo-by-zero；保留失败目录，retry1用合法保存间隔。因磁盘空间有限，后续未启动用例只保存最终adapter/optimizer state，仍有第4/8步采样，没有删除任何已产生结果。
+证据目录（本地未入库产物）：`output/convrot-lifecycle-fix-20261003/summary.md`。replay工具先后修正了标量step hash和预览分支缺少BF16 autocast的问题，失败日志均保留；它们未在生产用例中出现。初次生产用例错误地设置`save_every_n_steps=0`，触发modulo-by-zero；保留失败目录，retry1用合法保存间隔。因磁盘空间有限，后续未启动用例只保存最终adapter/optimizer state，仍有第4/8步采样，没有删除任何已产生结果。
 
 ## 真实模型复测协议
 
@@ -40,7 +40,7 @@ CPU关联集合90通过/14 CUDA跳过；另一组loop/master/mixed/tiled回归38
 
 W8A16 swap0相对旧峰值下降约24.8%（1.55GiB），swap12下降约17.2%（0.98GiB）；修复后swap0比本轮BF16峰值低约16.2%（0.91GiB）。BF16旧/新swap0差约0.046GiB，不解释为算法收益。换层较多时VAE decode约4.70GiB形成全流程峰值，不能再按基座字节数线性推断节省量。
 
-阶段表中`vae_decode_before_load`只是函数入口；只有发生`vae_device_transition`到CUDA才证明实际加载。final/no-latent调用的额外入口记录不参与两次采样的CPU驻留判断。[生产审计](../../output/convrot-lifecycle-fix-20261003/production-audit.json)。
+阶段表中`vae_decode_before_load`只是函数入口；只有发生`vae_device_transition`到CUDA才证明实际加载。final/no-latent调用的额外入口记录不参与两次采样的CPU驻留判断。生产审计：`output/convrot-lifecycle-fix-20261003/production-audit.json`。
 
 ## 确定性恢复对照
 
@@ -50,7 +50,7 @@ W8A16 swap0相对旧峰值下降约24.8%（1.55GiB），swap12下降约17.2%（0
 
 保存每个完整参数、梯度、AdamW exp_avg/exp_avg_sq/step的dtype/shape/SHA256，以及CPU/CUDA RNG hash，不重复存巨大数值矩阵。它验证插入preview生命周期是否改变同一模式的更新；不表示量化与BF16数值等价，也不证明生产dataloader精确resume游标。
 
-9/9模式/swap对照全部通过：392个参数、全部梯度、AdamW状态的dtype/shape/SHA256、CPU/CUDA RNG和四次更新loss/输入均与无预览控制完全一致，optimizer step均为4。真实VAE解码PNG成功，park时managed GPU payload归零，恢复后下一backward正常。[replay审计](../../output/convrot-lifecycle-fix-20261003/replay-audit.json)。
+9/9模式/swap对照全部通过：392个参数、全部梯度、AdamW状态的dtype/shape/SHA256、CPU/CUDA RNG和四次更新loss/输入均与无预览控制完全一致，optimizer step均为4。真实VAE解码PNG成功，park时managed GPU payload归零，恢复后下一backward正常。replay审计：`output/convrot-lifecycle-fix-20261003/replay-audit.json`。
 
 该对照使用确定性Flash和固定输入序列，不能当作默认非确定性Flash的逐位认证或量化对BF16质量认证。
 

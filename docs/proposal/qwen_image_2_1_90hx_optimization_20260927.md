@@ -1,7 +1,7 @@
 # Qwen Image 2.1 / CMP 90HX 结构性优化审阅
 
 日期：2026-09-27
-状态（更新于 2026-09-28）：方案 1（INT8 packed block-swap）已实现并完成 INT8/BF16 各 60-step 首轮热测；观察到约 3.69% 单轮步时改善，但未达到推荐门槛，A/B/A、模型质量和续训验收仍待完成。方案 3 的 MLP/QKV/重算策略已集成，独立小模型验证与完整模型短测通过；续训首步梯度差异在确定性诊断中消失，尚未做性能验收，详见[阶段 3 开发与验收](qwen_image_2_1_training_block_stage3_20260927.md)。方案 2、4 尚未实施。
+状态：半活跃（2026-09-28 更新）——方案 1（INT8 packed block-swap）已实现并完成 INT8/BF16 各 60-step 首轮热测；观察到约 3.69% 单轮步时改善，但未达到推荐门槛，A/B/A、模型质量和续训验收仍待完成。方案 3 的 MLP/QKV/重算策略已集成，独立小模型验证与完整模型短测通过；续训首步梯度差异在确定性诊断中消失，尚未做性能验收，详见[阶段 3 开发与验收（已归档）](../../_archive/docs/proposal/qwen_image_2_1_training_block_stage3_20260927.md)。方案 2、4 尚未实施。
 范围：Qwen 2.1 T2I、BF16、full checkpoint、swap24、all-block dynamic compile；允许研究高风险方案
 代码基线：HEAD `4df001242` 加当前工作区改动；依赖实现以本机已安装 Diffusers / FlashAttention 源码为准
 

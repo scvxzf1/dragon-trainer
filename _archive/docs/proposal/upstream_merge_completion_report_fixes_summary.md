@@ -1,5 +1,6 @@
 # 上游合并完成报告修复摘要
 
+状态：已归档
 **修复日期**: 2026-06-24
 **原报告**: `upstream_merge_completion_report_2026-06-24.md`
 **审核报告**: `upstream_merge_completion_report_2026-06-24_audit.md`

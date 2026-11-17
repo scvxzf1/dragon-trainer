@@ -4,7 +4,7 @@
 > GUI workflow. `python tasks.py gui`, `make gui`, and `gui-shortcut` are no
 > longer available. Start the WebUI with
 > `python tasks.py web --host 127.0.0.1 --port 20102` and follow the root
-> [README](../../README.md) for current setup instructions.
+> [README](../../../README.md) for current setup instructions.
 
 This document is a comprehensive English guide for using the **Anima LoRA** training/inference pipeline from start to finish. It covers everything from CUDA driver installation to dataset preparation, training, inference, and ComfyUI deployment. This guide is written for Windows beginners; for WSL, Linux, and training optimization topics, please refer to other documents.
 
@@ -445,7 +445,7 @@ How it works:
 | **Postfix tail probe** *(historical)* | `python tasks.py exp-invert-directedit` | The old Postfix training/test targets are removed; only the DirectEdit postfix-tail probe remains |
 | **ChimeraHydra** *(experimental)* | `make exp-chimera` or `make lora-gui GUI_PRESETS=chimera_hydra` | Content/frequency dual-pool MoE — for research |
 
-For detailed options per variant, see [`docs/guidelines/training.md`](training.md) and the individual docs under `docs/methods/`.
+For detailed options per variant, see [`docs/guidelines/training.md`](../../../docs/guidelines/training.md) and the individual docs under `docs/methods/`.
 
 > **Compatibility notes**
 > - HydraLoRA / ReFT and similar adapter variants require `cache_llm_adapter_outputs = true` (enabled by default) to work correctly.
@@ -506,7 +506,7 @@ Commonly used flags:
 | `--spectrum` | Enable Spectrum acceleration |
 | `--pgraft` | P-GRAFT (LoRA cutoff in late denoising — base model handles late detail) |
 
-For the full list of inference options and P-GRAFT usage, see [`docs/guidelines/inference.md`](inference.md).
+For the full list of inference options and P-GRAFT usage, see [`docs/guidelines/inference.md`](../../../docs/guidelines/inference.md).
 
 ---
 
@@ -547,16 +547,16 @@ make update -- --dry-run # Preview which files would change
 
 ## Further Reading
 
-- [`docs/guidelines/training.md`](training.md) — Adapter variants, caption shuffling, masked loss, dataset config details
-- [`docs/guidelines/inference.md`](inference.md) — Inference flags, DCW, Spectrum, prompt file format
-- [`docs/guidelines/difference_between_comfy.md`](difference_between_comfy.md) — Implementation differences between anima_lora and ComfyUI core
-- [`docs/methods/timestep_mask.md`](../methods/timestep_mask.md) — T-LoRA timestep mask
-- [`docs/methods/psoft-integrated-ortholora.md`](../methods/psoft-integrated-ortholora.md) — OrthoLoRA details (the orthogonal rotation part of the recommended `tlora` variant)
-- [`docs/methods/spectrum.md`](../methods/spectrum.md) — Spectrum acceleration: how it works and options
-- [`docs/methods/dcw.md`](../methods/dcw.md) — DCW (scalar + v4 learnable calibrator)
-- [`docs/methods/mod-guidance.md`](../methods/mod-guidance.md) — Modulation guidance
-- [`docs/methods/hydra-lora.md`](../methods/hydra-lora.md) — HydraLoRA multi-head routing
-- [`docs/methods/reft.md`](../methods/reft.md) — ReFT representation editing
-- [`docs/guidelines/training.md#postfix`](training.md#postfix) — Postfix (experimental entry point)
+- [`docs/guidelines/training.md`](../../../docs/guidelines/training.md) — Adapter variants, caption shuffling, masked loss, dataset config details
+- [`docs/guidelines/inference.md`](../../../docs/guidelines/inference.md) — Inference flags, DCW, Spectrum, prompt file format
+- [`docs/guidelines/difference_between_comfy.md`](../../../docs/guidelines/difference_between_comfy.md) — Implementation differences between anima_lora and ComfyUI core
+- [`docs/methods/timestep_mask.md`](../../../docs/methods/timestep_mask.md) — T-LoRA timestep mask
+- [`docs/methods/psoft-integrated-ortholora.md`](../../../docs/methods/psoft-integrated-ortholora.md) — OrthoLoRA details (the orthogonal rotation part of the recommended `tlora` variant)
+- [`docs/methods/spectrum.md`](../../../docs/methods/spectrum.md) — Spectrum acceleration: how it works and options
+- [`docs/methods/dcw.md`](../../../docs/methods/dcw.md) — DCW (scalar + v4 learnable calibrator)
+- [`docs/methods/mod-guidance.md`](../../../docs/methods/mod-guidance.md) — Modulation guidance
+- [`docs/methods/hydra-lora.md`](../../../docs/methods/hydra-lora.md) — HydraLoRA multi-head routing
+- [`docs/methods/reft.md`](../../../docs/methods/reft.md) — ReFT representation editing
+- [`docs/guidelines/training.md#postfix`](../../../docs/guidelines/training.md#postfix) — Postfix (experimental entry point)
 
 Questions and bug reports are welcome on GitHub Issues. Happy training!

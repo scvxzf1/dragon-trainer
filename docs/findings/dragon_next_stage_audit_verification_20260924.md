@@ -28,7 +28,7 @@ Dragon Next 已形成八个主工作区、数据集图片子工作区和独立�
 
 ## 范围与系统地图
 
-`src/main.tsx` 装配 React；`src/app/DragonNextApp.tsx` 提供 QueryClient 与 Router；`src/app/router.tsx` 使用 `/next` basename、lazy 页面与加载态；`src/app/AppShell.tsx`/`Topbar.tsx` 管主导航、主题、移动导航和旧工具出口。服务端快照主要由 TanStack Query 管理，训练配置/硬件预设选择由 `trainingContextStore.ts` 持久化；表单局部状态与后端草稿分离。API 统一由 `src/api/client.ts::apiRequest` 发出，监控同时使用 HTTP 轮询和 `/ws/training` 刷新。生产路径由 Python 服务托管静态文件，不要求常驻 Node 服务。参见 [实施记录](../features/dragon-next-implementation.md)和 [前端 README](../../web/frontend-next/README.md)。
+`src/main.tsx` 装配 React；`src/app/DragonNextApp.tsx` 提供 QueryClient 与 Router；`src/app/router.tsx` 使用 `/next` basename、lazy 页面与加载态；`src/app/AppShell.tsx`/`Topbar.tsx` 管主导航、主题、移动导航和旧工具出口。服务端快照主要由 TanStack Query 管理，训练配置/硬件预设选择由 `trainingContextStore.ts` 持久化；表单局部状态与后端草稿分离。API 统一由 `src/api/client.ts::apiRequest` 发出，监控同时使用 HTTP 轮询和 `/ws/training` 刷新。生产路径由 Python 服务托管静态文件，不要求常驻 Node 服务。参见 [实施记录（已归档）](../../_archive/docs/features/dragon-next-implementation.md)和 [前端 README](../../web/frontend-next/README.md)。
 
 | 工作区与路由 | 当前能力边界 | 审计重点 | 真实副作用 |
 | --- | --- | --- | --- |
@@ -563,4 +563,4 @@ rtk proxy timeout 180 .venv/bin/python -m pytest \
 
 每轮在新记录中写明：日期、分支/HEAD、脏文件摘要、静态包身份、服务地址、fixture 根、浏览器/视口/主题、命令与完整结果、截图/trace 的本地位置、已确认问题及复现、未执行原因、P0/P1/P2/G1 清单、回退方式和签收人。状态只使用 `PASS` / `FAIL` / `BLOCKED` / `NOT RUN` / `N/A`；历史文档的通过数不得移植成当前工作树分数。
 
-发布判断以 [前端健康度评分卡](../features/frontend-health-scorecard.md) 的结构、测试、交互、配置体验四域为参考，但本轮证据不足以重新打总分。完成 S0-S4 后再评分，并和 [Dragon Next 实施记录](../features/dragon-next-implementation.md)、[UI/UX 历史进度](../features/dragon-next-uiux-progress.md)逐项对账。
+发布判断以 [前端健康度评分卡](../features/frontend-health-scorecard.md) 的结构、测试、交互、配置体验四域为参考，但本轮证据不足以重新打总分。完成 S0-S4 后再评分，并和 [Dragon Next 实施记录（已归档）](../../_archive/docs/features/dragon-next-implementation.md)、[UI/UX 历史进度（已归档）](../../_archive/docs/features/dragon-next-uiux-progress.md)逐项对账。

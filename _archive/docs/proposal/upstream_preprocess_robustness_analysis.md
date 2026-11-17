@@ -1,5 +1,6 @@
 # library/preprocess/ 健壮性增强分析
 
+状态：已归档
 对比分支：`main` vs `upstream-snapshot/main`
 分析重点：健壮性修复、fail-fast 检查、路径约束、避免重复操作的优化
 

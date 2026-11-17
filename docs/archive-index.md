@@ -1,5 +1,7 @@
 # 文档归档索引
 
+状态：索引（历史归档主目录）
+
 这里说明哪些文档已经从主文档路径退下去，以及为什么退下去。
 
 ## 归档原则
@@ -10,10 +12,28 @@
 
 ## Proposal 归档
 
-历史提案和一次性合并材料放在 [_archive/docs/proposal/](../_archive/docs/proposal/)。
+历史提案和一次性合并材料放在 [_archive/docs/proposal/README.md](../_archive/docs/proposal/README.md)。
 
 | 文档 | 原因 |
 | --- | --- |
+| [proposal/README.md](../_archive/docs/proposal/README.md) | 历史提案分区归档索引 |
+| [adaptive_precision_delivery_reset_20261001.md](../_archive/docs/proposal/adaptive_precision_delivery_reset_20261001.md) | 2026-10-01 自动精度交付收敛批次计划已执行完毕，结论沉淀于 `docs/findings/` 与 `adaptive-runtime.md` |
+| [anima_pp_trainer_wiring.md](../_archive/docs/proposal/anima_pp_trainer_wiring.md) | Anima 主训练 PP 接线 t1 冻结契约已完成落地与验收，当前说明见 [anima_pp_trainer_wiring.md](experimental/anima_pp_trainer_wiring.md) |
+| [convrot_90hx_development_validation_plan_20261002.md](../_archive/docs/proposal/convrot_90hx_development_validation_plan_20261002.md) | CMP 90HX 六阶段筛选计划已收尾（S5 按门控跳过），结果沉淀于 [convrot_90hx_validation_20261002.md](findings/convrot_90hx_validation_20261002.md) |
+| [convrot_w8a_training_plan.md](../_archive/docs/proposal/convrot_w8a_training_plan.md) | ConvRot W8A16/W8A8 核心训练路径已落地，当前说明见 [convrot_int8_training.md](experimental/convrot_int8_training.md) |
+| [dev_push_audit_plan_20260927.md](../_archive/docs/proposal/dev_push_audit_plan_20260927.md) | 2026-09-27 一次性待推送变更隔离与审计计划，基线已过时 |
+| [dpdmd.md](../_archive/docs/proposal/dpdmd.md) | DP-DMD 迁移提案已落地，当前说明见 [experimental/dpdmd.md](experimental/dpdmd.md) 与 [structure/dpdmd.md](structure/dpdmd.md) |
+| [dragon_config_progressive_disclosure.md](../_archive/docs/proposal/dragon_config_progressive_disclosure.md) | 面向已退役旧静态 Dragon UI 的渐进披露提案，原则已由 Next 训练配置计划承接 |
+| [krea2_pipeline_parallel.md](../_archive/docs/proposal/krea2_pipeline_parallel.md) | 早期双卡 PP 阶段规划；Anima / MOSS / Krea-2 三族 1F1B 专用训练会话现已上线，见 [distributed-training-card.md](experimental/distributed-training-card.md) |
+| [moss_image_pipeline_parallel_v0.md](../_archive/docs/proposal/moss_image_pipeline_parallel_v0.md) | MOSS-Image 库级 PP v0 冻结需求契约已落地并独立验收，当前说明见 [moss_image_pipeline_parallel_v0.md](experimental/moss_image_pipeline_parallel_v0.md) |
+| [moss_image_pp_trainer_wiring.md](../_archive/docs/proposal/moss_image_pp_trainer_wiring.md) | MOSS-Image 主训练 PP 接线冻结契约（保留原始字节指纹），当前说明见 [moss_image_pp_trainer_wiring.md](experimental/moss_image_pp_trainer_wiring.md) |
+| [multi_gpu_training_plan.md](../_archive/docs/proposal/multi_gpu_training_plan.md) | `codex/multi-gpu-training` 研究分支已并入 `dev` 收口，逐点验收见 [multigpu_reference_validation_20261107.md](findings/multigpu_reference_validation_20261107.md) |
+| [optimization-roadmap.md](../_archive/docs/proposal/optimization-roadmap.md) | 早期优化路线图已被 [optimization-configs-current.md](optimization-configs-current.md) 取代 |
+| [qwen_image_2_1_training_block_stage3_20260927.md](../_archive/docs/proposal/qwen_image_2_1_training_block_stage3_20260927.md) | Qwen 2.1 阶段 3 冻结投影融合开发与验收已完成，当前入口见 [qwen_image_2_1_fused_projections.md](experimental/qwen_image_2_1_fused_projections.md) |
+| [separation_plan.md](../_archive/docs/proposal/separation_plan.md) | `anima_lora` 可安装包门面与 CLI 分离方案已落地 |
+| [soft_tokens_contrastive.md](../_archive/docs/proposal/soft_tokens_contrastive.md) | Soft Tokens B=1 InfoNCE 早期提案已并入 [soft_tokens.md](experimental/soft_tokens.md) |
+| [soft_tokens_softrank.md](../_archive/docs/proposal/soft_tokens_softrank.md) | Soft Tokens soft-rank 早期提案已落地并并入 [soft_tokens.md](experimental/soft_tokens.md) |
+| [turbo_anima_dmd_lora.md](../_archive/docs/proposal/turbo_anima_dmd_lora.md) | CA-decoupled DMD2 旧蒸馏提案已被 DP-DMD 方案取代 |
 | [legacy_ui_retirement_plan.md](../_archive/docs/proposal/legacy_ui_retirement_plan.md) | Classic / Dragon 旧 UI 退役已完成；保留 2026-09-28 至 2026-09-30 的迁移、取舍与验收记录 |
 | [krea2_raw_gradient_checkpointing.md](../_archive/docs/proposal/krea2_raw_gradient_checkpointing.md) | Krea-2 检查点已落地；保留早期调查、设计与实现分叉的历史核对 |
 | [webui-instrument-panel-reskin/README.md](../_archive/docs/proposal/webui-instrument-panel-reskin/README.md) | 2026-07-12 旧静态 UI 换皮已完成；设计、计划、迭代日志和最终评审成组归档 |
@@ -71,5 +91,34 @@
 
 | 文档 | 说明 |
 | --- | --- |
-| [configuration/README.md](../_archive/docs/configuration/README.md) | 历史配置实施报告索引 |
+| [configuration/README.md](../_archive/docs/configuration/README.md) | 历史配置快照与实施报告索引 |
+| [dragon-training-config-215.md](../_archive/docs/configuration/dragon-training-config-215.md) | 已退役静态 Dragon 训练器 215 项配置快照 |
+| [moss-image-training-preflight.md](../_archive/docs/configuration/moss-image-training-preflight.md) | MOSS-Image 早期训练前核对快照（后续重测纠偏见 `docs/findings/moss_historical_measurements_audit_20261020.md` 与 `docs/configuration/moss-image.md`） |
 | [implementation-report.md](../_archive/docs/configuration/implementation-report.md) | 2026-06-24 配置根外置的本机实施快照，已脱敏 |
+
+## Features 归档
+
+| 文档 | 说明 |
+| --- | --- |
+| [features/README.md](../_archive/docs/features/README.md) | WebUI 历史界面与阶段施工记录索引 |
+| [dragon-ui.md](../_archive/docs/features/dragon-ui.md) | 已退役静态 Dragon / classic 界面说明与路由重定向背景 |
+| [dragon-ui-functional-map.md](../_archive/docs/features/dragon-ui-functional-map.md) | 旧静态 Dragon 八个界面的历史功能盘点图谱 |
+| [dragon-next-implementation.md](../_archive/docs/features/dragon-next-implementation.md) | 2026-09 Next React 工作台首轮重建实施与验收对账记录 |
+| [dragon-next-uiux-progress.md](../_archive/docs/features/dragon-next-uiux-progress.md) | 2026-09 Next UI/UX 阶段性施工修复流水记录 |
+
+## Guidelines 归档
+
+| 文档 | 说明 |
+| --- | --- |
+| [guidelines/README.md](../_archive/docs/guidelines/README.md) | 早期单模型与已移除桌面 PySide6 GUI 综合指南归档索引 |
+| [指南书.md](../_archive/docs/guidelines/指南书.md) | 中文早期桌面 GUI 综合指南 |
+| [guidebook.md](../_archive/docs/guidelines/guidebook.md) | 英文早期桌面 GUI 综合指南 |
+| [ガイドブック.md](../_archive/docs/guidelines/ガイドブック.md) | 日文早期桌面 GUI 综合指南 |
+| [가이드북.md](../_archive/docs/guidelines/가이드북.md) | 韩文早期桌面 GUI 综合指南 |
+
+## Methods 归档
+
+| 文档 | 说明 |
+| --- | --- |
+| [methods/README.md](../_archive/docs/methods/README.md) | 已退役或已被替代的方法说明归档索引 |
+| [invert.md](../_archive/docs/methods/invert.md) | 早期 prefix/postfix embedding inversion 历史说明（现仅保留实验探针 `exp-invert-directedit`） |

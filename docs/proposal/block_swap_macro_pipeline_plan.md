@@ -1,7 +1,7 @@
 # Block Swap 宏观流水线开发计划（P0'–P3）
 
-状态：活跃 / 第 1 轮（基线）已完成
-适用版本：`codex/block-swap-int8`（基于 dev `d65f4a28`）
+状态：半活跃 / P0'–P2 四族已收口（`--block_swap_auto` 已落地；仅剩 NF8 选择性接入与 P3 后续子项待定）
+适用版本：当前 `dev`（原开发分支 `codex/block-swap-int8` 已合入）
 相关代码：`library/runtime/offloading.py`、`library/runtime/block_swap_config.py`、`library/runtime/block_swap_masters.py`、`bench/block_swap_pipeline/`
 证据基线：[Block Swap 宏观流水线基线（CMP 50HX）](../findings/block_swap_pipeline_baseline_50hx_20261019.md)
 

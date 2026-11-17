@@ -97,14 +97,14 @@ CUDA allocated实测（GiB；四步最大值，普通步末采用第2步）：
 这是移除意外FP32计算后的舍入变化；不能把短测的接近程度外推为长期训练质量等价。
 完整模型compile、其他adapter变体和其他硬件未在本轮验收。
 
-可复核产物：
+可复核本地产物（未入库）：
 
-- [metrics.json](../../output/anima-nf4-algorithm-20261003/controlled-ab/metrics.json)
-- [运行命令与退出状态](../../output/anima-nf4-algorithm-20261003/controlled-ab/status.json)
-- [stock阶段记录](../../output/anima-nf4-algorithm-20261003/controlled-ab/stock.phase.jsonl)、
-  [fixed阶段记录](../../output/anima-nf4-algorithm-20261003/controlled-ab/fixed.phase.jsonl)、
-  [BF16阶段记录](../../output/anima-nf4-algorithm-20261003/controlled-ab/bf16.phase.jsonl)
-- [独立分析脚本](../../output/anima-nf4-algorithm-20261003/controlled-ab/analyze.py)
+- `output/anima-nf4-algorithm-20261003/controlled-ab/metrics.json`
+- 运行命令与退出状态：`output/anima-nf4-algorithm-20261003/controlled-ab/status.json`
+- 阶段记录：`output/anima-nf4-algorithm-20261003/controlled-ab/stock.phase.jsonl`、
+  `output/anima-nf4-algorithm-20261003/controlled-ab/fixed.phase.jsonl`、
+  `output/anima-nf4-algorithm-20261003/controlled-ab/bf16.phase.jsonl`
+- 独立分析脚本：`output/anima-nf4-algorithm-20261003/controlled-ab/analyze.py`
 
 原始归因快照另存于 `output/anima-nf4-algorithm-20261003/current-profile-005942/`。
 其采样history达到100000条上限，早期记录截断；不能按完整时间线解释整个采样。

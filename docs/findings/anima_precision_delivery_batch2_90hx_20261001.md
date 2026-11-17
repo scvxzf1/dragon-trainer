@@ -1,6 +1,6 @@
 # Anima 自动精度交付批次2：保留集与五步训练链路
 
-日期：2026-10-01。状态：矩阵、四组真实五步及独立验收完成。设备：NVIDIA CMP 90HX，10GiB，CUDA capability 8.6。本报告只评价两种普通 Linear FP16 islands、同路径 FP32 控制及生产 BF16 五步链路；不是长期质量、Turing 或生产自动选型验收。任务范围按[交付收敛计划](../proposal/adaptive_precision_delivery_reset_20261001.md)第二批执行。原始证据位于 `output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2/`、`...-delivery-batch2-inputs/` 和 `...-delivery-batch2-production-prepared/`。
+日期：2026-10-01。状态：矩阵、四组真实五步及独立验收完成。设备：NVIDIA CMP 90HX，10GiB，CUDA capability 8.6。本报告只评价两种普通 Linear FP16 islands、同路径 FP32 控制及生产 BF16 五步链路；不是长期质量、Turing 或生产自动选型验收。任务范围按[交付收敛计划（已归档）](../../_archive/docs/proposal/adaptive_precision_delivery_reset_20261001.md)第二批执行。原始证据位于 `output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2/`、`...-delivery-batch2-inputs/` 和 `...-delivery-batch2-production-prepared/`。
 
 ## 结论
 

@@ -1,18 +1,20 @@
 # DiT 自适应混合精度与 OOM 恢复阶段开发计划
 
-状态：活跃提案 / 已恢复开发，P1 smoke 与 P2 数据原型通过
-更新时间：2026-10-01
-适用范围：当前工作树中的实验实现，不代表已发布版本
-当前说明：[实验入口与限制](../experimental/adaptive-runtime.md)
+状态：半活跃提案 / 单进程受限中途恢复已落地，双卡分流至 DDP/PP，自动敏感层精度搜索待定
+更新时间：2026-10-04（补充后续落地说明）
+适用范围：当前 `dev` 中的实验实现（默认关闭）
+当前说明：[实验入口与限制](../experimental/adaptive-runtime.md)、[训练中途 OOM 恢复](../experimental/adaptive-training-recovery.md)
 历史证据：[实测与失败记录](../findings/adaptive_runtime_20260921.md)
+
+> **后续落地补注**：单进程、磁盘缓存条件下的受限训练中途 OOM 恢复已通过显式 `adaptive_oom_retry_resume=true` 上线（见 [adaptive-training-recovery.md](../experimental/adaptive-training-recovery.md)）；双卡训练已转入独立 DDP 参考点验收与三族 PP v0 专用会话（见 [distributed-training-card.md](../experimental/distributed-training-card.md)），不再复用单进程 adaptive OOM supervisor。
 
 ## 2026-10-01 全局复盘后的执行优先级
 
-用户要求加快推进。最新排序见[自动精度交付收敛计划](adaptive_precision_delivery_reset_20261001.md)：
+用户要求加快推进。当时排序见[自动精度交付收敛计划（已归档）](../../_archive/docs/proposal/adaptive_precision_delivery_reset_20261001.md)：
 暂停把token/head根因追踪作为交付前置，优先复用已有训练精度入口与probe，完成有预算的
 可部署Linear组合搜索、同优化器状态的更新对照、保留集及真实训练收益验证。
 下文各阶段的“下一步”保留历史研究语境；当前主线不再默认继续局部K反向恢复。
-旧数值拒绝、门槛和生产默认不变，更新后OOM恢复仍是独立未完成项。
+旧数值拒绝、门槛和生产默认不变；未开启 `adaptive_oom_retry_resume` 时更新后 OOM 恢复仍默认关闭。
 
 批次1现已完成：3个参考/控制worker与12个不同MLP2候选，10个通过单输入、sigma=.5、
 初始LoRA的严格门槛；同空状态AdamW的真实更新已落盘并经独立CPU复算。

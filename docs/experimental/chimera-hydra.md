@@ -185,10 +185,10 @@ Total at default `chimera.toml` regex (`*mlp.layer[12]`) on Anima's 28 blocks ×
 | `network_dim` (rank) | 32 | Per-pool rank `r` (same for both halves). SVD partition needs `min(out, in) ≥ max(K_c+K_f, 2)·r` for free orthogonality; at default that's 192, well below typical Anima MLP `in≈3072`. |
 | `network_alpha` | 32 | LoRA scale `α / r = 1`. |
 | `balance_loss_weight` | `1.0` | Outer balance multiplier (warmup-gated). At 1.0 the per-pool weights below are the only effective scalars. |
-| `balance_w_content` | `2e-7` | `w_c` in `L_balance = w_c · switch(π_c) + w_f · switch(π_f)`. Within the OrthoHydra production safe range (`[[project_hydra_balance_weight_ceiling]]`). |
+| `balance_w_content` | `2e-7` | `w_c` in `L_balance = w_c · switch(π_c) + w_f · switch(π_f)`. Within the OrthoHydra production safe range. |
 | `balance_w_freq` | `0` | Default 0 — the freq router's K_f=2 default has very little symmetry to break (binary gate); raise to ~`1e-6` if K_f≥3 and the freq pool stays uniform. |
 | `fei_feature_dim` | `2` | FEI simplex bands (`e_low, e_high`). Same as FEI-on-Hydra default. |
-| `fei_sigma_low_div` | `4.0` | `σ_low = min(H_lat, W_lat) / div` for the DoG kernel. 2026-05-13 dataset sweep picked 4 over 8 (`[[project_fera_probe_2band_decision]]`). |
+| `fei_sigma_low_div` | `4.0` | `σ_low = min(H_lat, W_lat) / div` for the DoG kernel. 2026-05-13 dataset sweep picked 4 over 8 (bimodal 2-band split). |
 | `sigma_feature_dim` | `0` | Width of sinusoidal-σ slice fed to the FreqRouter. Off by default — FreqRouter sees FEI(2) only, since FEI is itself a function of `z_t` and gives the router σ-correlated signal indirectly. Re-enable (`8` / `16` / `32`) if freq-pool entropy stays pinned at uniform after warmup. |
 | `freq_router_init_std` | `0.1` | `N(0, std)` on the FreqRouter's output Linear. **Non-zero is load-bearing** — zero-init would make the freq pool a fixed point of the additive composition. See `chimera.py::FreqRouter` docstring. |
 | `router_hidden_dim` | `64` | FreqRouter MLP hidden width. Shared with `GlobalRouter` (FeRA). |
@@ -283,15 +283,15 @@ ChimeraHydra's bet: dual-A + structurally-enforced router-input separation makes
 5. **A/B vs single-A chimera at matched E.** Same dataset, matched epochs/lr, same K_c+K_f. Whichever wins on CMMD + sample quality tells us whether the dual-A structural separation buys anything over the previous single-A version.
 6. **A/B vs FEI-on-Hydra at matched E.** Same dataset, `num_experts = K_c + K_f`. If FEI-on-Hydra matches chimera, the freq pool is redundant and dual-A should be archived.
 7. **C-fei falsification.** Feed FEI into the content router (one cfg toggle on a separate run): if results match chimera, the freq pool is redundant and the dual-A design should be archived.
-8. **Sample quality vs `make lora`.** CMMD ([[project_cmmd_val_signal]]) is the primary signal; FM val-MSE is uninformative on Anima ([[project_fm_val_loss_uninformative]]).
+8. **Sample quality vs `python tasks.py lora` (`make lora`).** CMMD is the primary validation signal; FM val-MSE is uninformative on Anima.
 
 ## Hyperparameters worth sweeping
 
 | Knob | Default | Range to try | Why |
 |---|---|---|---|
 | `num_experts_content` (`K_c`) | 4 | 2, 3, 4, 5 | Content capacity; chimera defaults skew toward content because text-conditional routing has more dimensions to partition. |
-| `num_experts_freq` (`K_f`) | 2 | 2, 3, 4 | FEI-on-Anima is bimodal ([[project_fera_probe_2band_decision]]); K_f=3 has historically collapsed back to K_f=2. |
-| `balance_w_content` | `2e-7` | `1e-7` … `1e-5` | Same Pareto region as ortho-hydra ([[project_hydra_balance_weight_ceiling]]). |
+| `num_experts_freq` (`K_f`) | 2 | 2, 3, 4 | FEI-on-Anima is bimodal; K_f=3 has historically collapsed back to K_f=2. |
+| `balance_w_content` | `2e-7` | `1e-7` … `1e-5` | Same Pareto region as ortho-hydra. |
 | `balance_w_freq` | `0` | `0`, `1e-7`, `1e-6` | Default 0 — at K_f=2 the binary gate has little symmetry to break. Raise if K_f≥3 and freq stays uniform. |
 | `freq_router_init_std` | `0.1` | `0.05`, `0.1`, `0.3` | Higher → freq pool starts further from uniform but signal-to-noise drops. **Never zero** (fixed point). |
 | `router_tau` (FreqRouter) | `0.7` | `0.3`, `0.7`, `1.0`, `2.0` | Lower τ → sharper freq specialization, more sensitive to FEI noise. |

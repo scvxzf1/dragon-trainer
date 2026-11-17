@@ -1,5 +1,6 @@
 # Krea-2 native FP16 CMP 90HX 三步 smoke
 
+状态：实验 / smoke 记录（非训练质量或长期稳定性认证）
 日期：2026-10-02。范围：官方非量化 Krea-2-Raw、plain LoRA、单进程、torch attention、full checkpoint、compile 关闭。此记录是运行契约和 smoke 交付，不是训练质量或长期稳定性认证。
 
 ## 软件与测试证据

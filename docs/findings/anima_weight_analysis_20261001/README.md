@@ -23,7 +23,7 @@
 - [style/evidence/partial.json](style/evidence/partial.json)
 - [style/data/per_file.csv](style/data/per_file.csv)
 - [style/data/per_layer.csv](style/data/per_layer.csv)
-- [style/evidence/progress.log](style/evidence/progress.log)
+- `style/evidence/progress.log`（运行过程日志，按 `.gitignore` 未入库）
 - [style/report.md](style/report.md)
 - [style/evidence/validation.json](style/evidence/validation.json)
 
@@ -40,6 +40,6 @@
 - [character/evidence/partial.json](character/evidence/partial.json)
 - [character/data/per_file.csv](character/data/per_file.csv)
 - [character/data/per_layer.csv](character/data/per_layer.csv)
-- [character/evidence/progress.log](character/evidence/progress.log)
+- `character/evidence/progress.log`（运行过程日志，按 `.gitignore` 未入库）
 - [character/report.md](character/report.md)
 - [character/evidence/validation.json](character/evidence/validation.json)

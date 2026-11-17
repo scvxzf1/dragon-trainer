@@ -1,8 +1,10 @@
 # ConvRot INT8：CMP 90HX 重新验证结论
 
+状态：验证记录 / 阶段快照
+
 本轮已完成 S0–S4 的工具修正、基线、优化筛选和生产入口功能验证；S5 按原计划的条件门控跳过，状态为 `SKIPPED_NO_ACCEPTED_CANDIDATE`。**当前 Anima 1024、rank32 场景下，BF16 无换层仍最快；W8A16 降低训练窗口显存，但采样阶段的生命周期问题使全流程峰值反而更高。** 这不是量化普遍无用的证明。
 
-原协议：[六阶段计划](../proposal/convrot_90hx_development_validation_plan_20261002.md)。后续：[生命周期修复与确定性验证计划](../proposal/convrot_90hx_followup_development_plan_20261002.md)。实验根目录：[原始证据](../../output/convrot-90hx-20261002-210307/summary.md)，所有性能数字来自新进程热测，不沿用 3080 历史数据。
+原协议：[六阶段计划（已归档）](../../_archive/docs/proposal/convrot_90hx_development_validation_plan_20261002.md)。后续：[生命周期修复与确定性验证计划](../proposal/convrot_90hx_followup_development_plan_20261002.md)。实验根目录原始证据：`output/convrot-90hx-20261002-210307/summary.md`，所有性能数字来自新进程热测，不沿用 3080 历史数据。
 
 ## 范围与固定条件
 
@@ -23,7 +25,7 @@
 | B1 W8A16 | 2.7379 / 2.7533 / 2.7542 | 2.7533 | 3.2249 |
 | B2 W8A8、FP32 dX | 4.3150 / 4.3378 / 4.3376 | 4.3376 | 3.4907 |
 
-W8A8 比 W8A16 慢约 58%。这里的 PASS 只表示执行完整、有限值和有效计时，不能表示训练质量等价。[性能汇总](../../output/convrot-90hx-20261002-210307/s1-performance-summary.json)。
+W8A8 比 W8A16 慢约 58%。这里的 PASS 只表示执行完整、有限值和有效计时，不能表示训练质量等价。性能汇总：`output/convrot-90hx-20261002-210307/s1-performance-summary.json`。
 
 ## S2：保数值 Triton 工程优化
 
@@ -37,7 +39,7 @@ E1 只替换 rowwise quant，E2 只替换 INT8 GEMM/缩放，E3 合并二者；�
 
 E3 三轮为 3.96695 / 3.96386 / 3.97045 秒/步，比 B2 快约 8.5%，但仍比固定 swap12 的 W8A16 慢约 44%，训练峰值也没有优于 W8A16。属于局部工程收益，没有成为推荐训练配置。
 
-七个实际/合成形状微测的 code、scale、output 精确对齐；量化耗时改善约 2.6–13.9 倍，GEMM 约 1.07–1.86 倍。最大 `(4096,2048,8192)` GEMM 的额外分配由 320 MiB 降到 64 MiB。此局部 256 MiB 差值不能直接当作整步峰值下降。[微测](../../output/convrot-90hx-20261002-210307/s2-microbench.json)、[分配证据](../../output/convrot-90hx-20261002-210307/s2-microbench-memory.json)。
+七个实际/合成形状微测的 code、scale、output 精确对齐；量化耗时改善约 2.6–13.9 倍，GEMM 约 1.07–1.86 倍。最大 `(4096,2048,8192)` GEMM 的额外分配由 320 MiB 降到 64 MiB。此局部 256 MiB 差值不能直接当作整步峰值下降。微测与分配证据：`output/convrot-90hx-20261002-210307/s2-microbench.json`、`output/convrot-90hx-20261002-210307/s2-microbench-memory.json`。
 
 ## S1/S3：数值门槛与参考噪声
 
@@ -56,9 +58,9 @@ E1/E2/E3 对 B2 的 output 精确相同，梯度门槛全部通过，最大梯�
 
 N1/N2 对 B0 的梯度也均未通过。N2 的实现是 FP32 `dy*scale` fold 后量化、逆布局 INT8 GEMM、BF16 RHT；不能说它等同于 musubi 的 BF16 fold。
 
-两独立进程的 **单样本 deterministic Flash backward 控制**得到 output/gradient/update 差值全部为0。它证明确定性诊断路径可行，尚不替代完整18样本验收；默认吞吐/生产 Flash 未改。[单样本控制](../../output/convrot-90hx-20261002-210307/s0-flash-deterministic-control-assessment.json)。
+两独立进程的 **单样本 deterministic Flash backward 控制**得到 output/gradient/update 差值全部为0。它证明确定性诊断路径可行，尚不替代完整18样本验收；默认吞吐/生产 Flash 未改。单样本控制：`output/convrot-90hx-20261002-210307/s0-flash-deterministic-control-assessment.json`。
 
-10组数值运行的360个完整 gradient/update 文件经 header 审计，均包含392个FP32参数，shape与初始manifest匹配。[审计](../../output/convrot-90hx-20261002-210307/numerical-tensor-header-audit.json)。3 seeds ×20连续轨迹按门控未执行，不声称长期更新一致。
+10组数值运行的360个完整 gradient/update 文件经 header 审计，均包含392个FP32参数，shape与初始manifest匹配。审计：`output/convrot-90hx-20261002-210307/numerical-tensor-header-audit.json`。3 seeds ×20连续轨迹按门控未执行，不声称长期更新一致。
 
 ## S4：同预算性能、采样、保存和续训
 
@@ -69,7 +71,7 @@ BF16/W8A16 都能在统一9.1458 GiB预算下 swap0，因此最低换层均为0�
 | BF16 swap0 | 1.57578 / 1.57153 / 1.57226 | 1.57226 | 5.57264 |
 | W8A16 swap0 | 1.73796 / 1.73880 / 1.73898 | 1.73880 | 3.98075 |
 
-W8A16 在这个同预算比较中慢10.6%，虽然训练窗口显存少约1.59 GiB。[6/6状态](../../output/convrot-90hx-20261002-210307/s4-minswap-performance-status.json)。不要将其与另一个栈的8步生产入口峰值混算。
+W8A16 在这个同预算比较中慢10.6%，虽然训练窗口显存少约1.59 GiB。6/6状态：`output/convrot-90hx-20261002-210307/s4-minswap-performance-status.json`。不要将其与另一个栈的8步生产入口峰值混算。
 
 生产入口第4/8步采样1024图，保存adapter和optimizer state。预算用例覆盖到第8步采样后，结果如下；峰值是全训练+采样窗口，不是 `.to(cpu)` 后的瞬时驻留。
 
@@ -80,11 +82,11 @@ W8A16 在这个同预算比较中慢10.6%，虽然训练窗口显存少约1.59 G
 | BF16 swap26 | 4.69976 | 5.11914 |
 | W8A16 swap26 | 4.85806 | 5.31250 |
 
-固定 swap12 的采样全流程峰值为 BF16 4.69976 GiB，W8A16/W8A8均5.67907 GiB；量化组的高峰在sample_after。预算用例两张PNG均为1024，state.current_step和392个optimizer step均为8，最终权重有限且保存hash。[生产审计](../../output/convrot-90hx-20261002-210307/s4-production-audit.json)。初始8步配置最后一次采样缺少phase标签，后来预算配置补齐，不用缺失标签推定峰值位置。
+固定 swap12 的采样全流程峰值为 BF16 4.69976 GiB，W8A16/W8A8均5.67907 GiB；量化组的高峰在sample_after。预算用例两张PNG均为1024，state.current_step和392个optimizer step均为8，最终权重有限且保存hash。生产审计：`output/convrot-90hx-20261002-210307/s4-production-audit.json`。初始8步配置最后一次采样缺少phase标签，后来预算配置补齐，不用缺失标签推定峰值位置。
 
 B0/B1生产续训均由5恢复到10，392个optimizer状态的step均到10。**生产dataloader精确游标恢复尚未建立，不能宣称生产连续10步等于5+5。** 另一个固定输入游标、恢复optimizer/RNG、开启deterministic Flash的受控replay，B0/B1连续10与5+恢复5最终参数逐元素相等；这是受控恢复契约证据。
 
-[采样拼图](../../output/convrot-90hx-20261002-210307/s4-smoke-contact-sheet.png)仅为8步功能预览，不是500步质量验收。候选compile/生产精度policy接入按筛选门控未执行。
+采样拼图（`output/convrot-90hx-20261002-210307/s4-smoke-contact-sheet.png`）仅为8步功能预览，不是500步质量验收。候选compile/生产精度policy接入按筛选门控未执行。
 
 ## 两个已证实的内存生命周期问题
 
@@ -99,7 +101,7 @@ B0/B1生产续训均由5恢复到10，392个optimizer状态的step均到10。**�
 
 ## 工具验证与限制
 
-CPU定向测试49通过。primitive suite64通过，其中15CPU+49真实CUDA；补充policy/scale19真实CUDA通过，合计68真实CUDA检查。最初scale舍入和CUDA int32 addmm参考测试失败日志保留，修正后重验通过。收尾再次执行49项CPU测试全通过，Ruff通过，Pyright为0 errors/0 warnings；文档链接与最终JSON解析通过。[最终检查](../../output/convrot-90hx-20261002-210307/final-checks.json)。
+CPU定向测试49通过。primitive suite64通过，其中15CPU+49真实CUDA；补充policy/scale19真实CUDA通过，合计68真实CUDA检查。最初scale舍入和CUDA int32 addmm参考测试失败日志保留，修正后重验通过。收尾再次执行49项CPU测试全通过，Ruff通过，Pyright为0 errors/0 warnings；文档链接与最终JSON解析通过。最终检查：`output/convrot-90hx-20261002-210307/final-checks.json`。
 
 初次独立审阅发现的三项假PASS问题（缺失同名梯度、小更新/逐层更新漏验、不完整18矩阵）已修复并补回归。由于代理会话额度耗尽，修复后没有新的独立最终复审，不能标为独立验收通过。
 

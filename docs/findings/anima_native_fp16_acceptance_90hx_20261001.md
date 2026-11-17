@@ -2,7 +2,7 @@
 
 日期：2026-10-01。状态：执行和独立审计完成，严格数值失败，质量尚未运行。
 范围：Anima plain LoRA、CMP 90HX 10GB（SM86），固定旧 native FP16 AMP、scale1024。
-本轮落实[收敛计划](../proposal/adaptive_precision_delivery_reset_20261001.md)的单候选集中验收，
+本轮落实[收敛计划（已归档）](../../_archive/docs/proposal/adaptive_precision_delivery_reset_20261001.md)的单候选集中验收，
 结束05/04默认扩张，未改生产默认、旧证据或通用数学比较器。
 
 ## 结论
@@ -83,10 +83,10 @@ loss范围分别.122226–.261744、.095569–.188347，12格均finite。
 准备阶段完整核验旧张量、state/replay来源；运行阶段重核全部冻结字节，避免重复张量解析。
 CPU定向测试13通过（独立审核5.64s），Ruff通过；旧公共SOURCE_FILES未改。
 
-原始目录：`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/`。
-完整[逐格报告](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/report.md)、
-[独立FP64审计](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/independent-audit.json)、
-[决策记录](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/decision.json)
+原始目录：`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/`（本地未入库产物）。
+完整逐格报告（`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/report.md`）、
+独立 FP64 审计（`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/independent-audit.json`）、
+决策记录（`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16-acceptance/decision.json`）
 均已落盘。独立审计的`passed=true`仅表示证据与重算自洽；`strict_passes=0`、`strict_diagnostic=fail`。
 
 首次启动命令漏`--run`，只在准备阶段拒绝已有目录，未启动GPU；日志保留。

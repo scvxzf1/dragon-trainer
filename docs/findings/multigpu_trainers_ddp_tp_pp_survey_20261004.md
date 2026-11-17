@@ -221,7 +221,7 @@ TP 每 block 都会同步激活，是否能更快必须在目标互联上实测�
 
 此前“只有 DDP”的准确范围是生产入口。本项目已有独立 Anima PP2/TP2 探针，
 见 [2026-09-04 双卡报告](anima_dual_gpu_parallel_probe_20260904.md) 和
-[PP 阶段规划](../proposal/krea2_pipeline_parallel.md)。历史探针使用 CMP 170HX 64GB +
+[PP 阶段规划（已归档）](../../_archive/docs/proposal/krea2_pipeline_parallel.md)。历史探针使用 CMP 170HX 64GB +
 RTX 3080 10GB、PHB、无 CUDA P2P：PP2 为单 microbatch fill-drain，并非真实 1F1B；
 TP2 有大量激活通信；INT8 传输压缩未带来实质端到端加速。
 这些是特定硬件、八步 smoke 的结果，不能作为当前 GTX 1050/CMP 90HX 或同构双卡的性能预测。
