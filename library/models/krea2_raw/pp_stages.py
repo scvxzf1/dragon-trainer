@@ -526,9 +526,22 @@ def enable_stage_block_swap(stage_blocks, device, num_swap: int = 2) -> list[int
     Returns the swapped block indices for logging.
     """
 
-    blocks = [block for block in stage_blocks]
+    # ``stage_blocks`` is the *whole* model's block list; only the blocks this
+    # rank actually kept on the device belong to its stage (the rest were
+    # released by release_foreign_submodules and never moved here).  Selecting
+    # by position alone picked blocks 1..4 on the trailing rank too -- those
+    # live on the leading rank, so offloading them freed 0 MiB and the swap did
+    # nothing exactly where it was needed.
+    owned = [
+        (index, block)
+        for index, block in enumerate(stage_blocks)
+        if all(p.device.type == device.type for p in block.parameters())
+    ]
+    blocks = [block for _, block in owned]
     swapped: list[int] = []
-    for offset, block in enumerate(blocks[1 : 1 + num_swap], start=1):
+    # Start at the second owned block: the activation entering the first one may
+    # still be the stage input, whose requires_grad the offload hook relies on.
+    for position, (global_index, block) in enumerate(owned[1 : 1 + num_swap], start=1):
         pinned_resident = False
         for parameter in block.parameters():
             if not hasattr(parameter, "_cpu_pinned"):
@@ -544,7 +557,7 @@ def enable_stage_block_swap(stage_blocks, device, num_swap: int = 2) -> list[int
         original_inner = block._forward
         block._in_outer_forward = False
 
-        block._swap_index = offset
+        block._swap_index = global_index
 
         def _load(b=block):
             for parameter in b.parameters():
@@ -597,5 +610,44 @@ def enable_stage_block_swap(stage_blocks, device, num_swap: int = 2) -> list[int
 
         block.forward = _wrapped_forward
         block._forward = _wrapped_inner
-        swapped.append(offset)
+        swapped.append(global_index)
     return swapped
+
+
+def enable_block_probes(stage_blocks, rank: int) -> int:
+    """Log every block's ``_forward`` entry/exit with the live cuda allocation.
+
+    The OOM report is not diagnostic: ``allocated`` at the moment of failure is
+    by construction the ceiling minus the failing request, so every run prints
+    the same number.  What actually distinguishes a working memory strategy is
+    *how far backward gets* and *whether the footprint falls as it unwinds* --
+    hence an entry/exit trace per block.
+    """
+
+    def _alloc_gib() -> float:
+        if not torch.cuda.is_available():
+            return 0.0
+        return torch.cuda.memory_allocated() / 2**30
+
+    count = 0
+    for index, block in enumerate(stage_blocks):
+        original = block._forward
+
+        def _traced(x, *args, _orig=original, _idx=index, **kwargs):
+            outer = not getattr(block, "_in_outer_forward", True)
+            print(
+                f"[blk] r{rank} idx={_idx} enter outer={not outer} "
+                f"alloc={_alloc_gib():.2f}GiB",
+                flush=True,
+            )
+            out = _orig(x, *args, **kwargs)
+            print(
+                f"[blk] r{rank} idx={_idx} exit  outer={not outer} "
+                f"alloc={_alloc_gib():.2f}GiB",
+                flush=True,
+            )
+            return out
+
+        block._forward = _traced
+        count += 1
+    return count

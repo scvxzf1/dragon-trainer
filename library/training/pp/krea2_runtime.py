@@ -190,6 +190,7 @@ from library.models.krea2_raw.pipeline_parallel import (  # noqa: E402
     make_krea2_pipeline_plan,
 )
 from library.models.krea2_raw.pp_stages import (
+    enable_block_probes,
     enable_stage_block_swap,  # noqa: E402
     Krea2FirstStage,
     Krea2LastStage,
@@ -713,6 +714,9 @@ def build_krea2_pipeline_runtime(
                     f"[pp] rank={rank} swapping blocks {_swapped} to cpu",
                     flush=True,
                 )
+        if int(os.environ.get("KREA2_PP_PROBE", "0") or 0):
+            _n = enable_block_probes(model.blocks, rank)
+            print(f"[pp] rank={rank} probing {_n} blocks", flush=True)
         parameters = list(stage_module.trainable_parameters())
         validate_master_weight_dtype(
             parameters, mixed_precision=config.mixed_precision, device=device
