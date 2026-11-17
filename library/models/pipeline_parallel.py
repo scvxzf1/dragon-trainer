@@ -73,6 +73,12 @@ class PipelineParallelConfig:
     microbatches: int = 4
     schedule: str = "1f1b"
     split: str = "balanced"
+    # Per-stage block swap, deliberately a *separate* knob from blocks_to_swap:
+    # PP swaps only the blocks this rank owns, after their own backward, and a
+    # model that already carries blocks_to_swap>0 is refused (placement.py).
+    # Sharing the plain key would silently mean different things.
+    # Declared last so positional construction keeps its historical order.
+    blocks_to_swap: int = 0
 
     @classmethod
     def from_config(
@@ -80,6 +86,16 @@ class PipelineParallelConfig:
     ) -> "PipelineParallelConfig":
         schedule = _get(config, "pipeline_parallel_schedule", "1f1b")
         split = _get(config, "pipeline_parallel_split", "balanced")
+        pp_blocks_to_swap = _int(
+            _get(config, "pipeline_parallel_blocks_to_swap", 0),
+            0,
+            field="pipeline_parallel_blocks_to_swap",
+        )
+        if pp_blocks_to_swap < 0:
+            raise ValueError(
+                "pipeline_parallel_blocks_to_swap must be >= 0, "
+                f"got {pp_blocks_to_swap}"
+            )
         return cls(
             enabled=_bool(
                 _get(config, "pipeline_parallel", False),
@@ -96,6 +112,7 @@ class PipelineParallelConfig:
                 4,
                 field="pipeline_parallel_microbatches",
             ),
+            blocks_to_swap=pp_blocks_to_swap,
             schedule=str("1f1b" if schedule is None else schedule).strip().lower(),
             split=str("balanced" if split is None else split).strip().lower(),
         )

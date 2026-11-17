@@ -713,12 +713,30 @@ def build_krea2_pipeline_runtime(
         # is 11.75-12.13 GiB, which left the runtime ~52 MiB short of the 16 GB
         # ceiling.  Swapping 2 blocks frees 809 MiB of continuous space without
         # touching LoRA (adapters live on the network, not in block.parameters).
-        _swap = int(os.environ.get("KREA2_PP_SWAP_BLOCKS", "0") or 0)
+        # Config first (CLI/TOML/WebUI), env var as the backward-compatible
+        # fallback.  The plain blocks_to_swap key cannot be reused here: PP owns
+        # a *slice* of the block list and swaps only its own blocks after their
+        # backward, so the two knobs mean different things (see placement.py).
+        _swap = int(getattr(config, "blocks_to_swap", 0) or 0)
+        if not _swap:
+            _swap = int(os.environ.get("KREA2_PP_SWAP_BLOCKS", "0") or 0)
         if _swap:
             _swapped = enable_stage_block_swap(model.blocks, device, num_swap=_swap)
             if _swapped:
                 print(
                     f"[pp] rank={rank} swapping blocks {_swapped} to cpu",
+                    flush=True,
+                )
+            # Index 0 is never swapped (it is the 1F1B warmup forward, so its
+            # activation has no grad yet and the offload hook would not fire),
+            # which silently caps the count at len(owned)-1.  Say so instead of
+            # quietly doing less than asked -- a user copying 20 from a 28-block
+            # model would otherwise believe 20 blocks moved.
+            if len(_swapped) < _swap:
+                print(
+                    f"[pp] rank={rank} warning: requested {_swap} swapped blocks "
+                    f"but only {len(_swapped)} are owned-and-swappable "
+                    f"(block 0 is never swapped); using {len(_swapped)}",
                     flush=True,
                 )
         if int(os.environ.get("KREA2_PP_PROBE", "0") or 0):

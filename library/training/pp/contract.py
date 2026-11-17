@@ -115,11 +115,26 @@ class PipelineRuntimeConfig:
     #: see the class docstring; never reachable from a config key).
     conditioning: str = "local"
     mixed_precision: str = "fp16"
+    #: Per-stage block swap count.  Deliberately **not** the plain
+    #: ``blocks_to_swap``: PP owns a slice of the block list and swaps only its
+    #: own blocks after their backward, so the two knobs mean different things
+    #: (``library/training/pp/placement.py`` refuses a model that already has
+    #: ``blocks_to_swap > 0``).
+    blocks_to_swap: int = 0
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | object) -> "PipelineRuntimeConfig":
         family_config = validate_pipeline_parallel_config(config)
+        pp_blocks_to_swap = int(
+            _get(config, "pipeline_parallel_blocks_to_swap", 0) or 0
+        )
+        if pp_blocks_to_swap < 0:
+            raise ValueError(
+                "pipeline_parallel_blocks_to_swap must be >= 0, "
+                f"got {pp_blocks_to_swap}"
+            )
         return cls(
+            blocks_to_swap=pp_blocks_to_swap,
             stages=int(family_config.stages),
             microbatches=int(family_config.microbatches),
             schedule=str(family_config.schedule),

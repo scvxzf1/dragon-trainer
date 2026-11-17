@@ -1069,6 +1069,17 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         help="Number of pipeline stages; must equal the distributed world size when enabled.",
     )
     parser.add_argument(
+        "--pipeline_parallel_blocks_to_swap",
+        type=int,
+        default=0,
+        help=(
+            "Pipeline-parallel per-stage block swap. Independent from "
+            "--blocks_to_swap: PP swaps only this rank's own blocks after their "
+            "backward and refuses a model that already has blocks_to_swap>0. "
+            "0 disables; when unset, KREA2_PP_SWAP_BLOCKS is used as fallback."
+        ),
+    ),
+    parser.add_argument(
         "--pipeline_parallel_microbatches",
         type=int,
         default=4,

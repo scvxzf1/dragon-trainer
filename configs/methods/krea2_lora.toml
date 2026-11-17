@@ -64,12 +64,33 @@ gradient_checkpointing = true
 unsloth_offload_checkpointing = false
 selective_checkpoint = "off"
 
-# 双卡 Pipeline Parallel 实验配置。默认关闭；启用前还需关闭 torch_compile
-# 和 block swap。当前主训练 loop 尚未接入 1F1B，预检会明确拒绝启动，避免
-# 误回退为普通 Accelerate 数据并行。
+# 双卡 Pipeline Parallel 配置。默认关闭。
+#
+# 已接入 1F1B 并可实跑：896x1200（4352 tokens）在双 V100 16GB 上跑满 50 步、
+# 零 OOM、稳态 22.0 s/step、峰值 14.74 GiB（证据见
+# docs/findings/krea2_pp_vram_gap_20261116.md §4.8/§4.12）。
+#
+# 启用时必须注意三件事：
+#   1. torch_compile 必须为 false（PP v0 与 compile 互斥）。
+#   2. 普通 blocks_to_swap 必须为 0。这里两个 swap 是**不同机制**：普通 swap
+#      搬整个模型尾部连续块，而 PP 每个 rank 只持有一个 stage 切片、并且要在
+#      自己那段反向结束后立刻卸载，所以 PP 用它自己的键
+#      pipeline_parallel_blocks_to_swap。配了普通 blocks_to_swap>0 时 PP 会
+#      fail-closed 直接拒绝启动（library/training/pp/placement.py）。
+#   3. microbatches 必须同时满足 >= stages 且整除 train_batch_size；下方默认 4
+#      只在 train_batch_size >= 4 时成立。
+#
+# 16GB 双卡实用基线（896x1200 / batch 2 / fp16）：
+#   pipeline_parallel = true
+#   pipeline_parallel_stages = 2
+#   pipeline_parallel_microbatches = 2      # batch 2 -> 必须是 2，不是 4
+#   pipeline_parallel_blocks_to_swap = 4    # 每卡卸 4 块；0 会 OOM
+#   blocks_to_swap = 0                      # 普通 swap 必须保持 0
+#   lora_fp32_compute = false               # 省 4.3% 步时 + 100 MiB，数值等价
 pipeline_parallel = false
 pipeline_parallel_stages = 2
 pipeline_parallel_microbatches = 4
+pipeline_parallel_blocks_to_swap = 0
 pipeline_parallel_schedule = "1f1b"
 pipeline_parallel_split = "balanced"
 
