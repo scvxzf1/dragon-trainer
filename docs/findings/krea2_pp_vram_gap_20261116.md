@@ -381,3 +381,68 @@ CUDA_VISIBLE_DEVICES=0,1 NCCL_ASYNC_ERROR_HANDLING=1 PYTHONPATH=. \
 - PP 的 progress 行 `loss=None`：只有首段 rank 打印，而 loss 只在末段计算。属显示
   口径问题，不影响训练；如需可见，应由末段上报后聚合。
 - 尚未做：性能基线 vs DDP、resume 后数值连续性、真实 12.82B checkpoint 往返。
+
+## 4.9 嵌套 checkpoint 的重算预算（2026-11-17 静态核查）
+
+结论先说：**内层 checkpoint 不是数学冗余，但它用"再跑一遍前向"换"反向高峰值"，而代价被嵌套放大。**
+
+### 4.9.1 为什么不是冗余
+
+外层 `torch_checkpoint(self._forward)` 只保证**前向期间**零保留；反向重算时
+`_recomputation_hook` 会把整块激活重新物化。内层 checkpoint 压的正是这个**重算窗口的
+峰值**（实测：nested attn 省 640 MB §4.5，txtfusion 省 890 MB §4.3b）。
+但每多一层嵌套，被包区域就多执行一遍前向。
+
+### 4.9.2 当前嵌套深度与重算倍数
+
+| 被包区域 | 位置 | 每 block 每 step 前向次数 |
+|---|---|---|
+| 整个 block `_forward` | dit.py `SingleStreamBlock.forward` | 2× |
+| attn 半边 `_attn_step` | dit.py `_forward` 内 | 3× |
+| QKV 准备 `_prepare` | dit.py `Attention.forward` 内（×4 切片） | 4× |
+| SDPA `_sdpa_chunk` | attention_backend.py（×8 切片） | 4× |
+| MLP `_mlp_chunk` | dit.py `SwiGLU.forward`（×8 切片） | 3× |
+| txtfusion | pp_stages.py（仅 stage0） | 2× |
+
+静态折算：每 token 前向 GEMM 当前 ≈ **1636M MAC**，不 checkpoint 的最小值 494M →
+**3.3×**；stage0 每 step 重算约 **144 TFLOP**，200 W V100 有效 ~50 TFLOPS ≈ **2.9 s**，
+与"重算约占 30% 步时"同量级（未含 norm/rope 的带宽开销，也未扣 early_stop 截断）。
+
+### 4.9.3 拆除排序（按"每 GiB 换回多少重复前向"）
+
+1. **SwiGLU 的 checkpoint** — 省一整遍 MLP（占单块前向 61%），+0.45 GiB
+2. **`_attn_step`** — 省 attention 半边（39%），且把 QKV/SDPA 从 4× 降到 3×，+0.64 GiB
+3. **`_sdpa_chunk`** — 省 SDPA（12%），+0.3 GiB
+4. **`_prepare`** — 省 QKV 准备（19%），+0.6 GiB
+5. **block 级** — 省整块并清除下级嵌套，但 +0.8 GiB 以上，是显存保险，放最后
+
+**不能整体拆**：`KREA2_PP_SIMPLIFY=1 + swap=10` 实测 OOM（请求 136 MiB = 未分块的
+MLP 中间量），必须逐项增量验证余量。
+
+### 4.9.4 三个已修/需注意的陷阱
+
+- `Attention.gradient_checkpointing` 原先**没有实体属性**，gate 用的
+  `getattr(self, ..., True)` 恒为真 → block 级关掉也关不掉它，且单独留下它会变成
+  "纯多跑一遍前向换 660 MiB"。现已显式化并随 block 联动。
+- `--no-gradient_checkpointing` 仍**关不掉** SDPA 分块里的 checkpoint（无模型级开关）
+  与 txtfusion（只判 `training`）。
+- `chunk(8)` 的对齐论证不成立：`4352/8 = 544` 不是 64 的倍数；`chunk(4) = 1088 = 17×64`
+  才是 tensor-core 对齐的。8 块是为峰值显存（34 vs 68 MiB）选的，不是为对齐。
+
+### 4.9.5 关于 microbatches 的源码事实
+
+`torch/distributed/pipelining/schedules.py:873-876`：
+`warmup_chunks = min(n_microbatches, num_stages - stage_index)`。PP=2 的 stage0 恒为
+**2**，因此提高 `n_microbatches` **不会**线性放大在途激活（`stage.py:756-759` 在
+backward 开头即 pop 释放）。末段 stage1 的在途数恒为 1，但 `output_chunks` 随
+`n_microbatches` 线性增长（`stage.py:707-708`）。
+
+约束：仅要求 `n_microbatches >= num_stages`，**无整除要求**（`tensor_split` 自动切不等长）。
+但本地 batch 必须够切：896×1200 下当前只有 2 张图，`m=4` 会切出空 microbatch，
+因此提升 `m` 的前置条件是**先凑够同分辨率的图**，不是改代码。
+
+### 4.9.6 torch.compile 在 V100 上不可行
+
+Torch **2.10.0+cu129** 绑定 Triton **3.6.0**，而 Triton 自 3.3 起已移除 Volta(sm70)
+支持。即使放开 PP v0 的 `torch_compile` 门禁，Inductor 在 V100 上也编不出高效内核。
+该方向 ROI 极低，不再投入。

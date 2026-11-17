@@ -307,10 +307,13 @@ class SwiGLU(torch.nn.Module):
             and torch.is_grad_enabled()
             and x.requires_grad
         )
-        # 4 chunks: 4352 / 4 = 1088 = 17 * 64 tokens, still tensor-core aligned,
-        # and every 16384-dim intermediate drops from 68 MiB to 34 MiB.  The
-        # splits are applied on *both* branches so the req=False precompute pass
-        # never materialises the whole 4352-long sequence either.
+        # 8 chunks.  NOTE: 4352 / 8 = 544 is *not* a multiple of 64, so the
+        # tensor-core alignment argument holds for 4 chunks (1088 = 17 * 64)
+        # rather than 8 -- 8 was chosen for peak memory (34 MiB instead of
+        # 68 MiB per 16384-dim intermediate), not for alignment.  Swapping this
+        # back to 4 needs +34 MiB of headroom per live chunk.  The splits are
+        # applied on *both* branches so the req=False precompute pass never
+        # materialises the whole 4352-long sequence either.
         if _PP_SIMPLIFY:
             return self._mlp_chunk(x)
         chunks = x.chunk(8, dim=-2)
@@ -340,6 +343,11 @@ class Attention(torch.nn.Module):
         self.gqa = self.heads != self.kvheads
         self.wo = torch.nn.Linear(dim, dim, bias=bias)
         self.attn_mode = "torch"
+        # Explicit, so that turning block-level checkpointing off actually turns
+        # this off too.  A bare getattr(self, ..., True) default would silently
+        # pin it on (and a lone QKV-prep checkpoint without its enclosing block
+        # checkpoint is a pure extra forward pass buying 660 MiB).
+        self.gradient_checkpointing = True
 
     def forward(
         self, qkv: Tensor, freqs: Tensor | None = None, mask: Tensor | None = None
@@ -546,14 +554,20 @@ class SingleStreamBlock(nn.Module):
             )
             return self.attn(attn_input, freqs, mask).to(compute_dtype)
 
-        # Nested checkpoint on the *first* half (attention), use_reentrant=True.
+        # Nested checkpoint on the *first* half (attention), use_reentrant=False.
         # Backward runs mlp first and attention second, so checkpointing the tail
         # would recompute mlp while attention's ~400 MB of internals are still
         # resident -- zero saving.  Wrapping attention instead lets the mlp pass
         # finish and release its ~800 MB before attention gets recomputed, so the
-        # two never coexist.  use_reentrant=True keeps the first pass under
-        # torch.no_grad(), so it does not stack with the outer checkpoint's
-        # saved_tensors_hooks, and it only holds this one block's input.
+        # two never coexist.
+        # NOTE: use_reentrant=True cannot be used here.  Inside the outer
+        # checkpoint (also use_reentrant=False) the reentrant variant raises
+        # "Trying to backward through the graph a second time" -- measured, see
+        # docs/findings/krea2_pp_vram_gap_20261116.md §4.5.  Both layers must be
+        # False.
+        # COST: this is not free.  Each nested layer re-runs its region once per
+        # enclosing recompute, so the guarded region executes k+1 times per step
+        # where k is the nesting depth; see §4.9 for the measured budget.
         if (
             not _PP_SIMPLIFY
             and torch.is_grad_enabled()
