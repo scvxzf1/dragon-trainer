@@ -35,10 +35,12 @@ describe("checkBadge", () => {
 });
 
 describe("ppWiredForFamily", () => {
-  it("anima / moss_image 已接线，其他族置灰", () => {
+  it("Anima、MOSS 和 Krea-2 已接线，其他族置灰", () => {
     expect(ppWiredForFamily("anima")).toBe(true);
     expect(ppWiredForFamily("moss_image")).toBe(true);
-    expect(ppWiredForFamily("krea2_raw")).toBe(false);
+    expect(ppWiredForFamily("krea2_raw")).toBe(true);
+    expect(ppWiredForFamily("krea2")).toBe(true);
+    expect(ppWiredForFamily("z_image")).toBe(false);
   });
 
   it("诊断结果优先于兜底表", () => {

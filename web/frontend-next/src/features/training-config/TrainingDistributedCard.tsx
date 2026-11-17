@@ -121,8 +121,10 @@ function TrainingDistributedPopover({ card, popoverId, anchorRef, onClose }: Pop
               onChange={(event) => card.updatePpNumber("pipeline_parallel_blocks_to_swap", event.target.value)} />
           </label>
           <small>PP 块交换与普通 Block Swap 是两套机制：普通 Block Swap 必须保持 0，否则 PP 会拒绝启动。
-            仅 Krea-2 PP 生效；16GB 双卡 896×1200 建议 4（0 会 OOM）。</small>
-          <small>PP 参数保存在本机设置 [distributed] 节，仅作为卡片缺省值；真正拦截由训练入口兜底。</small>
+            仅 Krea-2 PP 生效；16GB 双卡 896×1200 建议 4。
+            设为 0 时兼容回退 KREA2_PP_SWAP_BLOCKS；环境变量未设置时关闭交换。</small>
+          <small>PP 参数自动保存为本机设置 [distributed] 缺省值，并更新当前训练草稿。
+            当前配置已有值时优先显示配置值；保存训练配置后，预检与启动使用该值。</small>
         </div>
       )}
       <div className="training-distributed-checks" aria-live="polite">

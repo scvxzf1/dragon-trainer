@@ -47,6 +47,7 @@ export const FORM_UI_DEFAULTS = {
     pipeline_parallel: false,
     pipeline_parallel_stages: 2,
     pipeline_parallel_microbatches: 4,
+    pipeline_parallel_blocks_to_swap: 0,
     pipeline_parallel_schedule: '1f1b',
     pipeline_parallel_split: 'balanced',
     compile_block_scope: 'resident',

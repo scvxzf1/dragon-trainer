@@ -58,6 +58,7 @@ export async function fetchDistributedDiagnosis(
     config_file?: string;
     gpu_whitelist?: string[];
     mode?: string;
+    config_overrides?: Record<string, string | number | boolean>;
   },
   signal?: AbortSignal,
 ): Promise<DistributedDiagnosis> {

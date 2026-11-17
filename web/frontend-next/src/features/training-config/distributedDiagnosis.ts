@@ -25,13 +25,14 @@ export function checkBadge(check: DistributedCheck): { icon: string; tone: strin
 }
 
 /** 与后端 TRAINER_PP_WIRED_FAMILIES 一致的兜底（诊断结果优先）。 */
-export const FALLBACK_WIRED_PP_FAMILIES = ["anima", "moss_image"];
+export const FALLBACK_WIRED_PP_FAMILIES = ["anima", "moss_image", "krea2_raw"];
 
 export function ppWiredForFamily(
   family: string | undefined | null,
   wiredFamilies?: WiredPpFamily[],
 ): boolean {
-  const name = String(family || "anima").trim();
+  const raw = String(family || "anima").trim();
+  const name = raw === "krea2" ? "krea2_raw" : raw;
   if (wiredFamilies?.length) {
     return wiredFamilies.some((item) => item.family === name && item.wired);
   }

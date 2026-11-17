@@ -29,6 +29,7 @@ const PIPELINE_PARALLEL_FIELD_KEYS = new Set([
     'pipeline_parallel',
     'pipeline_parallel_stages',
     'pipeline_parallel_microbatches',
+    'pipeline_parallel_blocks_to_swap',
     'pipeline_parallel_schedule',
     'pipeline_parallel_split',
 ]);
@@ -149,6 +150,9 @@ export function configFieldAvailability(key, context = {}) {
         || toggleEnabled(context, 'pipeline_parallel');
 
     const pipelineCapability = modelFamilyPipelineCapability(modelFamily);
+    if (key === 'pipeline_parallel_blocks_to_swap' && modelFamily !== 'krea2_raw') {
+        return unavailable('流水线交换块数仅适用于 Krea-2。', 'pipeline-swap-model-family');
+    }
     if (PIPELINE_PARALLEL_FIELD_KEYS.has(key) && pipelineCapability?.configurable !== true) {
         return unavailable(
             `流水线并行尚未为当前模型族 ${modelFamily} 声明分层能力。`,

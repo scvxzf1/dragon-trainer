@@ -6,6 +6,7 @@ import {
   saveDistributedSettings,
 } from "./distributedApi";
 import type { DistributedSettingsPayload } from "./distributedApi";
+import { distributedDiagnosisOverrides, effectiveDistributedSettings, pipelineSettingsOnEnable } from "./distributedDraft";
 import {
   normalizeDistributedMode,
   ppWiredForFamily,
@@ -34,6 +35,9 @@ export function useDistributedCard({ state, open }: Props) {
     staleTime: 30_000,
   });
 
+  const settings = effectiveDistributedSettings(draft, state.mergedConfig, settingsQuery.data);
+  const configOverrides = distributedDiagnosisOverrides(draft, state.mergedConfig);
+
   const diagnosisQuery = useQuery({
     queryKey: [
       "distributed-diagnosis",
@@ -41,6 +45,7 @@ export function useDistributedCard({ state, open }: Props) {
       state.context.selectedPreset,
       mode,
       device.gpuIds.join(","),
+      JSON.stringify(configOverrides),
     ],
     queryFn: ({ signal }) => fetchDistributedDiagnosis({
       variant: file?.method || "lora",
@@ -49,6 +54,7 @@ export function useDistributedCard({ state, open }: Props) {
       config_file: file?.path,
       gpu_whitelist: device.gpuIds,
       mode,
+      config_overrides: configOverrides,
     }, signal),
     enabled: open && Boolean(file),
   });
@@ -66,25 +72,28 @@ export function useDistributedCard({ state, open }: Props) {
     [family, wiredFamilies, device.devices.length],
   );
   const ppBlockedReason = !ppWiredForFamily(family, wiredFamilies)
-    ? `模型族 ${family} 尚未接入流水线并行（仅 anima / moss_image 支持）`
+    ? `模型族 ${family} 尚未接入流水线并行（仅 anima / moss_image / krea2_raw 支持）`
     : device.devices.length < 2
       ? "流水线并行至少需要两张 GPU"
       : "";
 
   function changeMode(next: DistributedMode) {
+    if (next === mode) return;
     if (next === "pp") {
       if (!ppAvailable) return;
       device.setMode("ddp");
-      const settings = settingsQuery.data;
+      const initial = pipelineSettingsOnEnable(
+        draft, state.baseline, state.mergedConfig, settingsQuery.data,
+      );
       state.setDraft((current) => ({
         ...current,
         pipeline_parallel: true,
-        pipeline_parallel_stages: settings?.pipeline_parallel_stages ?? 2,
-        pipeline_parallel_microbatches: settings?.pipeline_parallel_microbatches ?? 4,
-        pipeline_parallel_schedule: settings?.pipeline_parallel_schedule ?? "1f1b",
-        pipeline_parallel_split: settings?.pipeline_parallel_split ?? "balanced",
+        pipeline_parallel_stages: initial.pipeline_parallel_stages,
+        pipeline_parallel_microbatches: initial.pipeline_parallel_microbatches,
+        pipeline_parallel_schedule: initial.pipeline_parallel_schedule,
+        pipeline_parallel_split: initial.pipeline_parallel_split,
         pipeline_parallel_blocks_to_swap:
-          settings?.pipeline_parallel_blocks_to_swap ?? 0,
+          initial.pipeline_parallel_blocks_to_swap,
       }));
       settingsSave.mutate({
         mode: "pp",
@@ -113,12 +122,12 @@ export function useDistributedCard({ state, open }: Props) {
     raw: string,
   ) {
     const value = Number.parseInt(raw, 10);
-    // 0 is a legal value for the swap count (it disables swapping), unlike the
-    // stage/microbatch counts which must stay >= 1.
+    // The swap count accepts 0; stage/microbatch counts must stay >= 1.
     const min = key === "pipeline_parallel_blocks_to_swap" ? 0 : 1;
     if (!Number.isFinite(value) || value < min) return;
     state.setDraft((current) => ({ ...current, [key]: value }));
     settingsSave.mutate({ [key]: value });
+    state.preflight.reset();
   }
 
   function selectDevice(gpu: Parameters<typeof device.selectDevice>[0]) {
@@ -137,7 +146,7 @@ export function useDistributedCard({ state, open }: Props) {
     issue: device.issue,
     refreshDevices: device.refreshDevices,
     busy: state.busy,
-    settings: settingsQuery.data,
+    settings,
     diagnosis: diagnosisQuery.data,
     diagnosisPending: diagnosisQuery.isPending || diagnosisQuery.isFetching,
     diagnosisError: diagnosisQuery.error instanceof Error ? diagnosisQuery.error.message : "",
