@@ -339,3 +339,45 @@ CUDA_VISIBLE_DEVICES=0,1 NCCL_ASYNC_ERROR_HANDLING=1 PYTHONPATH=. \
 两个脚本在会话中是临时文件；需要长期复现时应移入 `scripts/experiments/`。
 注意 `CUDA_VISIBLE_DEVICES` 在本机按 **CUDA 枚举序**（FASTEST_FIRST）：`0,1` 才是两张 V100，
 `1,2` 会拿到 GTX 1050（sm61，torch 直接报 `no kernel image`）。
+
+## 4.8 双 V100 满血 896×1200 端到端跑通（2026-11-17）
+
+`Krea-2 + fp16 + PP=2`，896×1200（4352 image tokens）、双 V100 16GB、不换数据集、
+不降 token 数，**前向 + 反向 + 优化器 + 保存全部跑通**；2 步验证无 skip、无
+`pp_scaler_decision_asymmetry`、GradScaler scale 两保持一致（65536）。
+
+### 4.8.1 决定性的一步：块交换要按"本 rank 实际持卡的 block"选
+
+`stage_blocks` 是**整个模型**的 28 个 block。按位置取 `blocks[1:5]` 在尾段 rank
+上选中的是 1..4 号——那是首段 rank 的层，在本 rank 上早已被
+`release_foreign_submodules` 释放，因此 offload 释放 0 MiB，交换在最需要的地方
+完全没生效。改为先按"参数是否在本 device 上"筛出本 stage 拥有的块。
+
+`KREA2_PP_PROBE=1` 的 per-block 入口/出口探针给出对照：
+
+| | rank0 反向最深处 | rank1 反向最深处 |
+|---|---|---|
+| swap=0 | idx=12（14.65 GiB） | idx=24（14.71 GiB） |
+| swap=4 | **idx=0（12.27 GiB）** | **idx=13（13.87 GiB）** |
+
+即块交换确实买回了整段反向。
+
+### 4.8.2 两条值得记住的判读经验
+
+1. **OOM 报的 `allocated` 不是诊断量**：它天然等于天花板减去失败请求量，任何 OOM
+   都报同一个值（本机恒为 ~14.9x GiB）。唯一有效的读数是"反向推进到第几个 block"。
+2. **chunk 不套 `torch_checkpoint` 等于白切**：`is_grad_enabled()` 为真时每块的
+   fp32 中间量仍被 autograd 钉在计算图里，4×26 MiB 依旧 102 MiB，总占用纹丝不动。
+   只有 SwiGLU 那处套了 checkpoint，所以它才是唯一真正省下显存的。
+
+### 4.8.3 卸载必须 `resize_(0)`
+
+只把 `.data` 指回 pinned cpu 副本不够：linear 的反向会保存 `weight.t()` 转置视图，
+它独立持有同一 StorageImpl 的强引用。需 `untyped_storage().resize_(0)`
+（FSDP 手法），重算路径再从 pinned 副本重建 buffer。
+
+### 4.8.4 已知缺口
+
+- PP 的 progress 行 `loss=None`：只有首段 rank 打印，而 loss 只在末段计算。属显示
+  口径问题，不影响训练；如需可见，应由末段上报后聚合。
+- 尚未做：性能基线 vs DDP、resume 后数值连续性、真实 12.82B checkpoint 往返。
