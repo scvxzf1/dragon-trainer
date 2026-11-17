@@ -47,6 +47,7 @@ import torch.distributed as dist
 from library.training.pp.errors import (
     CODE_BACKEND_MULTIBACKEND_REQUIRED,
     CODE_CONFIG_INVALID,
+    CODE_STAGE_CONTRACT,
     CODE_WORLD_SIZE_MISMATCH,
     PipelineParallelError,
 )
@@ -196,6 +197,12 @@ def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
     )
+    from library.models.moss_image.pipeline_parallel import moss_stage_adapter_modules
+
+    keep = {id(module) for module in moss_stage_adapter_modules(network, runtime.layout)}
+    for module in getattr(network, "unet_loras", []) or []:
+        if id(module) not in keep:
+            module.to("cpu")
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=device
     )
@@ -256,17 +263,24 @@ def _release_foreign_stage_weights(model, layout, *, network, device) -> None:
     start, end = block_range
     if (start, end) == (0, len(blocks)):
         return
-    if network is not None and hasattr(layout, "block_indices"):
-        # Adapter bookkeeping is Anima-shaped (``block_indices``); the MOSS
-        # layout indexes layers only, so its adapters keep their references and
-        # the block release below stands on its own.
-        owned = {id(module) for module in stage_adapter_modules(network, layout)}
-        for adapter in getattr(network, "unet_loras", ()) or ():
-            if id(adapter) in owned:
-                continue
-            ref = getattr(adapter, "org_module_ref", None)
-            if isinstance(ref, list) and ref:
-                ref[0] = None
+    if network is not None:
+        owned_modules: list = []
+        if hasattr(layout, "block_indices"):
+            owned_modules = stage_adapter_modules(network, layout)
+        elif hasattr(layout, "layer_indices"):
+            from library.models.moss_image.pipeline_parallel import (
+                moss_stage_adapter_modules,
+            )
+
+            owned_modules = moss_stage_adapter_modules(network, layout)
+        if owned_modules:
+            owned = {id(module) for module in owned_modules}
+            for adapter in getattr(network, "unet_loras", ()) or ():
+                if id(adapter) in owned:
+                    continue
+                ref = getattr(adapter, "org_module_ref", None)
+                if isinstance(ref, list) and ref:
+                    ref[0] = None
     release_foreign_blocks(model, layout, container=container, block_range=(start, end))
     gc.collect()
     if getattr(device, "type", "") == "cuda":
@@ -311,35 +325,43 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
     # only holds this rank's weights, so no name guessing is involved.  A
     # hand-written allow-list missed a module and surfaced as the ATen addmm
     # error "mat1 is on cuda:0, different from other tensors on cpu" (a cpu bias).
+    from library.training.pp.placement import stage_adapter_modules
+
+    keep = {id(module) for module in stage_adapter_modules(network, runtime.layout)}
+    for module in getattr(network, "unet_loras", []) or []:
+        if id(module) not in keep:
+            module.to("cpu")
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=accelerator.device
     )
     moved = 0
-    for tensor in list(unet.parameters()) + list(unet.buffers()):
-        if tensor.device.type == "cpu":
-            tensor.data = tensor.data.to(accelerator.device)
-            moved += 1
-    for tensor in list(runtime.stage_module.parameters()) + list(runtime.stage_module.buffers()):
-        if tensor.device.type == "cpu":
-            tensor.data = tensor.data.to(accelerator.device)
-            moved += 1
-    # NOTE: the base model is deliberately not a registered submodule of the
-    # stage (``object.__setattr__`` keeps stage.to() from walking 25 GB), so any
-    # check must walk ``unet`` directly -- asking the stage silently sees nothing.
-    leftovers = [
-        f"base:{n}" for n, t in unet.named_parameters() if t.device.type == "cpu"
-    ] + [
-        f"adapter:{n}"
-        for n, t in network.named_parameters()
-        if t.requires_grad and t.device.type == "cpu"
-    ]
-    if leftovers:
-        raise PipelineParallelError(
-            CODE_STAGE_CONTRACT,
-            f"rank {rank} still holds CPU tensors after the stage move "
-            f"({len(leftovers)} found, first few: {leftovers[:8]}); a cpu weight "
-            "here surfaces as an ATen device mismatch inside forward",
-        )
+    if accelerator.device.type != "cpu":
+        for tensor in list(unet.parameters()) + list(unet.buffers()):
+            if tensor.device.type == "cpu":
+                tensor.data = tensor.data.to(accelerator.device)
+                moved += 1
+        for tensor in list(runtime.stage_module.parameters()) + list(runtime.stage_module.buffers()):
+            if tensor.device.type == "cpu":
+                tensor.data = tensor.data.to(accelerator.device)
+                moved += 1
+        owned_param_ids = {id(t) for t in runtime.stage_module.trainable_parameters()}
+        # NOTE: the base model is deliberately not a registered submodule of the
+        # stage (``object.__setattr__`` keeps stage.to() from walking 25 GB), so any
+        # check must walk ``unet`` directly -- asking the stage silently sees nothing.
+        leftovers = [
+            f"base:{n}" for n, t in unet.named_parameters() if t.device.type == "cpu"
+        ] + [
+            f"adapter:{n}"
+            for n, t in network.named_parameters()
+            if id(t) in owned_param_ids and t.requires_grad and t.device.type == "cpu"
+        ]
+        if leftovers:
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                f"rank {rank} still holds CPU tensors after the stage move "
+                f"({len(leftovers)} found, first few: {leftovers[:8]}); a cpu weight "
+                "here surfaces as an ATen device mismatch inside forward",
+            )
     print(f"[pp] rank={rank} stage ready, moved {moved} tensors", flush=True)
     return runtime
 
@@ -398,6 +420,7 @@ def build_krea2_trainer_runtime(
         scaler=scaler,
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
+        release_foreign=True,
     )
     # Send the peer's adapter modules back to CPU now that we know our range.
     keep = {id(module) for module in adapter_modules_for_stage(network, runtime.layout)}
@@ -411,12 +434,20 @@ def build_krea2_trainer_runtime(
 
 
 def _loss_collective_device(runtime):
-    """Device for the loss all-reduce: the PP group is 2-D (gloo + nccl)."""
+    """Device for the loss all-reduce: resolve this rank's actual stage device."""
 
     for name in ("device", "_device"):
         candidate = getattr(runtime, name, None)
         if isinstance(candidate, torch.device):
             return candidate
+    stage = getattr(runtime, "_stage", None) or getattr(runtime, "stage", None)
+    stage_dev = getattr(stage, "device", None)
+    if isinstance(stage_dev, torch.device):
+        return stage_dev
+    stage_mod = getattr(runtime, "stage_module", None)
+    if stage_mod is not None:
+        for param in stage_mod.trainable_parameters():
+            return param.device
     if torch.cuda.is_available():
         return torch.device("cuda", torch.cuda.current_device())
     return torch.device("cpu")
@@ -434,7 +465,20 @@ def _broadcast_step_loss(local, runtime):
     if not dist.is_available() or not dist.is_initialized():
         return local
     group = getattr(runtime, "process_group", None) or getattr(runtime, "_group", None)
-    payload = torch.zeros(2, dtype=torch.float64, device=_loss_collective_device(runtime))
+    # Use a CPU float64 pair whenever Gloo is available on the group (compatible
+    # with both pure-Gloo and 2D cpu:gloo,cuda:nccl groups without risking NCCL
+    # device misbinding); fall back to this rank's stage device for pure-NCCL.
+    backend = ""
+    try:
+        backend = str(dist.get_backend(group) if group is not None else dist.get_backend()).lower()
+    except Exception:
+        backend = ""
+    coll_dev = (
+        _loss_collective_device(runtime)
+        if backend == "nccl"
+        else torch.device("cpu")
+    )
+    payload = torch.zeros(2, dtype=torch.float64, device=coll_dev)
     if local is not None:
         payload[0] = float(local)
         payload[1] = 1.0
@@ -449,8 +493,10 @@ def _broadcast_step_loss(local, runtime):
 def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) -> None:
     """One whole pipeline step with the frozen §4 semantics (family-blind)."""
 
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
+    stage_dev = _loss_collective_device(runtime)
+    on_cuda = stage_dev.type == "cuda" and torch.cuda.is_available()
+    if on_cuda:
+        torch.cuda.reset_peak_memory_stats(stage_dev)
     started = time.perf_counter()
     runtime.zero_grad()
     result = runtime.step(
@@ -506,13 +552,13 @@ def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) 
     # Per-step wall time: the only number that says whether 1F1B + block swap is
     # worth its PCIe traffic.  Runs after every collective so it measures the
     # whole step, and is printed every step (a mean hides the first-step cost).
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
+    if on_cuda:
+        torch.cuda.synchronize(stage_dev)
     elapsed = time.perf_counter() - started
     print(
         f"[pp] step {counters.global_step} wall={elapsed:.2f}s "
-        f"peak={torch.cuda.max_memory_allocated() / 2**30:.2f}GiB"
-        if torch.cuda.is_available()
+        f"peak={torch.cuda.max_memory_allocated(stage_dev) / 2**30:.2f}GiB"
+        if on_cuda
         else f"[pp] step {counters.global_step} wall={elapsed:.2f}s",
         flush=True,
     )
@@ -777,11 +823,18 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
         accelerator=accelerator,
         weight_dtype=handoff.weight_dtype,
     )
-    # Krea-2 names the bundle {"context", "mask"}; Anima/MOSS use "text_hiddens".
-    _hiddens = _prepared.get("context")
+    # Krea-2 names the bundle {"context", "mask"}, MOSS uses "text_hiddens",
+    # and Anima uses {"crossattn_emb"}.
+    _hiddens = (
+        _prepared.get("context")
+        if _prepared.get("context") is not None
+        else _prepared.get("text_hiddens")
+    )
     if _hiddens is None:
-        _hiddens = _prepared["text_hiddens"]
-    max_text_tokens = int(_hiddens.shape[1])
+        _hiddens = _prepared.get("crossattn_emb")
+    max_text_tokens = (
+        int(_hiddens.shape[1]) if _hiddens is not None else int(_raw_text_tokens)
+    )
     # The LR plan is built from max_train_steps, so the steps budget is
     # resolved (epochs -> steps when needed) *before* the scheduler exists.
     total_steps = _resolve_max_steps(args, max(len(loader), 1))

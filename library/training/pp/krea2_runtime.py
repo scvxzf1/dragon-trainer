@@ -244,6 +244,19 @@ class Krea2StageLayout:
     def local_blocks(self) -> int:
         return self.block_range[1] - self.block_range[0]
 
+    @property
+    def block_indices(self) -> tuple[int, ...]:
+        return tuple(range(self.block_range[0], self.block_range[1]))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "family": "krea2_raw",
+            "stage_index": self.stage_index,
+            "stages": self.stages,
+            "block_range": list(self.block_range),
+            "num_blocks": self.num_blocks,
+        }
+
 
 def _model_dtype(model) -> torch.dtype:
     for parameter in model.parameters():

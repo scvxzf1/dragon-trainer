@@ -444,6 +444,21 @@ def _run_training_session(trainer, args) -> None:
 
         cache_preview_references(trainer, args, accelerator, vae)
 
+    if trainer.is_text_encoder_not_needed_for_training(args) and any(
+        t_enc is not None for t_enc in text_encoders
+    ):
+        startup_log(
+            args,
+            logger,
+            "text_encoder is not needed for training. deleting before DiT load to save memory.",
+        )
+        for t_enc in text_encoders:
+            del t_enc
+        text_encoders = [None]
+        text_encoder = [None]
+        gc.collect()
+        clean_memory_on_device(accelerator.device)
+
     if unet is None:
         # lazy load unet if needed. text encoders may be freed or replaced with dummy models for saving memory
         adaptive_notify(trainer, "model_load")

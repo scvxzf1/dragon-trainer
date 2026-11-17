@@ -436,3 +436,71 @@ def test_stage_exposes_checkpoint_contract() -> None:
     assert isinstance(stage.adapter_modules, tuple)
     runtime_topology = {"family": "krea2_raw"}
     assert runtime_topology["family"] == "krea2_raw"
+
+
+def test_krea2_and_moss_release_foreign_stage_weights_clears_foreign_adapter_refs() -> None:
+    """_release_foreign_stage_weights must clear foreign org_module_ref for both Krea-2 and MOSS."""
+    import weakref
+
+    from library.models.krea2_raw.lora_targets import krea2_target_kwargs
+    from library.models.moss_image.pipeline_parallel import MossStageLayout
+    from library.training.pp.trainer_session import _release_foreign_stage_weights
+    from networks.lora_anima import create_network
+
+    model = _tiny_model()
+    wire = _tiny_wire(model)
+    net = create_network(
+        1.0,
+        network_dim=4,
+        network_alpha=4.0,
+        vae=None,
+        text_encoders=[],
+        unet=model,
+        model_family="krea2_raw",
+        **krea2_target_kwargs(),
+    )
+    net.apply_to([], model, apply_text_encoder=False, apply_unet=True)
+    foreign_block_ref = weakref.ref(model.blocks[3])
+
+    layout, _ = build_krea2_stage_module(model, stage_index=0, stages=2, wire=wire, network=net)
+    assert layout.block_indices == (0,)
+    _release_foreign_stage_weights(model, layout, network=net, device=torch.device("cpu"))
+
+    for adapter in net.unet_loras:
+        if any(tag in adapter.lora_name for tag in ("_blocks_1_", "_blocks_2_", "_blocks_3_")):
+            assert adapter.org_module_ref[0] is None
+        else:
+            assert adapter.org_module_ref[0] is not None
+    assert foreign_block_ref() is None
+
+    # Verify MossStageLayout branch also clears foreign layer adapter refs.
+    class _MossMockAdapter:
+        def __init__(self, name: str, target: object):
+            self.lora_name = name
+            self.org_module_ref = [target]
+
+    moss_root = nn.Module()
+    moss_root.layers = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 4)])
+    moss_net = type(
+        "MNet",
+        (),
+        {
+            "unet_loras": [
+                _MossMockAdapter("lora_unet_layers_0_proj_q", moss_root.layers[0]),
+                _MossMockAdapter("lora_unet_layers_1_proj_q", moss_root.layers[1]),
+            ]
+        },
+    )()
+    moss_layout = MossStageLayout(
+        family="moss_image",
+        stage_index=0,
+        stages=2,
+        layer_range=(0, 1),
+        num_layers=2,
+        max_text_tokens=16,
+    )
+    _release_foreign_stage_weights(
+        moss_root, moss_layout, network=moss_net, device=torch.device("cpu")
+    )
+    assert moss_net.unet_loras[0].org_module_ref[0] is not None
+    assert moss_net.unet_loras[1].org_module_ref[0] is None

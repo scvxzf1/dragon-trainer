@@ -521,8 +521,14 @@ def _load_anima_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         require_training_compatibility,
     )
 
+    from library.training.pp.gate import pipeline_parallel_enabled
+
     loading_dtype = weight_dtype
-    loading_device = "cpu" if trainer.is_swapping_blocks else accelerator.device
+    loading_device = (
+        "cpu"
+        if (trainer.is_swapping_blocks or pipeline_parallel_enabled(args))
+        else accelerator.device
+    )
 
     attn_mode = "flash"
     if args.xformers:
