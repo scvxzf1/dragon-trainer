@@ -37,7 +37,7 @@ React Next 的数据集子集「图片工作台」还提供内嵌的 **打标** 
 
 ## 最终结果与任务保留
 
-Classic Dragon 最终结果页的直接入口是 `#page/captioning-results`；Next 在 `/next/captioning` 内提供任务审阅面板。
+Next 在 `/next/captioning` 内直接提供任务审阅面板。
 页面使用与训练数据预设库一致的
 数据集选择器，可搜索、分组和预览首图；选中预设后只显示该 `dataset_file` 对应的
 保留任务。任务工具栏固定为两行：第一行显示任务状态、刷新和重新打标，第二行放查看模式和批量写回操作。
@@ -82,7 +82,7 @@ $ANIMA_HOME/models/tag-dictionaries/danbooru-zh-en/
 
 ## 本地 ONNX 打标与模型资产
 
-接入预设页（`#page/captioning-providers`）提供 WD14 和 CLTagger 的本地 ONNX 接入。仓库不包含任何
+接入预设与模型资源配置面板提供 WD14 和 CLTagger 的本地 ONNX 接入。仓库不包含任何
 模型权重；页面只显示一份版本固定的 manifest，并按资产 ID 显示本机状态。用户点击“下载模型”后，
 服务端才会从 manifest 指定的 HTTPS 仓库获取文件，下载到：
 
@@ -186,7 +186,6 @@ TAGGING_API_KEY
 - 单张图片最大 64 MiB，单个响应体最大 4 MiB；任务并发上限为 8。
 - 任务和候选审阅状态保存在当前 WebUI 进程内，重启后不会恢复，也不进入训练队列。
 - Next 图片扫描按每页 60 张分页，支持跨页累计选择；Next 任务审阅按每页 50 条显示，服务端单任务上限为 500 张。
-  Classic 结果页的显示分页和 Next React 页面不是同一套 UI 口径，使用时以当前入口的分页控件为准。
 
 ## API 与验证
 
@@ -205,7 +204,7 @@ timeout 60 .venv/bin/python -m pytest \
   tests/test_tagging_providers.py \
   tests/test_tagging_service.py \
   tests/test_tagging_routes.py \
-  tests/test_dragon_tagging_frontend.py -q
+  tests/test_tagging_batch_update.py -q
 ```
 
 ## 本任务批量标签管理
@@ -218,4 +217,4 @@ WD14/CLTagger 默认开放标签管理；外部 API 和未知接入默认关闭�
 
 “保存全部草稿”通过 `PATCH /api/captioning/jobs/{id}/items`（`/api/tagging` 同样支持）发送 `{items:[{id, proposed_caption, expected_caption}]}`。服务端先核对全部 ID、数量、结束状态和原候选，再一次更新内存候选；任一冲突返回 409 且全部不变。不写 TXT。连接中断或 409 时先重新读取并比对服务器；草稿保留，冲突逐项显示服务器候选与本地草稿，必须显式采用服务器新基线后再次保存，不自动重试。
 
-旧单项保存及显式 TXT 写回保留，磁盘写回仍受原接口的逐项冲突/原子文件边界限制，不是跨文件事务。后端新接口需要在训练安全时重新加载服务，本次前端源码修改不自动部署或重启。
+旧单项保存及显式 TXT 写回保留，磁盘写回仍受原接口的逐项冲突/原子文件边界限制，不是跨文件事务。

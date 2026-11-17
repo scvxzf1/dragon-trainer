@@ -1,7 +1,7 @@
 # 数据管理
 
 状态：稳定
-适用版本：当前 main
+适用版本：当前 WebUI Next 工作台 `/next/data`
 入口：Next 工作台侧栏「数据管理」，路径 `/next/data`
 相关代码：`web/services/data_management_service.py`、`web/frontend-next/src/features/data-management/`
 

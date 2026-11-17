@@ -1,42 +1,34 @@
 # 功能文档索引
 
-这里放 WebUI / GUI 的独立功能说明，不放算法方法正文。
+状态：稳定
 
-## 当前文档
+本目录存放当前 Next WebUI（`/next`）各独立业务工作区的用户与维护说明，不存放训练算法或模型数学正文。前端开发、构建与隔离验收入口见 [Next 前端 README](../../web/frontend-next/README.md)。
 
-当前 WebUI 总入口见 [Next 前端 README](../../web/frontend-next/README.md)。
-
-| 文档 | 状态 | 说明 |
-| --- | --- | --- |
-| [config-workbench.md](config-workbench.md) | 功能说明 | Next React `/next/training` 的表单、预检、启动和队列边界 |
-| [preprocess-cache-reuse.md](preprocess-cache-reuse.md) | 用户功能说明 | 预处理缓存复用：共享池、A/B/C 开关与删历史语义 |
-| [dataset-editor.md](dataset-editor.md) | 用户功能说明 | 数据集页：可复用 dataset 蓝图、分组与预览 |
-| [manual-mask-editor.md](manual-mask-editor.md) | 用户功能说明 | Next 独立手绘蒙版、保存与子集训练接入 |
-| [tagging-workbench.md](tagging-workbench.md) | 用户功能说明 | Next React 外部 API 打标、候选审阅与 caption 写回边界 |
-| [training-queue.md](training-queue.md) | 用户功能说明 | 训练页队列：排队、暂停、失败策略与批量中止 |
-| [history-collections.md](history-collections.md) | 用户功能说明 | 历史任务与集合：筛选、归档、批量操作与详情 |
-| [history-logs.md](history-logs.md) | 用户功能说明 | 完整日志、虚拟滚动、页/行跳转与全局搜索 |
-| [preview.md](preview.md) | 用户功能说明 | 训练样张 / 推理预览 / 权重列表 |
-| [global-settings.md](global-settings.md) | 用户功能说明 | 输出根、配置根、界面缩放 |
-| [global-model-configs.md](global-model-configs.md) | 用户功能说明 | Anima / Krea-2 模型配置创建、排序、默认项和选择弹窗 |
-| [data-management.md](data-management.md) | 用户功能说明 | 数据目录查阅、容量扫描和受保护的生成物清理 |
-| [ui-scale.md](ui-scale.md) | 用户功能说明 | UI 缩放：默认比例与分页面独立比例 |
-| [frontend-health-scorecard.md](frontend-health-scorecard.md) | 维护用评分入口 | 前端评分结构与历史基线；具体轮次审计结果保存在 `docs/findings/` |
-
-## 历史与实施记录
-
-以下记录用于追溯设计和验收背景；其中的日期、完成状态和测试数字只覆盖各自记录的阶段。
+## 当前功能文档
 
 | 文档 | 状态 | 说明 |
 | --- | --- | --- |
-| [dragon-ui.md](dragon-ui.md) | 历史 / 已退役 | 旧 Dragon/classic UI 的行为记录 |
-| [dragon-ui-functional-map.md](dragon-ui-functional-map.md) | 历史盘点 | 旧 Dragon 八个业务/设置界面的功能、关系图与任务生命周期 |
-| [dragon-next-implementation.md](dragon-next-implementation.md) | 历史实施记录 | React 工作台页面对账、状态保护、测试与部署快照 |
-| [dragon-next-uiux-progress.md](dragon-next-uiux-progress.md) | 历史阶段记录 | Next UI/UX 方向的阶段状态、证据与安全边界 |
+| [config-workbench.md](config-workbench.md) | 稳定 | `/next/training` 配置工作台：四阶段表单、分布式与 PP 卡片、预检风险确认、启动与入队边界 |
+| [preprocess-cache-reuse.md](preprocess-cache-reuse.md) | 稳定 | 预处理缓存复用：共享池、A/B/C 开关、指纹模式与历史删除隔离 |
+| [dataset-editor.md](dataset-editor.md) | 稳定 | `/next/datasets` 数据集蓝图工作区：子集管理、字段帮助、Qwen Edit 配对与图片工作台 |
+| [manual-mask-editor.md](manual-mask-editor.md) | 稳定 | 数据集子集图片工作台中的手绘蒙版编辑、原子保存与子集接入 |
+| [tagging-workbench.md](tagging-workbench.md) | 稳定 | `/next/captioning` 打标工作台：外部 API 与本地 ONNX 打标、标签频次批量审阅与写回边界 |
+| [training-queue.md](training-queue.md) | 稳定 | `/next/queue` 训练队列：排队、暂停、自动重试、失败策略与 revision 冲突保护 |
+| [history-collections.md](history-collections.md) | 稳定 | `/next/history` 历史任务与集合：筛选、对比、合并查看、两档删除、原地续训与详情 |
+| [history-logs.md](history-logs.md) | 稳定 | 历史详情完整日志：稀疏索引分页、虚拟滚动、行/页跳转与全局搜索 |
+| [preview.md](preview.md) | 稳定 | `/next/preview` 预览工作区：训练样张、推理输出、自定义目录与权重管理 |
+| [global-settings.md](global-settings.md) | 稳定 | `/next/settings` 全局设置：输出根、配置根、生图测试设置、显示偏好与分页面缩放 |
+| [global-model-configs.md](global-model-configs.md) | 稳定 | `/next/models` 模型配置库：五模型族路径管理、能力标签筛选、路径状态检查与默认镜像 |
+| [data-management.md](data-management.md) | 稳定 | `/next/data` 数据管理：目录容量扫描、租约保护清理与检查点保留策略抽屉 |
+| [ui-scale.md](ui-scale.md) | 稳定 | UI 缩放：全局默认比例与分页面/历史详情子页独立比例 |
+| [frontend-health-scorecard.md](frontend-health-scorecard.md) | 维护参考 | Next 前端集中审阅评分结构与模板（具体历史轮次审计见 `docs/findings/`） |
+
+## 历史记录
+
+已退役静态 Dragon / classic UI 盘点及 2026-09 早期实施流水账已归档至 [`_archive/docs/features/README.md`](../../_archive/docs/features/README.md)（总览见 [`../archive-index.md`](../archive-index.md)）。
 
 ## 维护规则
 
-- 如果功能是训练方法或推理方法，放到 `docs/methods/` 或 `docs/experimental/`。
-- 如果功能是 WebUI / GUI 的独立体验、设置或面板，放到本目录。
-- 新增功能文档后，同步更新本索引和 [../README.md](../README.md)。
-- 用户向功能文档至少写清：入口、关键配置项、危险项、相关测试。
+- 训练或推理算法方法放入 `docs/methods/` 或 `docs/experimental/`；本目录只承载 WebUI 工作区与设置说明。
+- 新增或重命名本目录文档时，同步更新本索引与 [`../README.md`](../README.md)。
+- 文档中引用的后端与前端测试路径必须对应仓库当前真实存在的测试文件。

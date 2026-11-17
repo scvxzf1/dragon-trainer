@@ -8,81 +8,60 @@
 .venv/bin/python tasks.py web --host 127.0.0.1 --port 20102
 ```
 
-- `web/frontend-next/src/features/settings/SettingsPage.tsx`（Next 全局设置）
+相关代码：
+- `web/frontend-next/src/features/settings/SettingsPage.tsx`、`settingsForm.ts`
 - `web/services/settings_service.py`
-- `library/env.py`（`get_configs_root` 等）
-- `tests/test_preview_service.py`、`tests/test_ui_scale_settings.py`、`tests/test_global_settings_runtime.py`
+- `library/env.py`（外置配置根与路径解析）
 
 ---
 
-## 1. 这是干什么的
+## 1. 用途与持久化位置
 
-一句话：设置 WebUI 共用的默认输出目录、配置根目录和界面缩放，并管理 Next 工作台的动态效果。
+全局设置页面管理本机目录边界、生图测试目录、界面显示偏好与分页面缩放比例：
+- 常规设置写入当前配置根目录下的 `web-ui-settings.toml`（`[global]` 分区；分布式训练默认项存于同文件 `[distributed]` 分区，由 `/next/training` 分布式卡片维护）；
+- 外置配置根目录等路径覆盖写入项目根已忽略的 `.anima-webui-settings.toml`（`[paths]` 分区），不随版本控制提交；
+- 基础模型路径组合已独立至 [全局模型配置](global-model-configs.md)（`/next/models`）。
 
-全局设置写到：
-
-- `configs/web-ui-settings.toml` 的全局分区
-- 配置根覆盖还会落到项目根 `.anima-webui-settings.toml`（本机文件，通常不提交）
-
-基础模型路径已迁移到独立的[全局模型配置](global-model-configs.md)页面。
-
----
-
-## 2. 入口
-
-1. 打开 Next 顶部导航 **全局设置**，进入 `/next/settings`。
-2. 修改：
-   - 输出文件夹
-   - 配置根目录
-   - 界面缩放
-3. 点 **保存全局设置**。
-4. 需要恢复时点 **恢复默认**。
+配置根目录解析优先级（从高到低，详见 [外置配置目录说明](../configuration/external-configs.md)）：
+1. `.anima-webui-settings.toml` 的 `[paths].configs_root`
+2. `ANIMA_CONFIGS_ROOT` 环境变量
+3. 仓库默认 `configs/`
 
 ---
 
-## 3. 关键配置项
+## 2. 页面四组配置项
 
-| 配置项 | 界面控件 | 作用 |
+在 `/next/settings` 修改后点击 **保存设置**（提交成功后自动失效非设置类查询缓存，必要时可按提示刷新页面），或点击 **恢复默认**：
+
+| 分组 | 字段键 | 界面名称与作用 |
 | --- | --- | --- |
-| 输出文件夹 | `global-output-root` | Web 训练统一输出根，默认 `output/runs` |
-| 配置根目录 | `global-configs-root` | 外置 `configs/` 根，含 methods、datasets、history、queue |
-| 缩放比例 | `global-ui-scale` | 默认 UI 缩放 25%–400% |
-| Next 动态效果 | `dragon_motion_enabled` | 控制 Next 工作台页面入场、滚动揭示、视差和平滑过渡，默认开启 |
-| 主页面独立比例 | 各页面 follow-default + 数值 | 配置/数据集/训练等页面可单独缩放 |
-| 历史详情独立比例 | 历史详情各子页 | 只作用于历史详情内容区 |
-
-配置根优先级（高到低）：
-
-1. `.anima-webui-settings.toml` 的 `configs_root`
-2. 环境变量 `ANIMA_CONFIGS_ROOT`
-3. 默认 `configs/`
-
-旧 Dragon / classic URL 仅作兼容重定向，不改变输出根、配置根、训练历史或模型配置。界面偏好仍写入浏览器本地存储。
-
-`dragon_motion_enabled` 由 Next 工作台读取，用于控制页面过渡、滚动揭示和视差效果。如果操作系统已开启“减少动态效果”，系统偏好始终优先。
+| **文件与任务** | `output_root` | 训练输出根目录（默认 `output/runs`，支持目录浏览弹窗 `GET /api/settings/directories`） |
+| **文件与任务** | `configs_root` / `history_root` / `queue_root` | 配置根目录、训练历史目录、训练队列目录外置覆盖（拒绝包含 `..` 的路径） |
+| **文件与任务** | `tagging_max_retained_jobs` | 打标工作台内存中保留已结束任务的上限（默认 `40`，范围 `1..500`） |
+| **生图测试** | `image_test_save_root` | 生图测试输出保存目录 |
+| **生图测试** | `image_test_allow_home_search` | 是否允许生图测试在用户主目录下搜索模型文件 |
+| **界面显示** | `ui_scale` | 全局默认界面缩放比例（`25%`–`400%`，默认 `100%`，含 `80%`–`125%` 快捷档与滑块） |
+| **界面显示** | `dragon_motion_enabled` | 页面过渡与动效开关（默认开启；若操作系统开启 `prefers-reduced-motion` 则系统偏好优先） |
+| **界面显示** | `dragon_config_help_always_visible` / `dragon_config_tags_always_visible` | 训练配置卡片始终完整显示帮助说明 / 标签徽章 |
+| **分页面缩放** | `ui_scale_<page>` / `ui_scale_history_<tab>` | 各支持页面及历史详情子标签页的独立缩放百分比；**留空**即跟随全局 `ui_scale`（详见 [UI 缩放](ui-scale.md)） |
 
 ---
 
-## 4. 危险项
+## 3. 风险与边界
 
-- **改输出根目录**：新任务会写到新位置；旧 run 不会自动搬家。路径还不能逃出项目允许边界。
-- **改配置根目录**：配置列表、历史、队列会整体切换到另一套目录；保存后页面会刷新。
-- **恢复默认**：会清掉你在全局设置里改过的本机默认值。
-- **极端 UI 缩放**：25% 或 400% 可能让布局难用；推荐 75%–150%。
-- **把界面模式误当模型格式**：`Dragon trainer` 只是界面品牌，不会把 `model_family` 改成另一种模型。
-
-更细的缩放说明见 [ui-scale.md](ui-scale.md)。
+- **修改 `output_root`**：仅影响之后新启动的任务与输出边界校验（`resolve_output_root()`），已有历史运行目录不会自动迁移。
+- **修改 `configs_root` / `history_root` / `queue_root`**：配置列表、历史记录或队列视图会切换到新目录，切换前确认目标目录归属。
+- **恢复默认**：会重置当前设置中的本机自定义项，但不会删除磁盘上的训练产物、历史记录或模型文件。
 
 ---
 
-## 5. 相关测试
+## 4. 相关测试
 
 ```bash
 timeout 60 .venv/bin/python -m pytest \
-  tests/test_preview_service.py \
+  tests/test_web_settings_paths.py \
   tests/test_ui_scale_settings.py \
-  tests/test_model_config_service.py \
-  tests/test_global_model_config_frontend.py \
+  tests/test_settings_image_test.py \
   tests/test_global_settings_runtime.py \
   tests/test_env_config_paths.py \
   -q

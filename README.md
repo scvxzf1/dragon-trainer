@@ -115,7 +115,7 @@ uv sync
 - **Anima**：默认生产族，支持完整训练与 `single` / `batch` / `interactive` 推理。
 - **Krea-2 Raw**：独立训练与 `single`/Euler 推理，网络变体和显存策略以兼容矩阵为准。
 - **Z-Image**：训练与训练预览 v1；尚未注册通用 image-test 或独立推理入口。
-- **Qwen Image 2.1**：T2I/Edit 训练与训练预览；Edit 支持 1–4 张参考图，独立推理为 `single`/Euler，当前以 plain LoRA 为稳定边界。
+- **Qwen Image 2.1**：T2I/Edit 训练与训练预览；Edit 支持 1–4 张参考图，独立推理为 `single`/Euler；T2I 以 plain LoRA 为稳定边界并开放实验 LoKr/LoHa，Edit 与独立推理仅支持 plain LoRA。
 - **MOSS-Image**：普通文生图 plain LoRA 首版，支持 BF16/NF4 文本编码器缓存路径；普通推理/image-test 尚未注册，组件与精度要求见 [MOSS-Image 配置](docs/configuration/moss-image.md)。
 
 此外，项目提供：
@@ -127,7 +127,7 @@ uv sync
 5. 训练结果预览、权重选择、prompt 预览和按模型族隔离的推理入口。
 6. 命令行自动化、实验 bench、ComfyUI custom nodes、结构文档和 pytest 测试。
 
-推理能力按模型族隔离：Anima 使用通用 `inference.py` 示例，Qwen Image 2.1 的 T2I/Edit 使用专用参数；Z-Image 与 MOSS-Image 当前不提供通用 image-test/独立推理入口。详见 [推理参考](docs/guidelines/inference.md)。
+推理能力按模型族隔离：Anima 使用通用 `inference.py`（`single`/`batch`/`interactive`），Krea-2 Raw 与 Qwen Image 2.1（T2I/Edit）支持 `single`/Euler 独立推理；Z-Image 与 MOSS-Image 当前不提供通用 image-test/独立推理入口。详见 [推理参考](docs/guidelines/inference.md)。
 
 ## 致谢与来源
 
@@ -303,7 +303,7 @@ http://127.0.0.1:20102/
 
 ## 启动后怎么用
 
-当前用户界面为 Next。Next 页面中的错误恢复入口用于返回训练配置；界面使用说明和开发、验收命令见 [Next 前端 README](web/frontend-next/README.md)。旧版 Dragon/classic 的实现记录保留在[退役指南](docs/features/dragon-ui.md)，仅供维护历史参考。
+当前用户界面为 Next。Next 页面中的错误恢复入口用于返回训练配置；界面使用说明和开发、验收命令见 [Next 前端 README](web/frontend-next/README.md)。旧版 Dragon/classic 的实现记录已归档至 [退役指南](_archive/docs/features/dragon-ui.md)，仅供维护历史参考。
 
 1. 在 WebUI 里确认基础模型、文本编码器和 VAE 路径。
 2. 导入或创建数据集配置。

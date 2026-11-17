@@ -6,16 +6,17 @@ from pathlib import Path
 
 import pytest
 
+from library.models.family_registry import model_family_capability_catalog
+
 
 ROOT = Path(__file__).resolve().parents[1]
 NEXT_DOMAIN = ROOT / "web" / "frontend-next" / "src" / "features" / "training-config" / "domain"
-SNAPSHOT = ROOT / "docs" / "configuration" / "dragon-training-config-215.md"
+SNAPSHOT = ROOT / "_archive" / "docs" / "configuration" / "dragon-training-config-215.md"
 GRADIENT_FLOW_KEYS = [
     "gradient_flow_probe_jsonl",
     "gradient_flow_probe_every_n_steps",
     "gradient_flow_probe_dense_steps",
 ]
-AUTO_RESOURCE_KEYS = ["auto_block_swap_vram_reserve_percent", "auto_block_swap_preference"]
 
 
 def _frozen_keys() -> list[str]:
@@ -37,41 +38,40 @@ def _node_json(script: str) -> dict:
     return json.loads(result.stdout)
 
 
-def test_stage_catalog_covers_frozen_and_current_runtime_fields_once() -> None:
+def test_stage_catalog_covers_frozen_and_all_current_catalog_fields() -> None:
     frozen = _frozen_keys()
     assert len(frozen) == 215
     assert len(set(frozen)) == 215
-    current = [*frozen, *GRADIENT_FLOW_KEYS, *AUTO_RESOURCE_KEYS]
     module_uri = (NEXT_DOMAIN / "config-field-catalog.js").resolve().as_uri()
     payload = _node_json(f"""
 const mod = await import({json.dumps(module_uri + '?coverage')});
-const keys = {json.dumps(current)};
-const entries = keys.map((key) => mod.configFieldCatalogEntry(key));
+const allKeys = Object.keys(mod.CONFIG_FIELD_CATALOG);
+const frozenKeys = {json.dumps(frozen)};
+const entries = allKeys.map((key) => mod.configFieldCatalogEntry(key));
 const counts = Object.fromEntries(mod.CONFIG_STAGE_META.map((stage) => [
   stage.id,
   entries.filter((entry) => entry.stage === stage.id).length,
 ]));
 console.log(JSON.stringify({{
-  missing: keys.filter((key) => !mod.CONFIG_FIELD_CATALOG[key]),
+  missingFrozen: frozenKeys.filter((key) => !mod.CONFIG_FIELD_CATALOG[key]),
+  totalCount: allKeys.length,
   uniqueOwners: new Set(entries.map((entry) => entry.key)).size,
   counts,
   errors: mod.validateConfigFieldCatalog(),
   gradient: {json.dumps(GRADIENT_FLOW_KEYS)}.map((key) => mod.CONFIG_FIELD_CATALOG[key]),
+  ppSwap: mod.CONFIG_FIELD_CATALOG['pipeline_parallel_blocks_to_swap'],
   unknown: mod.configFieldCatalogEntry('__new_runtime_field__'),
 }}));
 """)
 
-    assert payload["missing"] == []
-    assert payload["uniqueOwners"] == 220
-    assert payload["counts"] == {
-        "input": 21,
-        "method": 105,
-        "training": 44,
-        "resources": 50,
-    }
+    assert payload["missingFrozen"] == []
+    assert payload["totalCount"] >= 247
+    assert payload["uniqueOwners"] == payload["totalCount"]
+    assert sum(payload["counts"].values()) == payload["totalCount"]
     assert payload["errors"] == []
     assert {entry["stage"] for entry in payload["gradient"]} == {"resources"}
     assert {entry["cluster"] for entry in payload["gradient"]} == {"diagnostics"}
+    assert payload["ppSwap"]["stage"] == "resources"
     assert payload["unknown"]["location"] == "audit_only"
     assert payload["unknown"]["cluster"] == "unclassified"
 
@@ -112,11 +112,10 @@ console.log(JSON.stringify(Object.fromEntries(Object.entries(cases).map(([name, 
 
 
 def test_stage_catalog_drives_deterministic_dependency_order() -> None:
-    current = [*_frozen_keys(), *GRADIENT_FLOW_KEYS, *AUTO_RESOURCE_KEYS]
     module_uri = (NEXT_DOMAIN / "config-field-catalog.js").resolve().as_uri()
     payload = _node_json(f"""
 const mod = await import({json.dumps(module_uri + '?ordering')});
-const keys = {json.dumps(list(reversed(current)))};
+const keys = Object.keys(mod.CONFIG_FIELD_CATALOG).reverse();
 const ordered = mod.sortConfigCatalogItems(keys.map((key) => mod.configFieldCatalogEntry(key)))
   .map((entry) => entry.key);
 const lokr = ordered.filter((key) => key === 'lokr_factor' || key.startsWith('lokr_'));
@@ -135,3 +134,31 @@ console.log(JSON.stringify({{ ordered, lokr }}));
     lokr_positions = [index[key] for key in payload["lokr"]]
     assert len(lokr_positions) == 9
     assert lokr_positions == list(range(min(lokr_positions), max(lokr_positions) + 1))
+
+
+def test_frontend_model_family_fallback_matches_backend_registry() -> None:
+    backend = {item["name"]: item for item in model_family_capability_catalog()}
+    module_uri = (NEXT_DOMAIN / "model-family.js").resolve().as_uri()
+    frontend = _node_json(f"""
+const mod = await import({json.dumps(module_uri + '?registry-parity')});
+const names = {json.dumps(sorted(backend))};
+console.log(JSON.stringify(Object.fromEntries(names.map((name) => [
+  name,
+  mod.modelFamilyCapability(name),
+]))));
+""")
+
+    assert set(frontend) == set(backend)
+    for name, expected in backend.items():
+        actual = frontend[name]
+        assert actual is not None, f"missing frontend fallback for {name}"
+        assert sorted(actual["aliases"]) == expected["aliases"]
+        assert (
+            sorted(actual["supported_network_specs"])
+            if actual.get("supported_network_specs") is not None
+            else None
+        ) == expected["supported_network_specs"]
+        assert actual["supports_method_adapters"] == expected["supports_method_adapters"]
+        assert actual["plain_lora_only"] == expected["plain_lora_only"]
+        assert sorted(actual["supported_attention_modes"]) == expected["supported_attention_modes"]
+        assert actual["pipeline_parallel"] == expected["pipeline_parallel"]

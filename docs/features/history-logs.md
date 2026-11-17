@@ -1,6 +1,8 @@
 # 历史任务日志
 
+状态：稳定
 入口：`/next/history/<task-id>?view=logs`，或历史任务详情中的「日志」。
+相关代码：`web/frontend-next/src/features/training-history/`、`web/services/training/`、`tests/test_history_log_index.py`
 
 - 日志区域使用页面剩余高度，长行水平滚动；左侧行号固定。
 - 连续滚动按需读取完整日志，不再限制最近 500 行。每页 400 条记录，可以按页或行跳转，或直接定位开头/末尾。

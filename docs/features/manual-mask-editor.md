@@ -1,6 +1,6 @@
 # 手动蒙版编辑器
 
-状态：已实现；适用入口：React `/next/datasets` 的子集「图片工作台」。
+状态：稳定；适用入口：React `/next/datasets` 的子集「图片工作台」（子路由 `/next/datasets/workspace/masks`，兼容独立路由 `/next/datasets/masks`）。
 
 ## 入口与流程
 
@@ -37,19 +37,19 @@
 
 新增业务分别位于 `web/frontend-next/src/features/mask-editor/`、
 `web/services/config/mask_editor.py` 和 `web/routes/mask_editor.py`。
-更新后端代码需重启 WebUI；前端使用 `python tasks.py web-next-build` 发布哈希资源。
+更新后端代码需重启 WebUI；前端使用 `.venv/bin/python tasks.py web-next-build` 发布哈希资源。
 
 定向测试：
 
 ```bash
-python -m pytest tests/test_web_mask_editor.py tests/test_dataset_cache_masks.py -q
+timeout 60 .venv/bin/python -m pytest tests/test_web_mask_editor.py tests/test_dataset_cache_masks.py -q
 pnpm --dir web/frontend-next test src/features/mask-editor/maskCanvas.test.ts
 ```
 
 真实 HTTP / 浏览器热测试使用独立的临时数据根，不接入用户训练服务：
 
 ```bash
-python -m tests.manual_mask_hot_server --port 20541
+.venv/bin/python -m tests.manual_mask_hot_server --port 20541
 node web/frontend-next/scripts/verify-mask-editor.mjs
 ```
 

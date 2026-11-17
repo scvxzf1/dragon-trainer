@@ -1,83 +1,55 @@
 # 全局模型配置
 
 状态：稳定
+适用版本：当前 WebUI Next 工作台 `/next/models`
+相关代码：`web/frontend-next/src/features/settings/ModelConfigPage.tsx`、`web/services/model_config_service.py`、`web/services/settings_service.py`
 
 ## 1. 入口与用途
 
-通过 Next 主导航的 **模型配置** 进入模型配置库。Next 是当前唯一前端入口。
+通过 Next 主导航的 **模型配置**（`/next/models`）管理可复用的模型路径组合库。页面采用**左侧分组列表 + 右侧配置编辑**双栏布局，只记录路径与模型族，不移动、下载或删除磁盘上的权重文件。
 
-页面左侧编辑当前模型配置，右侧显示配置列表。当前支持：
+当前支持全部五个已注册模型族：
 
-| 界面格式 | 持久化值 | 模型组件 |
-| --- | --- | --- |
-| Anima | `anima` | DiT、Qwen3、VAE |
-| Krea-2 | `krea2_raw` | DiT、Qwen3、VAE |
+| 界面显示名称 | `model_family` 持久化值 | 组件路径字段 | 只读能力标签（后端派生） |
+| --- | --- | --- | --- |
+| Anima | `anima` | DiT、`qwen3`、VAE | 普通文生图；完整推理与方法面 |
+| Krea-2 | `krea2_raw` | DiT、`qwen3`（Qwen3-VL）、VAE | 普通文生图 |
+| Z-Image | `z_image` | DiT、`qwen3`、VAE（Diffusers 目录或单文件） | 普通文生图 |
+| Qwen Image 2.1 | `qwen_image_2_1` | DiT、`qwen3`（Qwen3-VL）、VAE | 普通文生图 + 编辑训练（采样支持最多 4 图参考） |
+| MOSS-Image | `moss_image` | DiT、`qwen3`（BF16/NF4 TE 目录）、VAE | 普通文生图、仅支持 LoRA |
 
-每项配置包含名称、模型格式和三条模型路径。模型配置只记录路径，不移动、下载或删除模型文件。
+> 页面品牌名 `Dragon Trainer` 不是模型格式；实际训练与推理分派完全由 `model_family` 决定。Anima 2.9B Preview v1（40 blocks）仍使用 `model_family = "anima"`，层数由训练器读取权重头自动识别。
 
-导航和页面标题中的 `Dragon trainer` 是界面品牌，不是模型格式。真正控制训练/推理模型族的是这里的 Anima / Krea-2 选择及训练配置中的 `model_family`。
+## 2. 创建、筛选与排序
 
-## 2. 创建与管理
+1. 左侧可按关键词搜索，或通过 **筛选训练能力**（全部 / 编辑训练 / 普通文生图）过滤模型组合。
+2. 点击 **新建配置**，选择模型族并填写名称与三条组件路径；每条路径旁支持通过服务端目录浏览器（`GET /api/settings/model-files`）选择权重文件或 Diffusers 目录，并实时显示路径状态徽章（`GET /api/settings/model-path-status`：文件体积、目录就绪或缺失提示）。
+3. 点击 **保存配置** 写入模型配置库；点击 **设为默认** 将该项设为新建预设和旧回退链的默认来源（删除默认项前须先将另一项设为默认）。
+4. 支持新建、重命名和删除分组（删除分组不会删除配置，组内条目自动并入首个保留分组）。
+5. 条目与分组通过 **上移 / 下移** 按钮及编辑区的 **所属分组** 下拉框调整顺序与归属；搜索或筛选激活期间禁用移动按钮以保护持久化顺序。
 
-1. 点 **新建配置**，填写名称、格式和三条路径。
-2. 点 **保存配置** 写入模型配置库。
-3. 点 **设为默认**，让该项成为新建配置和旧兼容链路的默认来源。
-4. 在 Dragon 中可新建、重命名和删除分组；删除分组只会把其中配置移到相邻分组，不会删除配置或模型文件。
-5. 模型配置可在组内排序或跨组拖动，分组本身也可拖动排序；键盘用户可使用上移/下移按钮。
-6. 默认项需要先把另一项设为默认，才能删除。
+## 3. 训练配置页联动
 
-搜索只过滤列表，不改变持久化顺序；搜索期间拖动与顺序按钮会禁用，清空搜索后恢复。
+在 `/next/training`「输入准备 → 模型」中点击选择模型组合弹窗，确认后会同时将 `model_family`、`pretrained_model_name_or_path`、`qwen3`、`vae` 填入当前训练草稿（仍需保存训练配置后才落盘）。
 
-## 3. 配置页联动
+## 4. 持久化与兼容镜像
 
-配置页“基础模型路径”分组中的 **填写全局路径配置** 会打开选择弹窗。选择一项后同时填写：
+模型配置库保存在当前配置根目录的 `web-ui-settings.toml`（`[model_config_library]` 的 `default_id`、`items`、`groups`），保存请求受 `revision` 乐观锁保护（跨标签页并发修改返回 409 提示刷新，不静默覆盖）。
 
-- `model_family`
-- `pretrained_model_name_or_path`
-- `qwen3`
-- `vae`
-
-这些值只进入当前配置表单；仍需保存当前训练 TOML 才会用于训练。
-
-Anima 2.9B Preview v1 仍使用 `model_family = "anima"`，建议为它单独保存一项模型配置以记录 DiT 路径；28/40 blocks 由训练器读取 checkpoint header 自动识别，不提供可手填的层数或独立模型格式。40-block 训练当前只放行 Plain LoRA 与 T-LoRA + OrthoLoRA，其他组合会在加载模型前明确拒绝。
-
-## 4. 持久化与兼容
-
-模型配置库保存在当前配置根目录的 `web-ui-settings.toml`：
-
-```toml
-[model_config_library]
-default_id = "legacy-default"
-
-[[model_config_library.items]]
-id = "legacy-default"
-name = "Anima 默认配置"
-model_family = "anima"
-pretrained_model_name_or_path = "models/diffusion_models/anima.safetensors"
-qwen3 = "models/text_encoders/qwen.safetensors"
-vae = "models/vae/vae.safetensors"
-
-[[model_config_library.groups]]
-id = "ungrouped"
-label = "未分组"
-item_ids = ["legacy-default"]
-```
-
-升级后首次打开页面时，如果还没有模型配置库，服务会从原 `[global]` 路径和同目录 `base.toml` 合成一项；模型格式依次读取 `[global]`、`base.toml` 和 `ANIMA_MODEL_FAMILY` 回退链。已有配置库如果没有 `groups`，会在内存中合成“未分组”。GET 不会写文件，首次保存后才会持久化。
-
-Next 在同一次 revision 保护的 PUT 中提交配置项与分组。未提交 `groups` 的旧 API 客户端仍由服务端兼容处理：保留当前分组并将新项补入第一组，避免覆盖已有分组结构。
-
-默认项会在同一次原子写入中镜像到旧 `[global]` 三条路径和 `model_family`，因此旧版新建预设、生图回退和路径预检仍然可用。Anima 默认项沿用旧约定，不在 `[global]` 显式写 `model_family`；Krea-2 写为 `krea2_raw`。
-
-保存使用 revision 冲突检查。如果另一个页面已经修改设置文件，当前页面会要求刷新，不会覆盖较新的内容。损坏的 TOML 也会被拒绝覆盖。
+默认项在原子写入时同步镜像到 `[global]` 的三条路径与 `model_family`（`anima` 沿用历史兼容省略显式键，其余四个非默认模型族均显式写入各自的 `model_family`），保证旧预设创建与路径预检兼容。
 
 ## 5. 相关测试
 
 ```bash
 timeout 60 .venv/bin/python -m pytest \
   tests/test_model_config_service.py \
-  tests/test_global_model_config_frontend.py \
+  tests/test_settings_model_family.py \
+  tests/test_model_file_service.py \
   -q
 ```
 
-Next 页面行为另由 `web/frontend-next/src/features/settings/modelLibrary.test.ts`、`web/frontend-next/e2e/model-library-order-path.spec.ts` 和 `web/frontend-next/e2e/state-feedback.spec.ts` 覆盖；运行 `.venv/bin/python tasks.py web-next-check` 与 `.venv/bin/python tasks.py web-next-e2e`。
+前端单元测试与 E2E：
+- `web/frontend-next/src/features/settings/modelLibrary.test.ts`
+- `web/frontend-next/src/features/settings/ModelConfigPageGroups.test.tsx`
+- `web/frontend-next/src/features/settings/ModelCapabilities.test.tsx`
+- `web/frontend-next/e2e/model-library-order-path.spec.ts`

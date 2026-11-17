@@ -1,292 +1,96 @@
 # 多模型支持现状
 
 状态：稳定架构说明
-适用版本：当前 `main` 工作树
-相关代码：`library/models/family_registry.py`、`library/training/`、`library/models/<family>/`
+适用版本：当前 `dev` / `main` 工作树
+相关代码：`library/models/family_registry.py`、`library/training/compat_matrix.py`、`library/training/moss_compat.py`、`library/training/pp/`、`library/models/<family>/`
 
-本文记录当前已经落地的多模型边界及仍然存在的 Anima 耦合。它不是新增模型的未来方案，
-也不把训练预览等同于通用推理能力。2026-08-10 的阶段性风险快照仍保留在
-[后端多模型审计](findings/backend_multi_model_audit_20260810.md)；其中部分问题已经由后续
-registry 和 fail-closed dispatch 解决，应以本文和实时源码为准。
+本文是仓库多模型能力边界、跨族隔离契约与耦合现状的**唯一文档事实源**。其他文档（`AGENTS.md`、根 `README.md`、各功能与配置页）仅作摘要引用；若发生冲突，以实时源码（`MODEL_FAMILY_REGISTRY` 与兼容门禁）及本文为准。
 
-## 当前模型族
+## 当前已注册模型族总表
 
-`library/models/family_registry.py::MODEL_FAMILY_REGISTRY` 是模型族名称、别名和能力边界的
-单一事实源。所有 family operation 必须为已注册模型族提供完整 handler；缺失 handler、未知
-family、未注册推理模式或 sampler 都应失败，不得静默回退 Anima。
+`library/models/family_registry.py::MODEL_FAMILY_REGISTRY` 静态注册全部支持的模型族。所有跨族分派（`dispatch_model_family`）要求完整覆盖全部已注册模型族；未知模型族、缺失 handler、未注册推理模式/采样器或跨族权重一律 fail-closed 报错，绝不静默回退 Anima。
 
-| 模型族 | 当前定位 | Adapter | 通用推理 | Attention |
-| --- | --- | --- | --- | --- |
-| `anima` | 默认生产模型族 | 完整方法面 | `single` / `batch` / `interactive`；`euler` / `er_sde` / `lcm` | registry 中声明的 Anima 后端 |
-| `krea2_raw` | 第二生产模型族 | 开放所有网络变体选择 | `single` + `euler` | `torch` / `sdpa` / `flash` |
-| `z_image` | 训练与训练预览 v1 | 开放所有网络变体选择 | 尚未注册；mode/sampler 集合为空 | `torch` / `sdpa` / `flash` (`flash_varlen`) |
-| `qwen_image_2_1` | T2I/Edit 训练与训练预览；CMP 90HX torch/Flash 指定组合各 60 步短测通过 | T2I plain LoRA；T2I 实验 LoKr/LoHa；Edit 仅 plain LoRA | `single` + `euler`（T2I/Edit、plain LoRA） | `torch` / `sdpa` / `flash`（BF16） |
-| `moss_image` | 普通文生图 plain LoRA 首版；真机质量与性能仍需按硬件验收 | plain LoRA | 尚未注册；mode/sampler 集合为空 | `torch` / `sdpa` |
+| 模型族 (`model_family`) | 别名 | 训练任务与定位 | Adapter 范围 | 训练预览 | 独立 CLI 推理 (`inference.py`) | Attention 后端 | 双卡 PP v0 (`1f1b`) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `anima` | `anima` | 默认生产模型族（T2I） | 完整 LoRA 家族 + Method Adapters | 支持（T2I） | `single` / `batch` / `interactive`；`euler` / `er_sde` / `lcm` | `flash` / `torch` / `mem_efficient` / `sageattn` / `flex` / `xformers` / `sdpa` | **已接线**（28/40 `blocks` 均分） |
+| `krea2_raw` | `krea2`, `krea2_raw` | 第二生产模型族（T2I） | 开放网络变体选择（禁用 Method Adapters） | 支持（T2I） | `single` + `euler` | `flash` / `torch` / `sdpa`（含 `cudnn` 别名） | **已接线**（28 `blocks` 13/15 切分，支持 `pipeline_parallel_blocks_to_swap`） |
+| `z_image` | `zimage`, `z_image` | 训练与训练预览 v1（T2I） | 开放网络变体选择（禁用 Method Adapters；真机证据以 plain LoRA 为主） | 支持（T2I） | 未注册（空集合） | `flash` (`flash_varlen`) / `torch` / `sdpa`（BF16） | 仅拓扑规划（`runtime_available=False`，入口拒绝） |
+| `qwen_image_2_1` | `qwen_image_2_1`, `qwen_image_21`, `qwen21` | T2I / Edit 训练与预览（Edit 支持 1–4 张参考图） | `plain_lora_only=True`：T2I 允许 `lora`/`lokr`/`loha`；Edit 与独立推理仅 `lora` | 支持（T2I / Edit，最多 4 图） | `single` + `euler`（T2I / Edit，最多 1 个 plain LoRA） | `torch` / `sdpa` / `flash`（BF16，默认 `torch`） | 未声明（`None`，入口拒绝） |
+| `moss_image` | `moss`, `moss_image` | 文生图 plain LoRA 首版（T2I） | `plain_lora_only=True`：仅 `lora` | 支持（T2I，Euler shift=5） | 未注册（空集合） | `torch` / `sdpa` | **已接线**（42 `layers` 21/21 均分） |
 
-实验性 pipeline_parallel：`moss_image` 与 `anima` 已发布共用 stage-local PP v0
-backend（见 `docs/experimental/moss_image_pipeline_parallel_v0.md`、
-[anima_pipeline_parallel_v0.md](experimental/anima_pipeline_parallel_v0.md) 与
-[moss_image_pp_trainer_wiring.md](experimental/moss_image_pp_trainer_wiring.md)）；
-两个族均已接线专用 PP 训练会话（PP=2/1F1B/FP16/plainLoRA/完整缓存范围；Anima 侧经
-族适配器复用 `build_anima_pipeline_runtime`，WebUI/队列的 `pipeline_parallel` 与
-`model_family` 键必须成对进入 runtime config；gpu_whitelist 守卫已放开为解析级
-fail-closed：GPU 全卡可选，唯一具名拒绝 `gpu_whitelist_unauthorized_gpu` 的条件是
-显式选卡索引在 nvidia-smi 中解析不到物理卡；不适配卡（如 GTX 1050）改为分布式
-诊断端点的建议级警告，不再阻断 enqueue/start），
-其余族与 DDP 内部路径维持 `pp_trainer_path_unavailable` 具名拒绝，不构成通用
-PP 训练支持。CPU/Gloo 与双 V100 CUDA tiny 热测均已独立验收（rc=0）；真实
-大模型权重训练未验收。
+说明：
+- WebUI 模型选择下拉框暴露全部 5 个模型族，但训练预览支持不代表通用生图测试（WebUI `image-test`）或 `batch`/`interactive` 独立推理已可用。
+- Anima、Krea-2 与 Z-Image 的 `supported_network_specs=None` 表示接口层允许尝试网络变体（不套用“非 Anima 仅 plain LoRA”白名单），不代表所有变体组合已完成长训质量验收；`supports_method_adapters=False` 仍拦截 IP-Adapter、EasyControl、BYG 等依赖专属训练 hook 的方法。
 
-WebUI 能选择五个模型族，但这不扩大 registry 的能力集合。尤其是 Z-Image 的训练 sample
-preview 只服务训练流程，不代表生图测试、独立 CLI 推理、batch 或 interactive 已可用。
+## Pipeline Parallel（PP v0）现状与契约
 
-Anima、Krea-2 与 Z-Image 开放网络变体选择，配置预检与 network 创建/加载不再套用
-“非 Anima 仅 plain LoRA”的统一白名单。`supported_network_specs=None`、
-`plain_lora_only=False` 表示允许尝试，不代表所有变体组合均已通过训练验证。
-不兼容的权重、精度、目标层结构与 forward 契约仍在对应实现处报错，不静默替换成 LoRA。
-Krea-2 与 Z-Image 的 `supports_method_adapters=False` 保留：IP-Adapter、EasyControl、BYG
-等依赖独立训练 forward hooks 的方法不因开放网络变体而自动适配。
-Qwen Image 2.1 的 `plain_lora_only=True`，不适用上述开放策略。
+`library/models/pipeline_parallel.py` 负责静态拓扑规划，`library/training/pp/`（门禁集中在 `gate.py` 与 `trainer_admission.py`）承载 stage-local 1F1B 运行时与专用训练会话：
 
-## Pipeline Parallel 规划能力
+- **已接线生产入口的 3 个模型族**（`TRAINER_PP_WIRED_FAMILIES = {"anima", "krea2_raw", "moss_image"}`）：
+  `runtime_backend = "torch_pipelining_1f1b"`（`runtime_available = True`），`train_session._run_training_session` 在进入普通 Accelerate DDP 路径前将其分派至专用 PP 会话，分阶段构建 optimizer 与 per-rank checkpoint 包（`pp_checkpoint.json`）。
+- **未接线模型族**：`z_image` 仅保留 30 层拓扑规划（`runtime_backend = None`），`qwen_image_2_1` 未声明 PP；在 CLI、WebUI 预检、队列与续训入口均以 `pipeline_parallel_runtime_unavailable` / `pp_trainer_path_unavailable` 具名拒绝，**绝不静默回退为普通 DDP**。
+- **共同硬约束**：
+  - 固定 `stages = 2`（`world_size == 2`）、`schedule = "1f1b"`、`mixed_precision = "fp16"` + `GradScaler`（拒绝 `bf16`/`fp32`、任何基座量化与 `torch_compile`）。
+  - 要求预先完成磁盘 VAE/TE 缓存（`use_vae_cache=true`、`use_text_cache=true`）、`gradient_accumulation_steps=1`、`loss_type="l2"`、`weighting_scheme="none"`、关闭训练内 sample preview 与阶段调度。
+  - 普通 `blocks_to_swap` 必须为 `0`。**仅 `krea2_raw` PP 额外支持每 stage 块交换参数 `pipeline_parallel_blocks_to_swap`**（设为 `0` 时保留 `KREA2_PP_SWAP_BLOCKS` 环境变量兼容回退，非 Krea-2 族设非零直接拒绝），且要求 `train_batch_size` 被 `pipeline_parallel_microbatches` 整除。
+  - WebUI 交互与选卡诊断见 [分布式训练卡片说明](experimental/distributed-training-card.md) 及 [PP v0 前置契约](experimental/pipeline_parallel_v0_prerequisites.md)。
 
-Anima、Krea-2 与 Z-Image 声明了双卡 PP 拓扑，并通过公共
-`library/models/pipeline_parallel.py` 完成配置归一化、互斥校验和连续 block 范围规划。
-Anima 使用 `blocks` 并均分 28/40 block；Krea-2 使用 `blocks` 并保留 28 block
-的 13/15 启发式；Z-Image 只分配 `layers` 中的 30 个 main layers，不混入 refiner。
+## 跨族路由、精度与缓存隔离契约
 
-这些是 planner/probe 能力，不是生产 runtime。当前三族的 registry capability 都显式标记
-`runtime_available=false`；CLI、WebUI、续训和队列均在合法规划后 fail closed，不会回退到
-普通 DDP。完整设计和当前边界见 [双卡 Pipeline Parallel 阶段 1](proposal/krea2_pipeline_parallel.md)。
+### 1. 预处理先行与训练加载路由
+- `train.py` 保留 `AnimaTrainer` 兼容门面，底层由 `library/training/model_loading.py` 与 `batch_step.py::_get_noise_pred_and_target` 按 `model_family` 全覆盖分派。
+- **强制磁盘缓存**：`library/training/train_session.py` 要求训练启动前已由 `preprocess` 生成完整的 latent 与 text cache；常规缓存齐备且不开启采样预览或 CMMD 时，`train.py` 跳过加载文本编码器与 VAE。
+- **采样批次块交换生命周期**：训练预览在一批样张进出时统一切换块交换并恢复 adapter 状态与 RNG（见 [采样生命周期验收](findings/sampling_batch_lifecycle_20261002.md)）；通用预览 VAE 分块解码策略 `sample_vae_decode` 覆盖全部 5 个模型族（见 [训练预览显存策略](configuration/sample-preview-memory.md)）。
 
-## 当前路由
+### 2. 精度改写与 NF4 边界
+- **Pre-Ampere（`sm<80`）精度复检**：`library/training/precision_policy.py::resolve_mixed_precision` 在不支持原生 BF16 Tensor Core 的设备（如 V100 `sm70`、Turing `sm75`）上会将默认 `bf16` 改写为 `fp16`，随后 `train_session.py` 强制执行 `recheck_compat_after_precision_resolve` 二次门禁，确保改写后的精度仍满足目标模型族契约。
+- **NF4 路径区分**：
+  - Krea-2 支持 `base_compute="nf4"`（外层 `compute_dtype` 恒为 BF16）；在 `sm<80` 上可通过显式实验开关 `--nf4_dir1` + `--krea2_attn_fp16`（`configs/methods/krea2_lora_nf4_fp16.toml`）启用外层 BF16 + 内层 FP16 逐层缩放路径（豁免全局 `bf16->fp16` 改写）。
+  - Anima、Krea-2、Z-Image、Qwen Image 2.1 另支持按权重文件自动识别的预量化主干 MLP 混合 BF16/NF4 实验格式（限 BF16 eager + full checkpoint，不等同于开放 `base_compute="nf4"`，详见 [多模型族混合 NF4](experimental/multi-family-mixed-nf4.md)）；MOSS-Image 不支持 DiT NF4（仅文本编码器缓存支持 NF4）。
 
-### 训练
+### 3. 跨族产物严格隔离
+不同模型族的权重、缓存与 adapter 无兼容面（回归测试见 `tests/test_adapter_family_isolation.py`）：
 
-- `train.py` 仍保留 `AnimaTrainer` 类名作为兼容 facade；统一训练编排位于
-  `library/training/`。
-- `library/training/model_loading.py` 按 `model_family` 分派 text encoder、VAE 和 DiT 加载。
-- `library/training/batch_step.py::_get_noise_pred_and_target` 使用完整 handler 表分派每个 batch；
-  Anima、Krea-2 和 Z-Image 各自拥有训练 forward/target 契约。
-- 非 Anima family 不通过 metadata fallback 猜测行为；配置、network metadata 和运行 family
-  发生冲突时应由 compatibility/registry 层拒绝。
+| 模型族 | 训练 `forward_for_loss` 输入形状 | Latent Cache 后缀 | Text Cache 后缀与 Schema |
+| --- | --- | --- | --- |
+| `anima` | 5D `(B, 16, 1, H/8, W/8)` | `_anima.npz` | `_anima_te.safetensors` (`anima_te_v1`，max-padded) |
+| `krea2_raw` | 5D `(B, 16, 1, H/8, W/8)` | `_anima.npz`（共用 Qwen VAE 空间） | `_krea2_te.safetensors` (`krea2_te_v1`, width=2560) |
+| `z_image` | 5D `(B, 16, 1, H/8, W/8)` | `_z_image.npz`（Flux 仿射 `(x-0.1159)*0.3611`） | `_z_image_te.safetensors` (`z_image_te_v1`, 512 tokens) |
+| `qwen_image_2_1` | 4D `[B, 64, H/16, W/16]` | `_qwen_image_2_1.npz`（64ch RGBA VAE 逐通道归一化） | `_qwen_image_2_1_te.safetensors` (`qwen_image_2_1_te_v1`, width=4096) |
+| `moss_image` | 4D `[B, 128, H/16, W/16]` | `_moss_image.npz`（stride 16 packed BN） | `_moss_image_te_nf4.safetensors` / `_bf16.safetensors` (`moss_image_te_v2`，含 `max_text_tokens` 真实长度) |
 
-### 缓存和模型实现
+LoRA checkpoint 通过 `ss_model_family` metadata stamp（未标记旧权重视为 `anima`）由 `networks/lora_anima/factory.py::require_adapter_family` 在加载张量前严格校验，防止跨族“零模块命中却静默放行”。
 
-- Anima 实现在 `library/anima/`，Krea-2 和 Z-Image 分别位于
-  `library/models/krea2_raw/`、`library/models/z_image/`。
-- text cache 通过 registry 隔离：Anima 使用 `_anima_te.safetensors`，Krea-2 使用
-  `_krea2_te.safetensors`，Z-Image 使用 `_z_image_te.safetensors`。
-- latent/cache schema 由各 family 的 strategy/latent 模块维护；不要通过改名让不同模型族
-  共享不兼容 sidecar。
-- 所有 family 继续遵守 lazy loading 顺序：text encoder 缓存并释放，VAE 缓存并释放，最后
-  加载 DiT、apply adapter 并进入训练。
+## 各非默认模型族关键边界摘要
 
-### 推理
+### Krea-2 (`krea2_raw`)
+- 起始配置：`configs/methods/krea2_lora.toml`（`sm<80` NF4 内层 FP16 为 `configs/methods/krea2_lora_nf4_fp16.toml`）。
+- 单流 28-block MMDiT + Qwen3-VL 文本缓存；默认 full checkpoint、fixed resident block compile（拒绝 dynamic-seq 与 CUDA Graph compile 模式）及 `flash`/`torch`/`sdpa` attention。
+- 独立推理走 `library/models/krea2_raw/inference_runner.py`（`single` + `euler`，自动 flow shift），拒绝 Anima 专属增强参数。性能与显存消融结论见 [Krea-2 速度总结](findings/krea2_3080_speed_final.md) 及 [PP 显存与 WebUI 验收](findings/krea2_pp_webui_acceptance_20261117.md)。
 
-- Anima 推理主链位于 `library/inference/`。
-- Krea-2 通过 `library/models/krea2_raw/inference_runner.py` 走独立 single/euler 路径；
-  Anima-only extras 必须显式拒绝。
-- Z-Image 目前只有 `library/models/z_image/training_preview.py`。通用 image-test 和独立推理
-  没有注册 handler，请勿从 WebUI family 下拉框推断其已支持。
-- Qwen Image 2.1 的独立入口支持 BF16 `single` + `euler` 的 T2I/Edit 和最多一个 plain LoRA；Edit 接受 1–4 张有序参考图，完整 NF4 权重的单参考单步与四参考/CFG2/两步出图及 latent 再解码已通过。image-test、batch 和 interactive 仍显式拒绝。
+### Z-Image (`z_image`)
+- 起始配置：`configs/methods/z_image_lora.toml`。
+- 官方 Diffusers 30-layer transformer + Qwen3 ChatML 倒数第二层 512-token 缓存 + Flux VAE（shift `6`）；`blocks_to_swap` 支持 `0` 或 `1..28`（仅交换 30 个 main layers，refiner 与首尾层常驻）。
+- 要求所有层级 `caption_dropout_rate = 0`；不支持 `torch.compile`、selective/offloaded checkpoint、`base_compute="nf4"`（预量化混合文件除外）及独立推理。
 
-### 采样批次的块交换生命周期
+### Qwen Image 2.1 (`qwen_image_2_1`)
+- 起始配置：`configs/methods/qwen_image_2_1_lora.toml`。组件为 32-block DiT、Qwen3-VL 8B 与 64-channel RGBA VAE。单文件 TE 需同级或上层存在匹配的 Qwen3-VL `tokenizer/` 目录（ComfyUI `qwen25_tokenizer` 仅作词表不等价的兼容回退）。
+- 支持 `qwen_image_2_1_task = "t2i" | "edit"`：
+  - **训练**：BF16、full checkpoint、`torch`/`sdpa`（默认 `torch`）或 opt-in packed varlen `flash`、`transformer_blocks` 块交换与 apply 后 per-block `torch.compile`。T2I 开放实验 `lokr`/`loha`（[变体热测](findings/qwen_image_2_1_adapter_variants_90hx_20260929.md)）；Edit 数据集按同配对名“编辑前/编辑后”子集一对一配对，要求 `batch_size=1`、关闭随机几何/颜色增强且仅支持 plain LoRA（见 [模型训练能力与编辑数据集](configuration/model-training-capabilities.md)）。受限 NF4 Edit 编译实验开关见 [Qwen NF4 编译实验](experimental/qwen-nf4-compile.md)。
+  - **训练预览与独立推理**：预览块交换覆盖与 VAE 解码见 [训练预览显存策略](configuration/sample-preview-memory.md#qwen-预览块交换覆盖)，可选 `use_kv_cache=true` 前缀缓存见 [A/B/C 验收](findings/qwen_sampling_kv_abc_90hx_20261002.md)。独立 CLI 推理（`library/models/qwen_image_2_1/inference_runner.py`）支持 `single` + `euler` 的 T2I/Edit（1–4 张参考图）、最多 1 个 plain LoRA 与 `--latent_path` 再解码（[独立推理验收](findings/qwen_standalone_inference_20261005.md)）；不支持 WebUI `image-test`、`batch`/`interactive` 或 LoKr/LoHa 推理。
 
-Anima、Krea-2 与 Z-Image 训练预览在一批样张进入/退出时统一切换块交换，
-不再在每个 prompt 前重复初始化。入口、预测和清理异常进入既有跨进程失败汇总；
-退出独立尝试恢复 adapter 原始 training 状态、合法驻留布局以及 CPU/当前 CUDA RNG。
-恢复本身失败仍会传播错误，不保证设备错误后可以继续训练。解码移动模型后的必要 prepare 保留。
+### MOSS-Image (`moss_image`)
+- 起始配置：`configs/methods/moss_image_lora.toml`（及分辨率/文本上限档位 `_t768`、`_t512`、`_tecap1024`，完整使用说明见 [MOSS-Image 配置](configuration/moss-image.md)）。
+- 42-layer 4D DiT（training shift=1，预览 Euler shift=5），仅支持文生图 plain LoRA、`torch`/`sdpa` attention、full checkpoint、`blocks_to_swap = 0..40`（`>0` 时 batch size 必须为 1）及全层级 `caption_dropout_rate = 0`。
+- 文本编码器默认 `moss_te_quantization="nf4"`（可选 `"bf16"`），缓存保存真实 token 长度并将 `max_token_length`（`1..4096`）写入 `moss_image_te_v2` 身份；切换量化方式或 `max_token_length` 必须重建文本缓存。支持双卡 1F1B PP 训练会话，不支持 `torch.compile`、DiT NF4 或独立 CLI 推理。
 
-Anima tiled 推理同样复用一次 forward-only scope，退出恢复原 swap 模式。
-CPU/Gloo 和小型真实 CUDA/slab 验收已通过，完整三族权重的吞吐与样图质量未在本轮测量。
-本轮没有推广跨族 DiT K/V 缓存；Qwen 继续默认 B。详见
-[采样生命周期验收](findings/sampling_batch_lifecycle_20261002.md)。
-
-## Qwen Image 2.1 首阶段边界
-
-2026-10-03 增补：Krea-2、Z-Image、Qwen Image 2.1 新增专用主干MLP混合BF16/NF4
-文件的实验加载路径，通过现有模型路径自动识别，不新增训练配置项。
-三族格式、官方小模型plain LoRA/checkpoint及CUDA换层验收已通过；没有完整权重热测或
-质量结论。新格式限BF16/eager/full checkpoint，拒绝compile和Qwen融合投影等组合。
-`base_compute=nf4`在Z-Image/Qwen仍不可用；下文旧NF4禁用声明指该通用开关，
-专用混合文件的完整边界见[多模型族混合NF4](experimental/multi-family-mixed-nf4.md)。
-
-`configs/methods/qwen_image_2_1_lora.toml` 是 T2I plain LoRA 起始配置。三个组件使用
-ComfyUI 单文件 safetensors：32-block DiT、Qwen3-VL 8B 和独立的 RGBA/64-channel VAE。
-加载器在装载权重前核对完整参数名与形状；文本编码器的 ComfyUI `model.*` 命名映射到
-Transformers `model.language_model.*`，VAE 转换卷积的 singleton 时间核，DiT 拆分
-`img_mlp.gate_up`。
-
-**Tokenizer 是独立依赖，必须与 TE 配套。** `qwen3` 指向单个 `.safetensors` 时，
-`library/models/qwen_image_2_1/strategy.py::resolve_tokenizer_path` 会从该文件所在目录
-逐级向上查找带 `tokenizer_config.json` 的 `tokenizer/` 目录，或 ComfyUI 安装里的
-`comfy/text_encoders/qwen25_tokenizer`；两者都找不到就报
-`FileNotFoundError: Qwen Image 2.1 needs a local Qwen3-VL tokenizer`。
-因此「单文件 TE」不等于「自带 tokenizer」，需要满足以下之一：
-
-- 在 TE 文件同级放一个 `tokenizer/` 目录（Qwen3-VL 的 `tokenizer_config.json` /
-  `tokenizer.json` / `vocab.json` / `merges.txt`）；
-- 或在同一目录树内存在 ComfyUI 的 `comfy/text_encoders/qwen25_tokenizer`。
-
-注意该族要求 Qwen3-VL 词表（`<|im_start|>`=151644、pad=151643），加载时校验 pad token；
-ComfyUI 的 `qwen25_tokenizer` 虽能通过该校验（pad 同为 151643），但其词表对齐 Qwen2.5
-而非 Qwen3-VL，**不保证与本族 TE 训练时一致**，仅作兼容回退。
-若使用官方 Diffusers 目录或本机 HF 快照（如 `Qwen3-VL-4B-Instruct`），
-目录内已带 tokenizer，无需额外配置。文本以官方 T2I 模板左填充，取最终 decoder 层 RMSNorm 前 hidden，
-使用独立 `_qwen_image_2_1_te.safetensors` 缓存。RGB 数据在 VAE 前补不透明 alpha，
-64-channel latent 使用 VAE 的逐通道 mean/std，并隔离到 `_qwen_image_2_1.npz`。
-
-训练 forward 使用未 patch 的 latent token、2x2 image slot mask、动态指数 shift 的
-flow-matching sigma 和 attention-only LoRA。当前仅允许 BF16、`torch`/`sdpa` 原生 attention
-或 opt-in `flash`，以及 full checkpoint。Qwen 专属 `transformer_blocks` block swap 和 per-block `torch.compile`
-已接入，方法配置初始启用 `blocks_to_swap=24`、`torch_compile=true`、dynamic sequence；
-编译发生在 LoRA apply/load 后，换块调度留在编译图外。Next 数据集预设现支持 Qwen Image 2.1
-编辑 LoRA：每组使用同一配对名称的“编辑前”和“编辑后”两个 UI 子集，可有多组；保存时只有
-“编辑后”进入训练蓝图，其 `reference_image_dir` 指向对应“编辑前”的图片目录。图片仍按
-相对路径与 case-fold 文件名 stem 配对，缓存 Qwen3-VL image-slot 条件及参考图 VAE latent；
-首版要求 batch size 1，不支持混用普通/正则子集或分阶段调度，
-随机裁剪、翻转和颜色增强。Apply 会校验 Qwen family、plain LoRA、缓存开关及图像配对，并写入
-`qwen_image_2_1_task="edit"`，不会启动训练。
-
-Edit 已通过配对、缓存 schema/网格、DiT 序列形状、Apply 和 UI 单元测试，并在 CMP 90HX 上用 50 对真实
-编辑数据完成 plain LoRA 的 50 步 BF16/full-checkpoint/swap/compile 链路验收；训练预览也已通过单、双、
-四参考图及 CFG 编辑短测（见[Edit 热训练](findings/qwen_edit_hot_training_20260928.md)和[编辑采样](findings/qwen_edit_sampling_hot_20260928.md)）。该证据覆盖训练链路和采样后恢复，不代表编辑质量、optimizer 续训、其他 adapter
-或其他硬件组合已验收。`auto_block_swap`、CUDA Graph compile preset、全量NF4开关、
-文本编码器训练、caption dropout 和 PP 仍未接入。T2I/Edit 独立推理通过
-`library/models/qwen_image_2_1/inference_runner.py` 复用专属 Euler、64-channel/16x VAE decode
-和严格 plain LoRA loader，并支持专属 `--latent_path` 解码。完整 NF4 的单参考 Edit 已出图；
-四参考 CFG2/两步在接入自动 TE offload 后出图并完成 latent 再解码，PNG 像素逐字节相同。
-边界见[独立推理验收](findings/qwen_standalone_inference_20261005.md)。仍不支持 image-test、
-batch/interactive、LoKr/LoHa 推理或独立 compile。NF4 训练 compile 的静态 + 原生 norm +
-非 persistent reduction 诊断组合已通过完整两步合成 Edit 数值对照，但真实缓存、
-896×1184 bucket 与 flow loss 两步对照失败；strict eager 跨实例两步已逐位复现，
-追加原生SiLU诊断后，完整真实两步保存张量通过原梯度门槛并逐位一致，已独立
-复算；随后真实两步与原生合成CLI独立重验均正常exit0。生产attention-only、
-zero-up初始化的两个真实Edit bucket也完成1286项逐位一致的独立重验、exit0。
-联合策略已接入默认关闭的 `qwen_nf4_compile_experiment` 受限入口；真实 `train.py`
-完成两步 AdamW 更新、约 67 MB checkpoint 保存并正常退出；追加两次 512×512 训练预览、
-完整状态保存及新进程 step2→3 续训均自然退出。Next 工作台开关与本地正式构建通过。
-仅限 BF16 Edit、plain attention LoRA rank/alpha16、torch attention、full checkpoint、
-swap24/foreach/BF16、static/all/Inductor default。普通 NF4 compile 拒绝保留；
-连续训练与续训的完整轨迹逐位复现、其他 optimizer、长训、性能、画质和跨硬件尚未验收。
-Python RNG 恢复即刻与保存值一致，随后 Rich 日志会消费全局 Python RNG，详见定位报告。配置见
-[NF4 编译实验](experimental/qwen-nf4-compile.md)，历史失败与验收见
-[NF4 编译定位](findings/qwen_nf4_compile_90hx_20261005.md)。
-依赖 Diffusers 尚未发版的 Qwen 2.1 实现，
-`pyproject.toml` 暂固定到包含官方 PR 的上游提交。Flash 使用 Qwen 专属 packed
-FlashAttention 2 varlen：按真实 key-valid mask gather K/V，避免把 tokenizer 左填充误作有效前缀；
-带因果三角 mask 的文本段仍走原生 SDPA，图像查询走 Flash varlen。`configs/methods/`
-继续默认 `attn_mode="torch"`。CPU 小模型 forward/backward、外置 adapter 梯度与路由契约测试
-通过；CMP 90HX 的 torch 和 Flash 各完成 60-step 单图运行及 LoRA 保存，报告分别见
-[torch 热测](findings/qwen_image_2_1_90hx_hot_test_20260926.md)和
-[Flash 热测](findings/qwen_image_2_1_flash_90hx_20260927.md)。当前 90HX 单次对照中 Flash
-中位步时约 10.16 秒，torch 约 7.94 秒，因此 Flash 保持 opt-in，不作为速度推荐。
-这些短测不代表训练收敛、样图质量、保存后重载/续训、其他 swap 数或其他硬件；`24` 是通过
-测试的点位，不是跨硬件默认建议。
-
-LoKr/LoHa 仅在 T2I 的指定 BF16 + full checkpoint + swap24 + torch attention + compile
-组合上完成 90HX 两步 smoke 与 20 步热测；本轮 plain LoRA、LoHa、LoKr 的稳态中位步时分别为
-7.938、9.090、11.373 秒。LoKr 需要在 Qwen block 编译前启用 checkpoint 编译预算；阶段 3
-投影融合与 LoKr/LoHa 组合仍拒绝。DoRA、VeRA 和其他变体未开放。Next WebUI 仅在 T2I 任务中展示 LoKr/LoHa
-实验选项，Edit 任务仍只展示 plain LoRA；这不扩大后端兼容矩阵或真机验收范围。
-见 [变体热测](findings/qwen_image_2_1_adapter_variants_90hx_20260929.md)。
-
-### 训练预览的 DiT 前缀 K/V 缓存
-
-训练预览的块交换默认继承训练状态，可通过 `qwen_sample_swap_mode="custom"` 和
-`qwen_sample_blocks_to_swap` 临时覆盖数量并在退出恢复。所有模型族的训练预览 VAE 独立使用
-`sample_vae_decode="tiled"/"auto"/"cpu"`，默认分块 GPU 解码；自动模式仅在 CUDA OOM 时逐级降级。
-这些配置不控制 DiT K/V 缓存；边界、界面入口与验收见
-[Qwen 预览显存策略](configuration/qwen-preview-memory.md)。
-
-Qwen 训练预览支持官方文本/参考图前缀 K/V 缓存。JSON 或 TOML 样张条目设置
-`use_kv_cache=true` 显式启用；省略或设为 `false` 保留 B 路径（无逐步 swap 初始化、无 DiT K/V 缓存）。
-直接 Python 采样 API 同样默认 B，可通过 `use_kv_cache=True` 显式启用 C；
-开关不改变训练 forward 或磁盘 TE/VAE 缓存。
-缓存只在当前样张内复用，CFG 正负分支独立，下一样张、下一采样轮次或权重更新后重新建立。
-仅对官方 causal/eval 模型及静态 LoRA/LoHa/LoKr 启用；动态 hook、未知 attention processor
-和自定义 forward 回退无缓存。当前前端没有增加缓存控件。
-该路径增加显存，BF16 输出也可能不同；CMP 90HX 上的收益与数值边界见
-[A/B/C 验收](findings/qwen_sampling_kv_abc_90hx_20261002.md)，不作为默认速度优化。
-
-## Z-Image v1 边界
-
-Z-Image 使用官方 Diffusers transformer、Qwen3 text encoder 和 Flux VAE 组件。当前加载器支持
-Diffusers 目录及经过组件校验的单文件路径，并在训练前校验 latent geometry、affine factor、
-transformer input/caption width 和 Qwen3 hidden width。
-
-已经接通的契约：
-
-- Qwen3 ChatML、倒数第二层 hidden state、固定 512-token hidden/mask cache；
-- 独立 `_z_image_te.safetensors` 和 `_z_image.npz` sidecar；
-- `(latent - 0.1159) * 0.3611` 归一化和 shift `6` 的 1000-step flow grid；
-- BF16 SDPA/FlashAttention varlen、full gradient checkpointing、attention-only plain LoRA；
-- 训练 sample preview；
-- `library/models/z_image/block_swap.py` 对 30 个 main layers 的 block swap，refiner 与
-  input/output 模块常驻。
-
-`blocks_to_swap=0` 表示关闭；启用时实现要求
-`1 <= blocks_to_swap <= len(model.layers) - 2`，当前 30-layer 模型即 `1..28`。adapter 复用
-共享 `ModelOffloader`，并保留 checkpoint、training/inference switch、pause/resume 和 profile
-协议；不要把它当作 Krea-2 裸 DiT 的复制实现。
-
-以下能力在 v1 明确不可用或由兼容层关闭：
-
-- 通用推理/image-test、batch/interactive mode 和任意推理 sampler；
-- 全量NF4开关、`torch.compile`、per-band dynamic-seq 和 selective/offloaded checkpointing；
-  专用混合NF4文件作为实验例外，见上方增补与实验文档；
-- 依赖独立训练 forward hooks 的 MethodAdapter（如 IP-Adapter、EasyControl、BYG）；
-- weighted caption、layer range、alternate loss/timestep scheme；
-- 任意大于 0 的 dataset/subset caption dropout。
-
-起始配置为 `configs/methods/z_image_lora.toml`。不要把“理论上可移植”的 adapter 写成当前
-支持；能力扩展必须先更新 registry、compatibility、训练/推理 handler 和定向测试。
-
-## 仍存在的耦合
-
-多模型主链已经穿过 trainer forward，但尚未变成动态插件系统，以下耦合仍是维护边界：
+## 仍存在的架构耦合与修改清单
 
 | 区域 | 当前事实 | 维护要求 |
 | --- | --- | --- |
-| family registry | 显式静态注册，handler 必须覆盖全部 family | 新 family 同步补全所有 operation handler 和 fail-closed 测试 |
-| 训练加载 | `model_loading.py` 已分派，但仍直接导入 Anima loader/compat | 不要把 Anima fallback 当成通用协议 |
-| 训练辅助 | `noise_target.py`、`train_session.py`、`trainer_network_mixin.py` 仍有 Anima import | 新 family 先走显式分支，不要伪装成 Anima tensor/layout |
-| Adapter | 部分高级方法仍绑定具体 block 名称、cross-attention 和 monkey patch | 所有模型开放网络变体选择，具体实现校验兼容性；独立 forward hooks 仍需逐项适配 |
-| 推理 | Anima 与 Krea-2 有独立路径，Z-Image 尚无通用路径 | registry 集合为空时必须拒绝，不得借用 Anima sampler |
-| Compile/bucket | Anima 支持 dynamic-seq；Krea-2 使用固定 token family；Z-Image 未验证 compile | family compatibility 必须关闭不适用参数 |
+| Family Registry | 静态注册 5 个模型族，`dispatch_model_family` 强制全覆盖 | 新增或扩展模型族必须补齐全部 handler、前端 `model-family.js` 离线目录与 fail-closed 测试 |
+| 训练辅助层 | `model_loading.py`、`noise_target.py`、`train_session.py` 仍含显式模型族分支 | 新模型族走显式分支与专属 `family.py` 校验，不得伪装成 Anima 5D 布局或借用 Anima fallback |
+| 兼容门禁 | `compat_matrix.py` + `moss_compat.py` + `pp/gate.py` 共享 CLI/WebUI 预检 | 不支持的能力必须明确拒绝或纳入经审计的 `compat_unverified_policy` 分类，禁止无声忽略 |
+| 推理与预览 | Anima、Krea-2、Qwen 有独立推理；Z-Image、MOSS 仅有训练内预览 | `supported_inference_modes` 为空时必须拒绝，不得借用 Anima 采样器 |
 
-## 跨 family 隔离契约
-
-不同 family 的模型、text cache、latent cache 和 adapter 之间没有兼容面，任何“看起来能读”
-的组合都按错误处理，不做静默降级：
-
-- **Adapter**：LoRA checkpoint 的 `ss_model_family` stamp 必须与目标模型 family 一致
-  （未 stamp 等同于 `anima`）。训练 resume / `--base_weights` / `--dim_from_weights`、
-  Anima harness 和推理加载都会在读取 tensor、构建 target container 之前 fail closed，
-  由 `networks/lora_anima/factory.py::require_adapter_family` 统一判定。跨 family 加载会
-  命中零个模块并伪装成“已加载但无效果”，因此不能放行。
-- **Text cache**：sidecar 后缀和 metadata schema 均按 family 区分；MOSS-Image 另有
-  `nf4` / `bf16` 两套身份，切换量化方式必须换目录或重新预处理。
-- **Latent cache**：后缀按 latent space 区分（`_anima.npz` / `_moss_image.npz` 等），
-  MOSS 读取使用 stride 16 的 `{H}x{W}` key，Anima 的 stride 8 key 不会被命中。
-- **模型**：`dispatch_model_family` 对未知 family、缺失 handler、未注册推理 mode/sampler
-  一律拒绝；MOSS-Image 目前不注册通用推理 mode/sampler。
-
-回归入口：`tests/test_adapter_family_isolation.py`（CPU-only，覆盖 adapter / text cache /
-latent cache 三个面）。
-
-## 修改检查清单
-
-新增或扩展模型族时至少同步检查：
-
-1. `MODEL_FAMILY_REGISTRY` 的别名、cache、adapter、推理和 attention 能力。
-2. `library/training/model_loading.py`、`batch_step.py` 及 preprocessing strategy 的完整 handler。
-3. network target、metadata stamp、保存/加载和 resume round-trip。
-4. WebUI family 过滤、preflight 文案、训练预览和 image-test 的真实能力差异。
-5. compatibility matrix 是否对无效配置 fail closed，且没有“接受但忽略”。
-6. family-specific cache suffix、latent normalization、text mask 和 4D/5D latent 边界测试。
-
-相关回归入口包括 `tests/test_model_family_registry.py`、`tests/test_z_image_family.py`、
-`tests/test_z_image_block_swap.py`、`tests/test_krea2_*` 和 WebUI family/compatibility 测试；实际文件名
-以当前 `tests/` 为准。
+相关核心回归测试：`tests/test_model_family_registry.py`、`tests/test_model_family_fail_closed.py`、`tests/test_adapter_family_isolation.py`、`tests/test_pipeline_parallel_multimodel.py`、`tests/test_compat_unverified_policy.py`。

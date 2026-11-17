@@ -1,6 +1,6 @@
 # 配置工作台
 
-状态：稳定（Next React 工作台；旧 Classic / Dragon 仅保留兼容重定向）
+状态：稳定
 适用版本：当前 WebUI Next 工作台 `/next/training`
 入口命令：
 
@@ -9,107 +9,59 @@
 ```
 
 相关代码：
-
-- `web/frontend-next/src/features/training-config/`（Next 配置工作台）
+- `web/frontend-next/src/features/training-config/`
 - `web/services/config_service.py`、`web/services/config/`
-- `web/services/training_service.py`
-- `tests/test_web_config_service.py`、`tests/test_training_frontend_config_ui.py`
+- `web/services/training_service.py`、`library/training/compat_matrix.py`
 
 ---
 
-## 1. 这是干什么的
+## Next React 配置工作台
 
-一句话：在「配置」页管理训练 TOML，改参数后可直接开始训练或加入队列。
+`/next/training` 是管理可复用训练 TOML 配置、执行兼容预检并立即启动或加入训练队列的核心工作台（历史运行快照在 `/next/history` 查看，完整 checkpoint 续训在历史任务详情发起）。
 
-本页按 Next React `/next/training` 的当前行为说明；旧 Classic / Dragon 页面不再是活跃功能入口。
+### 1. 页面结构与双视图布局
 
-配置工作台覆盖：
+- **配置库与顶栏选择**：配置库支持侧边、顶部或自动排列（拖拽宽度保存在当前浏览器），支持读取/搜索、保存、另存、文件重命名、分组新建/重命名/删除、文件移动排序以及 TOML 原文导入/导出（页面不提供删除配置文件操作，避免误删用户配置）。顶部紧凑选择栏集中管理当前训练配置、硬件预设（`configs/presets.toml`）与全局模型组合填充。
+- **分组视图 / 积木流视图**：可在顶部操作栏切换，共用同一份配置草稿。四个阶段依次为 **输入准备**（模型、数据集、标注与遮罩、筛选、预处理与缓存）、**方法配置**（基础方法、热启动、容量及适配器分支）、**训练计划**（任务名称、训练量、优化器、损失、正则化、预览、保存、日志）、**设备与性能**（分布式设备卡片、精度与计算后端、块交换与内存卸载、梯度检查点、编译加速、诊断）。目录之外的未知字段保留在“其他配置与审计”，不会在保存时丢失。
+- **简要说明与字段帮助**：顶栏“配置 → 简要说明”支持“完全隐藏 / 单行显示 / 完整显示”；点击字段 `?` 按需加载 283 项 V2 结构化帮助（含模型路径读取的实际 block 数与交换上限）。仅当字段值与预设/方法继承基准已知不同时才显示覆写标记，支持“恢复继承值”与“撤销未保存修改”（均只改草稿，不自动写盘）。
+- **模型路径与样张提示词**：DiT、`qwen3`、`vae` 输入框旁可通过只读 `GET /api/settings/model-files` 浏览项目 `models/` 及已存模型目录；样张提示词支持图形化逐条编辑（含 Qwen Edit 多参考图缩略图与大图预览）与原文模式，保存时写入配置专属分叉文件 `configs/sample-prompts/<methods_subdir>/<stem>.txt`。
 
-- 左侧：项目配置 / 训练输出配置列表
-- 中间：表单编辑或直接编辑 TOML
-- 顶部操作：加载、保存、另存、删除
-- 启动区：GPU 白名单、运行覆盖预设、开始训练、加入队列
-- 训练来源：Next `/next/training` 配置页提供从零训练和权重字段；完整续训从历史任务详情页发起
+### 2. 五模型族动态披露
 
----
+工作台支持全部五个注册模型族（`anima`、`krea2_raw`、`z_image`、`qwen_image_2_1`、`moss_image`），表单字段与枚举按 `GET /api/config/model-families`（及同构离线目录 `domain/model-family.js`）动态过滤：
+- Qwen Image 2.1 暴露 `qwen_image_2_1_task = "t2i" | "edit"`（T2I 允许实验 LoKr/LoHa，Edit 仅 plain LoRA）及预览换块覆盖；
+- MOSS-Image 仅在该族下展示 `max_token_length` 与 `moss_te_quantization`（切换其他模型族时隐藏控件但保留草稿值）；
+- 界面开放选择不等于全部组合已完成真机质量验收，完整边界以 [多模型支持现状](../multi_model_support.md) 为准。
 
-## 2. 入口
+### 3. 分布式训练卡片与 Pipeline Parallel（PP v0）
 
-1. 启动 WebUI。
-2. 打开 Next 顶部导航 **训练配置**，进入 `/next/training`。
-3. 左侧选中一个配置文件。
-4. 需要时点 **加载选中配置**，或在「更多操作」里切换。
-5. 改完后点 **保存更新当前选中配置**。
-6. 确认 GPU 与训练来源后：
-   - **开始训练**：立即启动
-   - **加入队列**：进入训练队列等待
+「设备与性能」阶段顶部的分布式训练卡片（`TrainingDistributedCard`）管理运行拓扑与物理 GPU 选择（通过 `GET/PUT /api/settings/distributed` 与 `POST /api/training/distributed/diagnosis` 交互）：
 
-目录快捷条（配置目录）可跳到常用类别，例如预览采样相关字段。
-
----
-
-## 3. 关键配置项
-
-| 区域 | 你在界面上看到的 | 实际作用 |
-| --- | --- | --- |
-| 配置模式 | 项目配置 / 训练输出配置 | 项目配置改可复用 TOML；输出配置查看历史运行快照 |
-| 运行覆盖预设 | 预设选择器 | 来自 `configs/presets.toml`，启动时覆盖硬件/采样/性能参数 |
-| GPU 选择 | GPU 白名单 | Next 将选择保存在本机浏览器，并在预检、启动、入队时发送 `gpu_whitelist` |
-| 训练来源 | 从零 / 权重热启动 | Next 配置页提供权重字段；完整续训从历史任务详情页发起 |
-| 直接编辑配置文件 | TOML 原文编辑 | 跳过表单，直接改文件内容后保存 |
-| 开始训练 / 加入队列 | 启动动作 | 脏草稿先自动保存，再由服务端预检；非 runtime 配置可能进入预处理，入队请求使用 `start_paused=true` |
-
-配置合并链（后台）：
-
-```text
-base.toml
-  -> presets.toml[<preset>]
-  -> methods 或 gui-methods 变体
-  -> 当前 Web 配置 / CLI
-```
-
----
-
-## 4. 危险项
-
-- **直接编辑 TOML**：语法错误或路径写错会导致保存失败，或训练预检失败。
-- **完整续训 / 权重热启动**：选错 checkpoint 会从错误状态继续，或只热启错误权重。完整续训需从历史任务详情发起。
-- **开始训练**：会真正拉起训练进程；不要在未保存改动时误以为“界面上看到的”已经落盘。
-- **训练输出配置**：主要是只读快照视角；不要把它当成日常可改项目配置。
+- **三种模式**：**单卡**（单选 GPU）、**数据并行 DDP**（至少两张卡）、**流水线并行 PP**（实验 2-stage 1F1B）。选卡保存在本机设置/浏览器上下文，启动与入队时作为 `gpu_whitelist` 传递（显式选卡索引在 `nvidia-smi` 中不存在时会以 `gpu_whitelist_unauthorized_gpu` 拒绝）。
+- **PP 模型族边界**：当前 **Anima、MOSS-Image、Krea-2** 已接线专用 PP 训练会话（要求 `mixed_precision="fp16"`、plain LoRA、完整磁盘缓存、`gradient_accumulation_steps=1`、普通 `blocks_to_swap=0`）；Z-Image 与 Qwen Image 2.1 仍具名拒绝。
+- **Krea-2 专属 PP 参数**：分布式详情中的「PP 块交换」对应 `pipeline_parallel_blocks_to_swap`（仅 Krea-2 PP 可设非零，编辑时同步更新当前草稿与本机 `[distributed]` 缺省值；设为 `0` 时兼容回退 `KREA2_PP_SWAP_BLOCKS` 环境变量）。Krea-2 的 `pipeline_parallel_microbatches` 必须整除 `train_batch_size` 且不少于 2。详见 [分布式训练卡片说明](../experimental/distributed-training-card.md)。
 
 ---
 
 ## 训练预检与风险确认
 
-HTTP 训练接口的 `extra_args` 使用训练 CLI 的类型、选项和重复参数规则参与预检；
-启动、单项/批量入队及预处理完成后的复检采用同一组参数。显式 false 或 0 仍会覆盖配置值。
-Web 附加参数必须使用完整选项名，不能覆盖 `config_file`、`method`、`preset`、
-`methods_subdir`，也不能执行 help、配置输出、snapshot 或 strict 装载操作；
-请通过工作台选择配置或预设，单独的训练 CLI 保留其原有参数规则。
+### 1. 共享兼容预检与 `--compat_unverified_policy`
 
-预处理后自动训练会先将训练参数写入 runtime 配置，预处理脚本通过该配置消费参数，
-不将训练选项原样传给 resize/VAE 脚本。数据集覆盖已生成新的 runtime 蓝图时，
-后续训练使用该冻结蓝图；独立预处理继续支持自己的附加参数。
+WebUI 预检查、启动/入队确认与 CLI `train.py` 共用 `library/training/compat_matrix.py::check_training_compat`：
+- **默认 `warn` 档**：WebUI 表单未暴露 `compat_unverified_policy` 字段，启动沿用默认 `warn`——仅将已审计“代码生效但缺真机验收”的 7 个 C1 组合降级为带 `[unverified 未验证]` 标记的 warning（记录到启动日志与 checkpoint metadata `ss_compat_unverified_*`）。
+- **硬拦截不变**：输入错误、互斥冲突（如 selective checkpoint × full checkpoint、普通 `blocks_to_swap` × PP）以及放行即下游报错的 C2-raise / C3 组合在任何档位均为 error，阻止启动。CLI/TOML 如需复现旧版严格拦截可设 `compat_unverified_policy = "strict"`，详见 [模型训练能力与兼容预检策略](../configuration/model-training-capabilities.md#兼容预检策略--compat_unverified_policy)。
+- **冻结 runtime 直训特例**：仅当冻结 runtime 配置的 VAE/text 缓存逐图有效、latent identity 匹配且不开启采样预览/CMMD 时，预检允许跳过缺失但实际不会加载的 VAE 路径；常规需要预处理的配置仍要求 VAE 路径存在。
 
-启动和入队会重新执行预检。新三族 NF4 权重通过实际文件头的 manifest 识别，
-即使 `base_compute=bf16` 也会检查量化格式、模型族及训练参数，不加载权重或占用 GPU。
-旧 Anima 和 Krea NF4 格式保留各自的既有规则。
+### 2. NF4 编译风险确认与附加参数边界
 
-新 Krea 混合 NF4 和 Qwen-Image 2.1 NF4 的编译默认阻止启动。
-Qwen 完整权重的编译数值对照已发现梯度差异，详见
-[编译验收记录](../findings/qwen_nf4_compile_90hx_20261005.md)。
-只有检查结果全部属于可确认风险时，启动弹窗才显示「我已了解以上风险，仍要继续」。
-勾选普通启动确认和风险确认后，可点「无视风险继续启动」或「无视风险继续入队」。
-模型文件损坏、模型族不匹配、缺失路径、精度或其他不兼容配置仍须先处理。
+- 预量化混合 NF4 与 Qwen Image 2.1 NF4 编译默认阻止启动（梯度差异背景见 [Qwen NF4 编译定位](../findings/qwen_nf4_compile_90hx_20261005.md)）。仅当所有阻碍项均属可确认风险时，启动/入队弹窗才提供「我已了解以上风险，仍要继续」勾选，确认后仅对当次请求或该队列项生效（CLI 对应 `--allow_unverified_nf4_compile`），不写回训练 TOML；配置或设备变更后须重新确认。
+- Web `extra_args` 按训练 CLI 规则解析参与预检，但禁止覆盖 `config_file`、`method`、`preset`、`methods_subdir` 或触发只打印/快照类开关。
 
-风险确认仅对本次启动或该队列项有效，不写回训练 TOML 或全局设置。
-预处理后会再次检查；新出现的错误仍会阻止训练。修改配置、预设、设备或收到新的
-预检报告后，需要重新确认。强行启动不表示数值差异已修复或训练质量已经验证。
+---
 
-命令行调用可显式添加 `--allow_unverified_nf4_compile`，仅放行上述编译风险；
-写入 TOML 的同名字段不会自动放行。队列和历史训练命令会保留该参数，便于追溯。
+## 相关验证
 
-## 5. 相关测试
+后端契约测试：
 
 ```bash
 timeout 60 .venv/bin/python -m pytest \
@@ -118,87 +70,12 @@ timeout 60 .venv/bin/python -m pytest \
   tests/test_web_config_file_groups.py \
   tests/test_web_config_preflight.py \
   tests/test_mixed_nf4_preflight_risks.py \
-  tests/test_training_frontend_config_ui.py \
+  tests/test_training_preset_file_actions.py \
+  tests/test_dragon_config_stage_catalog_frontend.py \
   -q
 ```
 
-补充：
-
-- 启动 / runtime 冻结：`tests/test_training_queue.py`
-- 续训选项：`tests/test_training_resume_options.py`、`tests/test_training_resume_actions.py`
-
-## Next React 配置工作台
-
-新版 `/next/training` 提供“分组视图 / 积木流视图”，可在顶部操作栏切换，
-当前浏览器会记住选择，首次打开默认分组视图。两种布局共用一份配置草稿和字段表单。
-分组视图按输入准备、方法配置、训练计划、设备与性能四个阶段切换，
-仅显示当前阶段，切换阶段从顶部开始浏览。积木流视图将四个阶段连续排列，
-所有分组统一采用弹性换行和 12px 间距，普通数值、下拉及布尔卡片在桌面以四张一行为基准，
-宽容器以六张一行为基准；文本和结构化输入以半行为基准，输入框填满卡片。
-每行卡片按比例伸展填满剩余空间，长路径卡片优先获得更多宽度，各行右边缘对齐。
-窄编辑区降为两列卡片、长文本全行，手机端改为单列；数据集选择器保留全行。
-模型、缓存及其他参数使用相同布局，按字段顺序排列。
-布尔胶囊开关位于标题栏；顶部“配置”下拉菜单的“简要说明”提供“完全隐藏 / 单行显示 / 完整显示”。
-默认单行截断并固定单行占位，悬停卡片或聚焦控件不会展开；完全隐藏不渲染说明节点、不占位，
-完整显示按全部内容行数占位。选择保存在当前浏览器，刷新后保留，不写入 TOML。问号仍打开完整帮助。
-不适用原因保持完整显示。来源详情收进配置键的悬停提示，覆写状态和操作放在标题右侧。
-继承基准来自所选预设及方法默认在当前文件叠加前的有效值，只有已知且不同的值才高亮，
-并提供“恢复继承值”；“撤销修改”仍恢复本次加载的已保存值。两者只修改草稿。
-继承基准不可用时不猜测默认值，也不提供继承恢复操作。
-阶段栏在积木流中用于快速滚动定位，手动滚动也会更新当前阶段高亮；
-桌面参数区独立滚动，手机端由训练页滚动，阶段栏保留在编辑区顶部。
-
-切换布局保留未保存修改、搜索、参数筛选、分组折叠和预检结果，
-并尽量保留当前字段位置；正在编辑的输入会先失焦确认，再恢复焦点。
-布局偏好仅存于浏览器，不写入 TOML，也不触发保存或训练。
-
-DiT、Qwen3 与 VAE 路径输入框右侧的文件夹按钮可浏览服务器模型文件和
-Diffusers 目录，支持目录切换、返回上级和分页。确认选择只更新当前训练草稿；
-取消不改路径，输入框仍可手动编辑。浏览范围为项目 `models/` 及已保存模型配置
-指定的模型目录，不会上传、下载或读取权重内容。此功能需要新增的
-`GET /api/settings/model-files` 接口；旧后端会显示目录浏览暂不可用，
-可继续手动填写路径或使用已有模型组合。更新运行中的后端需另行重新加载服务。
-
-“立即启动 / 保存并启动”使用实心主色，入队和保存为次级操作，
-“恢复页面默认值”和“TOML”使用弱化样式。禁用状态和原有确认流程保持不变。
-
-搜索和参数视图筛选覆盖全部分类，筛选时阶段栏显示各分类
-匹配数量；当前分类无匹配项时显示空状态。预检是独立操作和结果面板，不是第五个字段阶段；保存、预检和入队仍针对整份配置。
-
-“资源”阶段内部按精度与计算后端、块交换与内存卸载、梯度检查点、编译加速、
-预处理与数据加载、诊断折叠分组；有适用字段时另显示多卡与并行。
-分组标题显示当前配置摘要，AUTO 开关及其关联参数排在手动块交换数量之前。
-搜索或“已修改”筛选自动展开匹配分组，不改变字段值、适用条件或保存范围。
-
-输入准备、方法配置、训练计划也使用同一套折叠分组。输入准备按模型、数据集、
-标注与遮罩、筛选、缓存排列；方法配置按基础方法、热启动、容量及适配器分支排列；
-训练计划按任务名称、训练量、优化器、损失、正则化、预览、保存、日志排列。
-基础组默认展开，其他组按需展开；目录之外的字段保留在“其他配置与审计”，不丢弃。
-
-新版样张提示词支持图形化与原文模式，可在“训练预览”的提示词字段旁或顶部操作栏打开。
-图形化模式逐条编辑正负提示词、尺寸、步数、CFG、种子、Flow shift、采样器与额外参数，
-支持复制、排序、删除。未改动的行及注释、空行保留原文；被编辑行规范化参数顺序。
-未关联配置优先读取同名分叉文件，仅在文件不存在时回退共享默认文件；界面显示关联状态。
-点击保存才写入配置专属文件并关联当前配置，不自动覆盖旧文件。文件是否存在的标记需要
-更新后的 Web 后端；更新已有服务后需重新启动 WebUI 才能获得该标记。
-
-Next 入口为 `/next/training`；旧 Dragon/classic URL 仅通过兼容重定向到 Next。
-Next 参数工作台保留输入准备、方法配置、训练计划、设备与性能四个阶段，预检通过独立按钮/结果面板进入；
-搜索、配置预设库和保存行为的接口契约仍与后端共享；旧兼容页面不属于当前工作台入口。
-
-Next `/next/training` 当前提供配置库读取/搜索、保存、另存、配置文件重命名、分组新建/重命名/删除、
-文件移动和排序，以及 TOML 编辑器中的导入/导出。页面没有删除配置文件的操作；删除分组不会删除其中的配置文件。
-Next 另存包含当前草稿，不会覆盖同名文件，另存成功后切换到新文件，不弹出“未保存修改确认”。
-定向测试入口为 `tests/test_training_preset_file_actions.py`。
-
-Anima、Krea-2 和 Z-Image 的模型族均可在 Next 中选择，但网络字段和选项按能力目录动态过滤；
-选项开放不等于全部组合已验证，未列出的组合由服务端预检拒绝。完整运行边界见
-[多模型支持现状](../multi_model_support.md)。完整续训仍在历史任务详情页，不属于 Next 配置页的训练来源选择。
-
-- 浅色与深色共用字号、间距、控件尺寸和状态语义。蓝色用于主要操作，绿色表示已同步，
-  琥珀色表示未保存修改，红色表示预检错误；不可用项保留文字原因与帮助入口。
-- 宽屏铺满参数分组并限制单个控件阅读宽度，窄屏改为单列表单和配置抽屉。帮助、模型与数据集选择弹窗同样适配两个主题。
-Next React 工作台的定向入口另见 `web/frontend-next/src/features/training-config/`；当前验证使用：
+前端单元测试与类型检查：
 
 ```bash
 pnpm --dir web/frontend-next exec vitest run src/features/training-config

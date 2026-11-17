@@ -63,7 +63,7 @@ Requirements:
 
 1. **Reproducible bench:** add to an existing `bench/<topic>/` or create a focused bench. Report before/after values for the claimed metric; a percentage without raw, reproducible measurements is insufficient.
 2. **Invariant test:** add or extend a test for numerical equivalence, schedule behavior, memory behavior, or another explicit regression boundary. State tolerances when exact equivalence is impossible.
-3. **Correct harness:** DiT-loading benches use `bench/_anima.py` so adapter apply/load occurs before compile. Results use `bench/_common.py` where applicable.
+3. **Correct harness:** Anima DiT-loading benches use `bench/_anima.py` (and other model families use their canonical loader/compile helpers) so adapter apply/load occurs before compile. Results use `bench/_common.py` where applicable.
 4. **Documentation:** update the relevant method, optimization, or architecture document. Do not add a new top-level document unless the behavior needs a distinct user-facing entry.
 5. **PR evidence:** include the exact commands, before/after output, environment, and result path.
 6. **Compatibility statement:** state whether fixed-seed outputs, loss curves, checkpoints, config, or public APIs change.
@@ -77,12 +77,12 @@ A new adapter/network implementation or a new method family is Tier 2. Discuss i
 Requirements:
 
 1. **Rationale and prior art:** cite the paper and upstream code when available. A method without prior art needs stronger empirical evidence and prior maintainer agreement.
-2. **Dedicated bench:** add `bench/<method>/README.md`, runnable scripts, standard `result.json` output, interpretation, failure criteria, and a cited baseline result. DiT-loading scripts use `bench/_anima.py`.
+2. **Dedicated bench:** add `bench/<method>/README.md`, runnable scripts, standard `result.json` output, interpretation, failure criteria, and a cited baseline result. Anima DiT-loading scripts use `bench/_anima.py` (other families use their canonical apply-before-compile helpers).
 3. **Method documentation:** add a stable document under `docs/methods/` or an explicitly bounded experimental document under `docs/experimental/`, and link it from the corresponding section index.
 4. **Tests:** cover registry/config construction, at least one forward smoke path, metadata/save-load behavior, and important method invariants without requiring a real base-model download in unit tests.
 5. **Task entry points:** expose supported train/test flows through `tasks.py`; `Makefile` aliases may remain as compatibility shims but must not be the only documented entry.
 6. **Merge story:** prove merge equivalence for foldable adapters, or update refusal/compatibility logic and document why the method cannot be folded into DiT weights.
-7. **Anima result:** provide a reproducible comparison against the appropriate baseline. “It trains without crashing” is not sufficient evidence.
+7. **Empirical baseline comparison:** provide a reproducible comparison on the target model family (Anima by default) against the appropriate baseline. “It trains without crashing” is not sufficient evidence.
 8. **Integration surfaces:** check config schema, WebUI exposure, inference loading, checkpoint metadata, docs, tests, and ComfyUI vendor impact.
 
 ## Tier 3 — new model-family support
@@ -103,7 +103,7 @@ Copy the applicable items into the PR description:
 - [ ] Documentation/config/WebUI/task surfaces are synchronized where applicable.
 - [ ] No credentials, local paths, user data, model/cache/output files, debug prints, commented-out code, or unrelated formatting churn are included.
 - [ ] Tier 1.5: reproducible before/after bench, invariant test, and numerical compatibility statement included.
-- [ ] Tier 2: method rationale, bench README/result, method doc, tests, task entries, merge story, and Anima comparison included.
+- [ ] Tier 2: method rationale, bench README/result, method doc, tests, task entries, merge story, and baseline comparison included.
 - [ ] Tier 3: maintainer agreement, family capability matrix, cache/checkpoint compatibility, and train/inference validation included.
 - [ ] Custom-node impact checked and `vendor-sync` status reported.
 

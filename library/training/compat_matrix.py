@@ -224,7 +224,7 @@ UNVERIFIED_C2_RAISE_CODES = frozenset({
 UNVERIFIED_C3_CODES = frozenset({
     "qwen_image_2_1_block_swap_checkpoint",  # swap without checkpointing exhausts VRAM
     "qwen_nf4_compile_experiment",           # qwen_nf4_compile_policy rejects the config
-    "z_image_bf16_only",                     # flash+fp16 raises in attention_backend
+    "z_image_bf16_only",                     # non-bf16 rejected unless adaptive fp16_fp32 islands or pure fp32
     "block_swap_cpu_offload",                # non-Anima unet.enable_gradient_checkpointing(cpu_offload=) TypeError
     "block_swap_unsloth_offload",            # swap and unsloth offload are mutually exclusive
 })

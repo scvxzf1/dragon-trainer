@@ -180,7 +180,7 @@ def test_unwired_families_keep_the_entry_refusal():
     from library.training.pp.gate import require_trainer_pp_admission
 
     # anima is wired since the Anima trainer-level PP adapter landed
-    # (docs/proposal/anima_pp_trainer_wiring.md §3): admission accepts it.
+    # (_archive/docs/proposal/anima_pp_trainer_wiring.md §3): admission accepts it.
     # Families without any runtime are refused one step earlier by the shared
     # gate. Either way nothing reaches a DDP fallback.
     require_trainer_pp_admission(_config(model_family="anima"), where="unit-test")

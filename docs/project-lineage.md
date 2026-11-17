@@ -33,14 +33,14 @@
 | --- | --- | --- |
 | 2026-03-27 | 共同起点，上游那次 `Initial extraction of standalone Anima LoRA training pipeline` | `git log --reverse --date=short --format='%ad %s'`，看第一行 |
 | 2026-05-27 | 上游作者的提交最后一次进这棵树 | `git log -1 --before='2026-05-27 23:59'` |
-| 2026-05-28 起 | 之后全由本仓维护者提交，至今 769 次 | `git rev-list --count --since=2026-05-28 HEAD` |
+| 2026-05-28 起 | 之后全由本仓维护者持续演进提交 | `git rev-list --count --since=2026-05-28 HEAD` |
 | 2026-08-08 | Krea-2 Raw 落地 | `git log --diff-filter=A -- library/models/krea2_raw` |
 | 2026-08-25 | Z-Image 落地 | `git log --diff-filter=A -- library/models/z_image` |
 | 2026-09-27 | Qwen-Image 2.1 落地 | `git log --diff-filter=A -- library/models/qwen_image_2_1` |
 | 2026-10-17 | MOSS-Image 落地 | `git log --diff-filter=A -- library/models/moss_image` |
 | 2026-10-19 | 仓库从 `anima_lora_webui` 改名 `dragon-trainer` | GitHub 旧地址自动重定向 |
 
-顺带一提，`web/frontend-next/src` 底下那 523 个源文件也全在这条时间线里。
+顺带一提，`web/frontend-next/src` 底下的整套 React 工作台源码也全在这条时间线里。
 
 ## 上游政策
 
@@ -48,7 +48,7 @@
 - **按需搬。** 上游某个改动确实有用就单独 cherry-pick，或者照着重写一遍，别整树拖进来。
 - **搬了要写。** 提交信息带 `port(upstream): <原提交或主题>`；行为有差异的再往 `docs/findings/` 记一笔。
 - **issue 不回流。** 我们的 bug 自己修，不丢给上游；上游的 bug 也不是我们的 KPI。
-- **remote 要起名。** 指上游的 remote 统一叫 `upstream`，只 fetch 不 push；`origin` 只指向本仓。别把 URL 当别名使，那玩意儿带空格和冒号，脚本一碰就出事。
+- **remote 认 URL。** 指上游的 remote 统一叫 `upstream`，只 fetch 不 push；推拉本仓前用 `git remote -v` 核对指向 `github.com/scvxzf1/dragon-trainer` 的 remote 名称（常见为 `origin`）。
 
 ## 不能动的兼容面
 

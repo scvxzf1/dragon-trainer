@@ -248,7 +248,7 @@ def cmd_download_anima_variant(_extra):
 
 def cmd_download_krea2(_extra):
     # Krea-2-Raw base checkpoint for the krea2_raw model family
-    # (docs/proposal/krea2_raw_migration.md). Source is the Comfy-Org
+    # (_archive/docs/proposal/krea2_raw_migration.md). Source is the Comfy-Org
     # repackaged single-file layout — NOT the gated `krea/Krea-2-Raw`
     # diffusers three-shard form, so no license acceptance is needed and the
     # loader is single-file key-mapping (not index.json shard expansion).

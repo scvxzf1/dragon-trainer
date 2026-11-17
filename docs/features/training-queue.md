@@ -8,73 +8,42 @@
 .venv/bin/python tasks.py web --host 127.0.0.1 --port 20102
 ```
 
-- `web/frontend-next/src/features/training-queue/`（Next 队列工作区）
-- `web/services/training/` 队列与 runtime
-- `configs/web-training-queue/`（或外置配置根下的同名目录）
-- `tests/test_training_queue.py`、`tests/test_training_frontend_queue.py`
+相关代码：
+- `web/frontend-next/src/features/training-queue/`（`QueuePage.tsx`、`QueuePolicyForm.tsx`）
+- `web/services/training/queue.py`、`launcher.py`
+- `configs/web-training-queue/`（随外置配置根或 `queue_root` 迁移）
 
 ---
 
-## 1. 这是干什么的
+## 1. 页面布局与功能
 
-一句话：把多个训练任务排成队，按顺序跑，并在失败时决定暂停还是继续。
+`/next/queue` 采用**左侧队列条目列表 + 右侧队列策略面板（`QueuePolicyForm`）**双栏独立页面布局，按顺序调度从 `/next/training` 或历史续训入队的训练任务：
 
-队列能力包括：
-
-- 从配置页 **加入队列**
-- 训练页查看队列摘要与管理台
-- 暂停 / 恢复
-- 失败策略：暂停队列 或 继续下一个
-- 批量取消、清理已完成 / 已取消
-- 强制中止当前队列
+- **顶部状态筛选与平铺批量操作**：按状态统计筛选队列项，直接提供 `暂停 / 恢复`、`中止后续队列`、`强制中止`、`取消全部等待`、`清理已完成`、`清理已取消` 操作按钮。
+- **入队配置冻结**：条目入队时即生成独立的冻结 runtime 配置（及关联数据集快照与当次风险确认标记）；后续在配置工作台修改原项目 TOML 不会改变已在队列中等待的条目。
+- **队列策略与自动重试（`QueuePolicyForm`）**：
+  - **失败策略**：`pause`（任务失败后暂停队列等待人工排查）或 `continue`（失败后继续启动下一条）；
+  - **自动重试**：可配置 `auto_retry` 开关、最大尝试次数 `max_attempts` 与退避间隔 `retry_backoff_sec`。
+- **并发版本保护**：批量变更与排序携带 `expected_revision`（及停止运行任务的 `task_id` 绑定），若队列状态已变化会返回 409 并要求刷新后再操作，防止误杀刚切换的新任务。
 
 ---
 
-## 2. 入口
+## 2. 风险与注意事项
 
-1. 在 Next **训练配置** 页准备好配置后点 **加入队列**。
-2. 打开 Next 顶部导航 **训练队列**，进入 `/next/queue`。
-3. 在队列页使用摘要区的 **管理** 打开队列管理台。
-4. 需要时用：
-   - **暂停 / 恢复**
-   - **失败后** 下拉框
-   - 更多操作：中止后续、强制中止、取消全部、清理完成项
-
-筛选：
-
-- 待处理 / 全部 / 等待 / 运行 / 异常 / 完成 / 已取消
+- **强制中止**：会中断当前运行中的训练进程，未落盘步数的中间状态不会保存。
+- **失败后继续下一个（`continue`）**：前置任务因配置或环境故障失败时不会停队，后续条目会继续占用 GPU 启动。
+- **清理已完成 / 已取消**：仅清理队列记录文件，不会删除 `/next/history` 中的历史记录或 `output/runs/` 下的训练权重。
 
 ---
 
-## 3. 关键配置项
-
-| 项目 | 说明 |
-| --- | --- |
-| 队列条目 | 入队时会冻结 runtime 配置，之后改原 TOML 不一定影响已排队任务 |
-| 失败策略 | `pause`：失败后暂停；`continue`：失败后继续下一个 |
-| 暂停队列 | 可只排队、不自动开跑，方便手工确认 |
-| GPU 白名单 | 来自配置页浏览器侧选择，影响启动时可用 GPU |
-| 输出根目录 | 全局设置 `output_root`，决定运行目录落点 |
-| 队列存储 | 默认 `configs/web-training-queue/`，可随配置根外置 |
-
----
-
-## 4. 危险项
-
-- **停止训练 / 强制中止队列**：会打断正在跑的任务，可能留下不完整 checkpoint。
-- **取消全部队列 / 取消全部等待**：批量清掉未完成项，不可靠“撤销”。
-- **失败后继续下一个**：某个任务失败时不会停，后续任务会继续烧 GPU。
-- **清理已完成 / 已取消**：清的是队列记录，不等于删除历史任务产物；但会丢掉队列侧状态。
-- **一边改配置一边等队列**：已入队任务通常使用冻结配置；别以为改完左侧 TOML 就会改已排队任务。
-
----
-
-## 5. 相关测试
+## 3. 相关测试
 
 ```bash
 timeout 60 .venv/bin/python -m pytest \
   tests/test_training_queue.py \
   tests/test_training_queue_resume.py \
-  tests/test_training_frontend_queue.py \
+  tests/test_training_queue_retry_wake.py \
+  tests/test_queue_revision_contract.py \
+  tests/test_queue_item_retry_override.py \
   -q
 ```
