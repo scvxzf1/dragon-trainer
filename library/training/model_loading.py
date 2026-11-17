@@ -238,6 +238,7 @@ def _load_qwen_image_2_1_dit(trainer, args, weight_dtype, accelerator, text_enco
         model,
         getattr(args, "attn_mode", None),
         dtype=weight_dtype,
+        device=accelerator.device,
     )
     logger.info(
         "Using Qwen Image 2.1 attention mode: %s%s",
@@ -388,6 +389,7 @@ def _load_krea2_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         getattr(args, "attn_mode", None),
         dtype=loading_dtype,
         compile_enabled=bool(getattr(args, "torch_compile", False)),
+        device=accelerator.device,
     )
     if nf4_active and nf4_path:
         import os as _os
@@ -418,6 +420,7 @@ def _load_krea2_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         requested_attn_mode,
         dtype=weight_dtype if adaptive else loading_dtype,
         compile_enabled=bool(getattr(args, "torch_compile", False)),
+        device=accelerator.device,
     )
     logger.info("Krea-2 attention mode: %s", attn_mode)
     _maybe_probe_components(

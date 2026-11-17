@@ -38,6 +38,10 @@ def stamp_lora_save_metadata(
     if spec.name == "lokr":
         metadata.setdefault("ss_network_dim", str(cfg.lora_dim))
         metadata.setdefault("ss_network_alpha", str(cfg.alpha))
+        plugin_args = getattr(cfg, "plugin_args", {}) or {}
+        if "lokr_factor" in plugin_args and plugin_args["lokr_factor"] is not None:
+            metadata.setdefault("ss_lokr_factor", str(plugin_args["lokr_factor"]))
+        uses_einsum_layout = None
         uses_full_factor_layout = None
         if network is not None:
             from networks.plugins.lokr.module import LoKrModule
@@ -53,6 +57,24 @@ def stamp_lora_save_metadata(
                     (not getattr(lora, "_use_decomposed_w2", False))
                     for lora in lokr_modules
                 )
+                uses_einsum_layout = any(
+                    bool(getattr(lora, "lokr_use_einsum", True))
+                    for lora in lokr_modules
+                )
+        if uses_einsum_layout is None:
+            raw_einsum = plugin_args.get("lokr_use_einsum", True)
+            if isinstance(raw_einsum, str):
+                uses_einsum_layout = raw_einsum.strip().lower() not in {
+                    "0",
+                    "false",
+                    "no",
+                    "off",
+                }
+            else:
+                uses_einsum_layout = bool(raw_einsum)
+        metadata.setdefault(
+            "ss_lokr_use_einsum", "true" if uses_einsum_layout else "false"
+        )
         if uses_full_factor_layout is None:
             plugin_args = getattr(cfg, "plugin_args", {}) or {}
             raw_full = plugin_args.get("lokr_full_factor", False)

@@ -461,6 +461,8 @@ def test_krea2_and_moss_release_foreign_stage_weights_clears_foreign_adapter_ref
     )
     net.apply_to([], model, apply_text_encoder=False, apply_unet=True)
     foreign_block_ref = weakref.ref(model.blocks[3])
+    foreign_linear_ref = weakref.ref(model.blocks[3].mlp.up)
+    foreign_attn_ref = weakref.ref(model.blocks[3].attn.wq)
 
     layout, _ = build_krea2_stage_module(model, stage_index=0, stages=2, wire=wire, network=net)
     assert layout.block_indices == (0,)
@@ -469,9 +471,13 @@ def test_krea2_and_moss_release_foreign_stage_weights_clears_foreign_adapter_ref
     for adapter in net.unet_loras:
         if any(tag in adapter.lora_name for tag in ("_blocks_1_", "_blocks_2_", "_blocks_3_")):
             assert adapter.org_module_ref[0] is None
+            assert getattr(adapter, "org_forward", None) is None
         else:
             assert adapter.org_module_ref[0] is not None
+            assert getattr(adapter, "org_forward", None) is not None
     assert foreign_block_ref() is None
+    assert foreign_linear_ref() is None
+    assert foreign_attn_ref() is None
 
     # Verify MossStageLayout branch also clears foreign layer adapter refs.
     class _MossMockAdapter:

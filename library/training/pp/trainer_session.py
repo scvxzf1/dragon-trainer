@@ -281,6 +281,8 @@ def _release_foreign_stage_weights(model, layout, *, network, device) -> None:
                 ref = getattr(adapter, "org_module_ref", None)
                 if isinstance(ref, list) and ref:
                     ref[0] = None
+                if hasattr(adapter, "org_forward"):
+                    adapter.org_forward = None
     release_foreign_blocks(model, layout, container=container, block_range=(start, end))
     gc.collect()
     if getattr(device, "type", "") == "cuda":

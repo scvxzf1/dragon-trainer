@@ -243,6 +243,7 @@ def prepare_qwen_image_2_1_attention(
     mode: object,
     *,
     dtype: torch.dtype | None,
+    device: torch.device | int | str | None = None,
 ) -> str:
     """Configure packed FlashAttention without changing Diffusers global state."""
 
@@ -257,7 +258,7 @@ def prepare_qwen_image_2_1_attention(
     try:
         from networks import attention_dispatch
 
-        if not attention_dispatch.flash_attn_available_for_dtype(dtype):
+        if not attention_dispatch.check_flash_attn_for_dtype(dtype, device=device):
             raise RuntimeError("installed FlashAttention provider does not support BF16")
     except (ImportError, RuntimeError, ValueError) as exc:
         raise RuntimeError(

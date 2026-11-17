@@ -150,6 +150,7 @@ def validate_krea2_attention_mode(
     *,
     dtype: torch.dtype | None,
     compile_enabled: bool = False,
+    device: torch.device | int | str | None = None,
 ) -> str:
     """Validate a Krea-2 attention mode before loading the large DiT."""
 
@@ -162,7 +163,7 @@ def validate_krea2_attention_mode(
                 "Krea-2 attn_mode='flash' requires fp16 or bf16 compute; "
                 f"got {dtype}"
             )
-        if not attention_dispatch.flash_attn_available_for_dtype(dtype):
+        if not attention_dispatch.check_flash_attn_for_dtype(dtype, device=device):
             provider = (
                 "flash-attention-v100 (FP16 only)"
                 if attention_dispatch.flash_attn_v100_provider
@@ -185,6 +186,7 @@ def prepare_krea2_attention(
     *,
     dtype: torch.dtype | None,
     compile_enabled: bool = False,
+    device: torch.device | int | str | None = None,
 ) -> str:
     """Validate and install a Krea-2 attention mode before optional compile."""
 
@@ -192,6 +194,7 @@ def prepare_krea2_attention(
         mode,
         dtype=dtype,
         compile_enabled=compile_enabled,
+        device=device,
     )
 
     setter = getattr(model, "set_attention_mode", None)

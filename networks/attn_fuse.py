@@ -54,6 +54,11 @@ ATTN_FUSE_SPECS: Tuple[AttnFuseSpec, ...] = (
 )
 
 
+def _is_fusable_backbone_prefix(prefix: str) -> bool:
+    """Exclude unfused text-encoder (``lora_te_*``) and ``llm_adapter`` keys."""
+    return not prefix.startswith("lora_te_") and "_llm_adapter_" not in prefix
+
+
 def match_fused_spec(prefix: str) -> Optional[AttnFuseSpec]:
     """Return the AttnFuseSpec whose ``fused_frag`` ends ``prefix``, else None.
 
@@ -63,6 +68,8 @@ def match_fused_spec(prefix: str) -> Optional[AttnFuseSpec]:
     that need splitting. Both sides consult the same ATTN_FUSE_SPECS tuple
     so adding a new fused projection touches one entry.
     """
+    if not _is_fusable_backbone_prefix(prefix):
+        return None
     for spec in ATTN_FUSE_SPECS:
         if prefix.endswith(spec.fused_frag):
             return spec
@@ -106,6 +113,8 @@ def iter_split_groups(
             # — slice the component-projection suffix off so callers can
             # rebuild any letter's key by appending "{letter}_proj{...}".
             shared_prefix = key[: -len(f"{first_letter}_proj{sentinel_suffix}")]
+            if not _is_fusable_backbone_prefix(shared_prefix):
+                continue
             seen.append(shared_prefix)
         for shared_prefix in seen:
             yield shared_prefix, spec

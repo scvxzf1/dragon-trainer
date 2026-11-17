@@ -75,12 +75,17 @@ class LoKrModule(BaseLoRAModule):
         lokr_use_einsum=True,
         lokr_decompose_w2=False,
         lokr_full_factor=False,
+        explicit_shapes: dict[str, tuple[int, ...]] | None = None,
     ):
         if not isinstance(org_module, torch.nn.Linear):
             raise ValueError("LoKrModule only supports torch.nn.Linear modules")
         if lokr_full_factor and lokr_decompose_w2:
             raise ValueError(
                 "LoKR full_factor and lokr_decompose_w2 are mutually exclusive"
+            )
+        if not lokr_use_einsum and lokr_decompose_w2:
+            raise ValueError(
+                "LoKR lokr_decompose_w2=true requires lokr_use_einsum=true"
             )
         super().__init__(
             lora_name,
@@ -105,7 +110,42 @@ class LoKrModule(BaseLoRAModule):
         )
         single_out = out_features // n_comp
 
-        if self.lokr_use_einsum:
+        has_explicit = (
+            isinstance(explicit_shapes, dict)
+            and "w1" in explicit_shapes
+            and (
+                "w2" in explicit_shapes
+                or ("w2_a" in explicit_shapes and "w2_b" in explicit_shapes)
+            )
+        )
+        if has_explicit:
+            self.out_a, self.in_a = (int(v) for v in explicit_shapes["w1"])
+            self.factor = max(1, self.out_a // n_comp)
+            if "w2_a" in explicit_shapes and "w2_b" in explicit_shapes:
+                self.out_b, decomp_rank = (int(v) for v in explicit_shapes["w2_a"])
+                _, self.in_b = (int(v) for v in explicit_shapes["w2_b"])
+                self.in_dim = self.in_b
+                self.out_dim = self.out_b
+                self.lokr_w1 = torch.nn.Parameter(torch.empty(self.out_a, self.in_a))
+                self.lokr_w2_a = torch.nn.Parameter(torch.empty(self.out_b, decomp_rank))
+                self.lokr_w2_b = torch.nn.Parameter(torch.empty(decomp_rank, self.in_b))
+                self._use_decomposed_w2 = True
+                self.lokr_use_einsum = True
+                torch.nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+                torch.nn.init.kaiming_uniform_(self.lokr_w2_a, a=math.sqrt(5))
+                torch.nn.init.zeros_(self.lokr_w2_b)
+            else:
+                self.out_b, self.in_b = (int(v) for v in explicit_shapes["w2"])
+                self.in_dim = self.in_b
+                self.out_dim = self.out_b
+                if self.out_a // n_comp != self.in_a:
+                    self.lokr_use_einsum = True
+                self.lokr_w1 = torch.nn.Parameter(torch.empty(self.out_a, self.in_a))
+                self.lokr_w2 = torch.nn.Parameter(torch.empty(self.out_b, self.in_b))
+                self._use_decomposed_w2 = False
+                torch.nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
+                torch.nn.init.zeros_(self.lokr_w2)
+        elif self.lokr_use_einsum:
             sub_out_a, self.out_b = _factorization(single_out, int(factor))
             self.out_a = n_comp * sub_out_a
             self.in_a, self.in_b = _factorization(in_features, int(factor))

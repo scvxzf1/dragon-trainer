@@ -152,12 +152,20 @@ def flash_attn_available_for_dtype(
 _ORIG_FLASH_ATTN_AVAILABLE_FOR_DTYPE = flash_attn_available_for_dtype
 
 
+def check_flash_attn_for_dtype(
+    dtype: torch.dtype,
+    device: torch.device | int | str | None = None,
+) -> bool:
+    """Monkeypatch-friendly dtype+device check for model-load preflight."""
+    if flash_attn_available_for_dtype is not _ORIG_FLASH_ATTN_AVAILABLE_FOR_DTYPE:
+        return flash_attn_available_for_dtype(dtype)
+    return flash_attn_available_for_dtype(dtype, device=device)
+
+
 def flash_attn_available_for_tensor(tensor: torch.Tensor) -> bool:
     """Check Flash availability against ``tensor.dtype`` and ``tensor.device``."""
-    if flash_attn_available_for_dtype is not _ORIG_FLASH_ATTN_AVAILABLE_FOR_DTYPE:
-        return flash_attn_available_for_dtype(tensor.dtype)
     dev = tensor.device if tensor.device.type == "cuda" else None
-    return flash_attn_available_for_dtype(tensor.dtype, device=dev)
+    return check_flash_attn_for_dtype(tensor.dtype, device=dev)
 
 
 _FLASH_HALF_DTYPES = (torch.float16, torch.bfloat16)

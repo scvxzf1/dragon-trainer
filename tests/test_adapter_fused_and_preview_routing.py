@@ -197,3 +197,100 @@ def test_layer_range_filters_layers_and_transformer_blocks_containers():
             alpha=4.0,
         )
         assert [c.original_name for c in kept] == [f"{container_name}.1.proj"]
+
+
+def test_heterogeneous_dims_and_unfused_te_llm_adapter_roundtrip(tmp_path):
+    """Regression for verifier BLOCK-1 & BLOCK-2:
+    - Unfused lora_te_* and llm_adapter q/k/v_proj must NOT be merged into fake qkv_proj.
+    - Heterogeneous Anima dims (e.g. 32->96 self_attn, 16->64 cross_attn, 32->128 mlp)
+      with factor=16 or factor=-1 under einsum=True must reload without shape mismatch.
+    """
+
+    class _UnfusedAttn(torch.nn.Module):
+        def __init__(self, dim: int = 16):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(dim, dim, bias=False)
+            self.k_proj = torch.nn.Linear(dim, dim, bias=False)
+            self.v_proj = torch.nn.Linear(dim, dim, bias=False)
+
+    class _LLMAdapterBlock(torch.nn.Module):
+        def __init__(self, dim: int = 16):
+            super().__init__()
+            self.self_attn = _UnfusedAttn(dim)
+
+    class _HeteroBlock(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = torch.nn.Module()
+            self.self_attn.qkv_proj = torch.nn.Linear(32, 96, bias=False)
+            self.cross_attn = torch.nn.Module()
+            self.cross_attn.kv_proj = torch.nn.Linear(16, 64, bias=False)
+            self.mlp = torch.nn.Linear(32, 128, bias=False)
+
+    class _HeteroDiT(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([_HeteroBlock()])
+            self.llm_adapter = torch.nn.Module()
+            self.llm_adapter.blocks = torch.nn.ModuleList([_LLMAdapterBlock(16)])
+
+    class _TinyTEBlock(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _UnfusedAttn(16)
+
+    class _TinyTE(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([_TinyTEBlock()])
+
+    for label, extra in (
+        ("lokr_f16", {"use_lokr": "true", "lokr_factor": "16", "lokr_full_factor": "true"}),
+        ("lokr_auto", {"use_lokr": "true", "lokr_factor": "-1", "lokr_decompose_w2": "true"}),
+        ("loha", {"use_loha": "true"}),
+    ):
+        dit = _HeteroDiT()
+        te = _TinyTE()
+        net = create_network(
+            1.0,
+            network_dim=4,
+            network_alpha=4.0,
+            vae=None,
+            text_encoders=[te],
+            unet=dit,
+            unet_target_replace_modules='["_HeteroBlock", "_LLMAdapterBlock"]',
+            text_encoder_target_replace_modules='["_TinyTEBlock"]',
+            **extra,
+        )
+        net.apply_to([te], dit, apply_text_encoder=True, apply_unet=True)
+        for lora in net.unet_loras + net.text_encoder_loras:
+            for p in lora.parameters():
+                with torch.no_grad():
+                    p.normal_(0.0, 0.15)
+
+        ckpt = tmp_path / f"{label}.safetensors"
+        net.save_weights(
+            str(ckpt),
+            torch.float32,
+            {
+                "ss_model_family": "anima",
+                "ss_unet_target_replace_modules": '["_HeteroBlock", "_LLMAdapterBlock"]',
+                "ss_text_encoder_target_replace_modules": '["_TinyTEBlock"]',
+            },
+        )
+
+        dit2 = _HeteroDiT()
+        te2 = _TinyTE()
+        net2, sd2 = create_network_from_weights(
+            1.0,
+            str(ckpt),
+            None,
+            [te2],
+            dit2,
+            for_inference=True,
+            unet_target_replace_modules='["_HeteroBlock", "_LLMAdapterBlock"]',
+            text_encoder_target_replace_modules='["_TinyTEBlock"]',
+        )
+        net2.apply_to([te2], dit2, apply_text_encoder=True, apply_unet=True)
+        info = net2.load_state_dict(sd2, strict=True)
+        assert not info.missing_keys and not info.unexpected_keys, (label, info)

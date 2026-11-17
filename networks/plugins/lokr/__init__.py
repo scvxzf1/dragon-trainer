@@ -66,10 +66,15 @@ def _validate(kwargs: Mapping[str, Any]) -> None:
 
     lokr_full_factor = _truthy(kwargs.get("lokr_full_factor"))
     decompose_w2 = _truthy(kwargs.get("lokr_decompose_w2"))
+    use_einsum = _bool_arg(kwargs.get("lokr_use_einsum"), default=True)
     if lokr_full_factor and decompose_w2:
         raise ValueError(
             "lokr_full_factor=true conflicts with lokr_decompose_w2=true. "
             "Full-factor LoKR cannot also decompose the second Kronecker factor."
+        )
+    if not use_einsum and decompose_w2:
+        raise ValueError(
+            "lokr_decompose_w2=true requires lokr_use_einsum=true."
         )
 
     # Historical full-factor sentinel from older forks. It also collapses the
@@ -114,7 +119,13 @@ def _module_kwargs(ctx: ModuleCreationContext) -> dict[str, Any]:
     if full_factor:
         # Explicit full-factor mode always keeps both Kronecker factors complete.
         decompose_w2 = False
-    return {
+    explicit_map = ctx.cfg.plugin_args.get("_lokr_explicit_shapes")
+    explicit_shapes = (
+        explicit_map.get(ctx.lora_name)
+        if isinstance(explicit_map, dict)
+        else None
+    )
+    out = {
         "factor": int(ctx.cfg.plugin_args.get("lokr_factor", 8)),
         "lokr_factor_group_size": int(
             ctx.cfg.plugin_args.get("lokr_factor_group_size", 8)
@@ -141,6 +152,9 @@ def _module_kwargs(ctx: ModuleCreationContext) -> dict[str, Any]:
         "lokr_decompose_w2": decompose_w2,
         "lokr_full_factor": full_factor,
     }
+    if explicit_shapes is not None:
+        out["explicit_shapes"] = explicit_shapes
+    return out
 
 
 def _detect_from_weights(ctx: WeightDetectionContext) -> bool:
@@ -151,23 +165,43 @@ def _detect_from_weights(ctx: WeightDetectionContext) -> bool:
     except (TypeError, ValueError):
         network_dim = None
     ctx.state["lokr_network_dim_meta"] = network_dim
+    if "lokr_factor_stamp" not in ctx.state:
+        raw_factor = ctx.metadata.get("ss_lokr_factor")
+        if raw_factor is not None:
+            try:
+                ctx.state["lokr_factor_stamp"] = int(float(raw_factor))
+            except (TypeError, ValueError):
+                pass
+    if "lokr_einsum_stamp" not in ctx.state:
+        raw_einsum = ctx.metadata.get("ss_lokr_use_einsum")
+        if raw_einsum is not None:
+            ctx.state["lokr_einsum_stamp"] = (
+                str(raw_einsum).strip().lower() not in {"0", "false", "no", "off"}
+            )
     if "lokr_full_factor_stamp" not in ctx.state:
         stamped = ctx.metadata.get("ss_lokr_full_factor")
         if stamped is not None:
             ctx.state["lokr_full_factor_stamp"] = (
                 str(stamped).strip().lower() == "true"
             )
+    shapes = ctx.state.setdefault("lokr_explicit_shapes", {}).setdefault(
+        ctx.lora_name, {}
+    )
     if key.endswith(".lokr_w1"):
         ctx.state["has_lokr"] = True
         ctx.state.setdefault("lokr_module_names", set()).add(ctx.lora_name)
         if value.dim() == 2:
+            shapes["w1"] = (int(value.size(0)), int(value.size(1)))
             spec = match_fused_spec(ctx.lora_name)
             n_comp = (
                 len(spec.component_letters)
                 if spec is not None and value.size(0) % len(spec.component_letters) == 0
                 else 1
             )
-            ctx.state.setdefault("lokr_factors", set()).add(int(value.size(0)) // n_comp)
+            sub_out_a = int(value.size(0)) // n_comp
+            ctx.state.setdefault("lokr_factors", set()).add(sub_out_a)
+            if sub_out_a != int(value.size(1)):
+                ctx.state["lokr_non_square_w1"] = True
         ctx.modules_dim[ctx.lora_name] = network_dim or (
             value.size(0) if value.dim() >= 1 else 1
         )
@@ -180,6 +214,8 @@ def _detect_from_weights(ctx: WeightDetectionContext) -> bool:
         ctx.state["has_lokr"] = True
         ctx.state["lokr_has_full_w2"] = True
         ctx.state.setdefault("lokr_module_names", set()).add(ctx.lora_name)
+        if value.dim() == 2:
+            shapes["w2"] = (int(value.size(0)), int(value.size(1)))
         ctx.modules_dim.setdefault(
             ctx.lora_name, ctx.state.get("lokr_network_dim_meta") or 1
         )
@@ -192,6 +228,9 @@ def _detect_from_weights(ctx: WeightDetectionContext) -> bool:
         ctx.state["has_lokr"] = True
         ctx.state["lokr_has_decomposed_w2"] = True
         ctx.state.setdefault("lokr_module_names", set()).add(ctx.lora_name)
+        if value.dim() == 2:
+            leaf = "w2_a" if key.endswith(".lokr_w2_a") else "w2_b"
+            shapes[leaf] = (int(value.size(0)), int(value.size(1)))
         ctx.modules_dim.setdefault(
             ctx.lora_name, ctx.state.get("lokr_network_dim_meta") or 1
         )
@@ -218,11 +257,28 @@ def _finish_weight_detection(
                     1,
                     int(float(alpha_value.detach().float().cpu().item())),
                 )
-    factor = next(iter(sorted(state.get("lokr_factors", set()))), 8)
-    use_einsum = bool(state.get("lokr_has_decomposed_w2")) or not bool(
-        state.get("lokr_has_full_w2")
+    stamped_factor = state.get("lokr_factor_stamp")
+    factor = (
+        int(stamped_factor)
+        if stamped_factor is not None
+        else next(iter(sorted(state.get("lokr_factors", set()))), 8)
     )
-    plugin_args = {"lokr_factor": factor, "lokr_use_einsum": use_einsum}
+    stamped_einsum = state.get("lokr_einsum_stamp")
+    if stamped_einsum is not None:
+        use_einsum = bool(stamped_einsum)
+    else:
+        use_einsum = (
+            bool(state.get("lokr_has_decomposed_w2"))
+            or bool(state.get("lokr_non_square_w1"))
+            or not bool(state.get("lokr_has_full_w2"))
+        )
+    plugin_args: dict[str, Any] = {
+        "lokr_factor": factor,
+        "lokr_use_einsum": use_einsum,
+    }
+    explicit_shapes = state.get("lokr_explicit_shapes")
+    if explicit_shapes:
+        plugin_args["_lokr_explicit_shapes"] = dict(explicit_shapes)
     if state.get("lokr_has_decomposed_w2"):
         plugin_args["lokr_decompose_w2"] = True
     stamped_full_factor = state.get("lokr_full_factor_stamp")
