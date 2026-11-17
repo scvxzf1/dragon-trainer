@@ -1,5 +1,8 @@
 # ReFT: Representation Fine-Tuning
 
+状态：稳定
+适用版本：当前 main
+
 Block-level residual-stream intervention on the DiT, following LoReFT (Wu et al., NeurIPS 2024). A small learned low-rank edit is added to the output hidden state of selected DiT blocks, instead of modifying any weights inside them. Composes additively with LoRA/T-LoRA/HydraLoRA in the same training run and the same `.safetensors` file.
 
 > **For the structural walkthrough** (math, forward pass, paper-form derivation, why activation-space, composition with the LoRA family, timestep masking on the ReFT bottleneck, why ReFT can't be merged into DiT weights), see **`docs/structure/reft.md`**. This doc is the usage / ops / tuning reference.
@@ -16,7 +19,7 @@ Not every block needs an edit. `reft_layers` in the method config picks which bl
 | `"stride_K"` | every Kᵗʰ block starting from 0 |
 | `"3,7,11,15"` | explicit list of block indices |
 
-For the DiT used here (28 blocks), `"last_8"` is the configured default in `configs/methods/lora.toml`. Late blocks are where the strongest task-specific routing already happens in the base model, so small edits there tend to move the final image more than edits in the first few (high-noise, coarse-composition) blocks.
+For the DiT used here (28 blocks), `"last_8"` is the recommended setting in `configs/gui-methods/reft.toml` and `configs/gui-methods/tlora_ortho_reft.toml` (and in the commented `# reft` toggle block of `configs/methods/lora.toml`). Late blocks are where the strongest task-specific routing already happens in the base model, so small edits there tend to move the final image more than edits in the first few (high-noise, coarse-composition) blocks.
 
 ## Tuning guidance
 
@@ -52,9 +55,9 @@ Krea-2 remains **experimental** for this variant: its family registry permits ne
 
 ## Inference
 
-### CLI (`inference.py`, `make test`)
+### CLI (`inference.py`, `python tasks.py test`)
 
-For supported model families, no special flag is needed. `reft_*` keys are detected in the adapter file and the matching `ReFTModule`s are constructed, installed onto the DiT blocks, and their trained weights loaded. Use `network.set_multiplier(value)` and `network.set_enabled(bool)` to control both LoRA and ReFT branches together. Zero multiplier or a disabled module returns the unedited block output exactly. ReFT cannot be merged into base Linear weights.
+For supported model families, no special flag is needed (`python tasks.py test`, compatibility alias `make test`). `reft_*` keys are detected in the adapter file and the matching `ReFTModule`s are constructed, installed onto the DiT blocks, and their trained weights loaded. Use `network.set_multiplier(value)` and `network.set_enabled(bool)` to control both LoRA and ReFT branches together. Zero multiplier or a disabled module returns the unedited block output exactly. ReFT cannot be merged into base Linear weights.
 
 ### ComfyUI — requires the custom node
 
@@ -64,7 +67,15 @@ Use the **Anima Adapter Loader** node (`custom_nodes/comfyui-hydralora/`), which
 
 ## Configuration
 
-`configs/methods/lora.toml` defaults:
+In `configs/methods/lora.toml`, `add_reft` is **commented out (off) by default** (the active default stack there is OrthoHydra + T-LoRA with `network_dim = 32`, `min_rank = 16`). To train with ReFT enabled out-of-the-box, use the self-contained GUI variants:
+
+```bash
+python tasks.py lora-gui reft               # configs/gui-methods/reft.toml (reft_dim=64, last_8)
+python tasks.py lora-gui tlora_ortho_reft   # configs/gui-methods/tlora_ortho_reft.toml (reft_dim=32, last_8)
+# Compatibility aliases: make lora-gui GUI_PRESETS=reft / make lora-gui GUI_PRESETS=tlora_ortho_reft
+```
+
+Or uncomment the `# reft` block in `configs/methods/lora.toml` (`python tasks.py lora`):
 
 ```toml
 add_reft      = true
@@ -83,7 +94,7 @@ reft_layers   = "last_8"
 | `networks/lora_anima/` | Block selection (`_parse_reft_layers`), wrapping, loader |
 | `networks/lora_anima/network.py` | `set_reft_timestep_mask()` — timestep masking on ReFT bottleneck |
 | `library/anima/training.py` | CLI arg plumbing (`add_reft`, `reft_dim`, `reft_alpha`, `reft_layers`) |
-| `train.py` | Calls `set_reft_timestep_mask()` each step after noise sampling |
+| `library/training/forward/router_conditioning.py` | Calls `set_reft_timestep_mask()` / `clear_timestep_mask()` each step |
 | `custom_nodes/comfyui-hydralora/adapter.py` | ComfyUI loader with per-block forward-hook install |
 
 ## Reference

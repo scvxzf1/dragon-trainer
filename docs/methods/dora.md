@@ -1,5 +1,8 @@
 # DoRA
 
+状态：稳定
+适用版本：当前 main
+
 DoRA adds a learned per-output magnitude to a low-rank weight-direction update.
 The implementation is `networks/lora_modules/dora.py`.
 

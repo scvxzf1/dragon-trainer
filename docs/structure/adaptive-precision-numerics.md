@@ -291,34 +291,21 @@ CPU 测试覆盖零、最小 subnormal、最小正规数、最大有限 FP32，�
 比较还拒绝 key/shape 改变。零参考和零候选的 cosine=1 是项目约定，不能据此
 声称数学上零向量存在方向；零参考而候选为 1 的对照会被拒绝。
 
-### 8.2 固定分母下限会误拒绝相同小梯度
+### 8.2 固定分母下限为何会误拒绝相同小梯度（2026-09-30 已修复）
 
-当前两种指标都把 cosine 分母截断到 `1e-30`。对于非零向量，其数学 cosine
-应对共同的正数缩放不变，但固定分母下限破坏了这一性质。例如：
+早期实现曾把 cosine 分母截断到固定下限 `1e-30`。对于非零向量，数学 cosine 应对共同的正数缩放不变，固定分母下限会破坏这一性质：
 
 ```text
 x = y = [2^-60]
 dot(x,y) = ||x|| ||y|| = 2^-120
 数学 cosine = 1
-当前报告 cosine = 2^-120 / 1e-30，约 7.52e-7
+带 1e-30 固定下限时的失真值 = 2^-120 / 1e-30，约 7.52e-7
 relative-L2 = 0
 ```
 
-这是固定下限造成的失真，不是 FP64 下溢。测试已复现：完全相同的小梯度捕获
-未通过 bench 比较；`candidate="fp32"` 的局部自比较也会把有限参考的 case 标为
-`safe=false`，与其 `fp32_reference_finiteness_only` 范围说明不一致。后者最终
-selected 仍为 FP32，不应夸大成返回错误的低精度策略。
+这是固定下限造成的失真，而非 FP64 下溢，曾导致完全相同的小梯度捕获未通过 bench 比较，以及 `candidate="fp32"` 的局部自比较误标 `safe=false`（当时以 2 个 `strict xfail` 记录）。
 
-这两个入口的身份比较缺口分别用 `strict xfail` 记录，未修改实现；仅显式
-`pytest.fail` 被记作预期失败，CUDA 防护和其它 AssertionError/RuntimeError
-不被吞掉。未来需要区分真正零范数与非零小范数，不能以放宽 cosine 门槛替代修复。
-同时，relative-L2 的 `max(reference_norm,1e-30)` 在小范数区也不再是真正相对误差；
-应明确记录参考量级和绝对误差，不把分母下限解释成经过任务验收的绝对容差。
-
-2026-09-30 修复状态：`vector_metrics` 已改为 FP64 计算，不再对 cosine 分母设置
-固定 floor；零参考而候选非零时 relative-L2 为 `null` 并附原因，由比较器 fail-closed，
-absolute-L2 与 reference-L2 继续保留。原 2 个 strict xfail 已移除。此前记录的失败
-测试和数学推导均是当时状态，保留为历史证据，不表示修复后回归已全量通过。
+现行实现（2026-09-30 起）：`vector_metrics` 统一在 FP64 中计算，不再对 cosine 分母施加固定 floor，明确区分真正零范数与非零小范数；当参考范数为零而候选非零时，`relative-L2` 返回 `null` 并附原因，由比较器 fail-closed，同时保留 `absolute-L2` 与 `reference-L2`（不能把任意分母下限当作经过任务验收的绝对容差）。原 2 个 `strict xfail` 已随修复移除。
 
 ### 8.3 全局梯度通过不保证 Adam 更新接近
 
@@ -445,137 +432,20 @@ CPU 恢复边界，不认证 PCIe/CUDA stream、速度、不 OOM，或任何三�
 
 ```bash
 CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
-  tests/test_adaptive_precision_math.py
-```
-
-所有 tensor 在 CPU，测试额外拦截 CUDA 初始化。无底模下载、无 DiT forward，
-没有通过合成小模型测试宣称三模型双卡训练已完成。
-
-2026-09-26 实际结果：新增文件 16 passed。首轮的两项 LoRA 夹具因缺少 batch
-轴报 shape 错误，按实际训练输入形状修正后通过，没有为测试修改 LoRA 实现。
-随后执行相关回归：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
   tests/test_adaptive_precision_math.py \
-  tests/test_adaptive_probe_scaling.py \
-  tests/test_adaptive_training_precision.py \
-  tests/test_adaptive_training_replay.py \
-  tests/test_adaptive_runtime.py \
-  -k 'not real_accelerate_scaler_clip_and_resume' \
-  --junitxml=output/adaptive-runtime-20260926/precision-math-cpu.xml
-```
-
-结果：118 passed、1 deselected、14 个既有 TorchScript 弃用警告，8.24 秒，
-退出码 0。被排除项为 CUDA scaler/clip/resume 测试，不计入本轮证据。
-测试文件 Ruff 通过；独立只读数学/代码核验未发现问题。本轮没有改生产精度
-策略、默认配置或 OOM 控制流，未更新已有热测结论。
-
-2026-09-27 共享参数补充：新增文件单独运行为 18 passed、3 xfailed。扩大回归：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
   tests/test_adaptive_precision_aliases.py \
-  tests/test_adaptive_precision_math.py \
-  tests/test_adaptive_probe_scaling.py \
-  tests/test_adaptive_training_precision.py \
-  tests/test_adaptive_training_replay.py \
-  tests/test_adaptive_runtime.py \
-  -k 'not real_accelerate_scaler_clip_and_resume' \
-  --junitxml=output/adaptive-runtime-20260927/precision-aliases-regression-cpu.xml
-```
-
-结果：136 passed、3 xfailed、1 deselected、14 个既有弃用警告，12.32 秒，退出码 0。
-另关闭 xfail 处理以核验失败原因：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
-  tests/test_adaptive_precision_aliases.py \
-  -k test_direct_installer_must_reject_shared_weight_before_mutation --runxfail \
-  --junitxml=output/adaptive-runtime-20260927/precision-aliases-known-gap-cpu.xml
-```
-
-结果：3 failed、18 deselected，8.63 秒，退出码 1；三项均为
-`Failed: DID NOT RAISE <class 'ValueError'>`，不是已修复或通过的案例。
-两个新增测试文件 Ruff 通过，独立只读核验未发现可行动问题。
-没有改运行时代码、扩展 OOM 关联或执行 GPU 验证。
-
-2026-09-27 scale 可行域补充：新文件单独运行 19 passed，8.13 秒，退出码 0；
-XML 为 `output/adaptive-runtime-20260927/precision-scale-feasibility-cpu.xml`。
-相关回归：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
   tests/test_adaptive_precision_scale_feasibility.py \
-  tests/test_adaptive_precision_aliases.py \
-  tests/test_adaptive_precision_math.py \
-  tests/test_adaptive_probe_scaling.py \
-  tests/test_adaptive_training_precision.py \
-  tests/test_adaptive_training_replay.py \
-  tests/test_adaptive_runtime.py \
-  -k 'not real_accelerate_scaler_clip_and_resume' \
-  --junitxml=output/adaptive-runtime-20260927/precision-scale-feasibility-regression-cpu.xml
-```
-
-结果：155 passed、3 xfailed、1 deselected、14 个既有弃用警告，8.82 秒，退出码 0。
-3 个 xfail 仍是第 9 节未修复的共享参数底层检查缺口；CUDA 项继续排除。
-三个数值/别名测试文件 Ruff 通过。没有修改生产精度、scaler 或 OOM 策略，
-没有进行模型训练、下载或 GPU 验证。
-
-2026-09-27 比较指标补充：新文件首轮单独运行 18 passed、2 xfailed，6.23 秒，
-退出码 0；XML 为 `output/adaptive-runtime-20260927/precision-comparison-math-cpu.xml`。
-随后将 xfail 严格限定为“零差异、finite 指标但非单位 cosine”，最终回归：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
   tests/test_adaptive_precision_comparison_math.py \
-  tests/test_adaptive_precision_scale_feasibility.py \
-  tests/test_adaptive_precision_aliases.py \
-  tests/test_adaptive_precision_math.py \
-  tests/test_adaptive_probe_scaling.py \
-  tests/test_adaptive_training_precision.py \
-  tests/test_adaptive_training_replay.py \
-  tests/test_adaptive_runtime.py \
-  -k 'not real_accelerate_scaler_clip_and_resume' \
-  --junitxml=output/adaptive-runtime-20260927/precision-comparison-math-final-cpu.xml
-```
-
-结果：173 passed、5 xfailed、1 deselected、14 个既有弃用警告，9.76 秒，退出码 0。
-5 个 xfail 分别是共享参数检查的 3 项，以及两个比较入口中固定余弦分母的 2 项，
-均未修复，不计作通过。另验证后两项确实失败：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
-  tests/test_adaptive_precision_comparison_math.py \
-  -k 'identical_tiny_capture or fp32_reference_with_small_gradient' --runxfail \
-  --junitxml=output/adaptive-runtime-20260927/precision-comparison-known-gaps-final-cpu.xml
-```
-
-结果：2 failed、18 deselected，5.89 秒，退出码 1；均命中显式 cosine 身份比较失败，
-没有用 xfail 隐藏其它错误。新文件 Ruff 通过。本轮仅新增 CPU 测试和数学说明，
-未修改比较器、精度策略、训练默认值或 OOM 行为。
-
-2026-09-27 块交换边界补充：新 CPU 文件单独运行 6 passed、14 个既有弃用警告，
-7.82 秒，退出码 0；XML 为 `output/adaptive-runtime-20260927/precision-swap-cpu.xml`。
-覆盖实际 CPU master 捕获/恢复、两种混合精度布局的 checkpoint 前后向往返，
-以及训练合同继续拒绝有损传输。连同已有 CPU master binding 和数值测试回归：
-
-```bash
-CUDA_VISIBLE_DEVICES= timeout 60 .venv/bin/python -m pytest -q \
   tests/test_adaptive_precision_swap_cpu.py \
   tests/test_block_swap_master_binding.py \
-  tests/test_adaptive_precision_comparison_math.py \
-  tests/test_adaptive_precision_scale_feasibility.py \
-  tests/test_adaptive_precision_aliases.py \
-  tests/test_adaptive_precision_math.py \
   tests/test_adaptive_probe_scaling.py \
   tests/test_adaptive_training_precision.py \
   tests/test_adaptive_training_replay.py \
   tests/test_adaptive_runtime.py \
-  -k 'not real_accelerate_scaler_clip_and_resume' \
-  --junitxml=output/adaptive-runtime-20260927/precision-swap-regression-cpu.xml
+  -k 'not real_accelerate_scaler_clip_and_resume'
 ```
 
-结果：185 passed、5 xfailed、1 deselected、14 个既有弃用警告，9.18 秒，退出码 0。
-5 个既有缺口未修复，CUDA 项仍排除。新文件和 master binding 测试 Ruff 通过。
-没有修改运行时或 OOM 重试，没有进行 GPU 搬运、显存/性能测量或模型训练。
+上述测试全部运行在 CPU 上（额外拦截 CUDA 初始化，排除需真实 GPU 的 `real_accelerate_scaler_clip_and_resume`），无需下载底模或执行真实 DiT forward：
+
+- 覆盖范围：前后向误差界与非单调性反例（`math`）、共享参数拒绝（`aliases`）、GradScaler 可行域与静默下溢（`scale_feasibility`）、FP64 比较指标与无固定 cosine floor 边界（`comparison_math`）、以及块交换混合精度 CPU master 逐位恢复（`swap_cpu` / `master_binding`）。
+- 已知保留的 `strict xfail`：仅第 9 节底层 `install_precision_islands()` 跨模块共享同一 `Parameter` 对象的 3 项前置检查缺口（训练入口 `install_training_precision()` 已前置拒绝）；第 8.2 节的 2 项比较指标 `xfail` 已于 2026-09-30 修复并转正。

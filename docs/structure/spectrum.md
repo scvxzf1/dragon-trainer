@@ -1,8 +1,13 @@
 # Spectrum: Chebyshev feature forecasting at inference
 
+状态：稳定
+适用版本：当前 main
+
 An **inference-only** acceleration. No LoRA-like network, no trained weights, no saved tensors — just a decision made once per denoising step: *run the DiT, or predict what it would have produced.* When the decision is "predict," the 28 transformer blocks are skipped and only the tiny heads at the end of the model run. Typical speedup on 30-step inference is ~2×, with tuning up to ~5×.
 
 Reference: Han et al., *Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceleration*, CVPR 2026. Upstream repo: https://github.com/yangheng95/Spectrum. Anima's integration lives in `networks/spectrum.py`.
+
+> **Usage & CLI flags:** For `--spectrum*` parameters, `python tasks.py test SPECTRUM=1`, tuning presets, and ComfyUI `SpectrumKSampler` usage, see **[../methods/spectrum.md](../methods/spectrum.md)**. This document covers the mathematical and structural mechanism.
 
 This sits one layer above the LoRA family (`lora.md`, `ortholora.md`, `hydralora.md`, `reft.md`, `timestep-mask.md`). Those all modify *what* the DiT computes at each step; Spectrum modifies *whether* the DiT runs at this step at all.
 
@@ -188,16 +193,12 @@ Spectrum is applied at inference only, *after* everything else has already attac
 | ------------------------ | --------------------------------------------------------------------------------------------------- |
 | **LoRA / OrthoLoRA / T-LoRA / ReFT** | Cached steps skip *all* block code, including the patched `forward`s these adapters wrap. The LoRA math runs only on actual steps, and the cached prediction inherits whatever effect the LoRA had on the most recent actual steps. No interface. |
 | **HydraLoRA router**     | Same: router runs only on actual forwards. The polynomial fit implicitly memoizes the (sample × layer) routing decisions through the features they produced.  |
-| **Postfix (σ-conditional)** | `append_postfix` is recomputed per step with the current $\sigma$ on **actual** steps only (`spectrum.py:316–326`). Cached steps skip cross-attention entirely, so postfix tokens are not consumed there — nothing to plumb on that branch. |
-| **Modulation guidance**  | Its delta is applied inside the fast path (`spectrum.py:214–215`), so cached steps still see modulation steering.                                                                       |
-| **P-GRAFT**              | Cutoff at step $i^\star$ toggles `pgraft_network.enabled=False` (`spectrum.py:298–304`). Spectrum just sees two regimes of actual-step features (LoRA-on, LoRA-off); the polynomial straddles the transition but the warmup/stop_at safety forces actual forwards at the ends. Composes cleanly.           |
-| **Spectrum itself across samplers** | `sampler.step()` vs. the default `inference_utils.step()` are both called the same way regardless of actual vs. cached origin of the velocity (`spectrum.py:423–430`). Any flow-matching sampler (ER-SDE, Euler, etc.) works without changes. |
+| **Soft Tokens**          | `soft_tokens_net.append_postfix` is recomputed per step with the current $\sigma$ on **actual** steps only (`networks/spectrum.py`). Cached steps skip cross-attention entirely, so soft tokens are not consumed there — nothing to plumb on that branch. |
+| **Modulation guidance**  | Its delta is applied inside the fast path (`_spectrum_fast_forward`), so cached steps still see modulation steering.                                                                       |
+| **P-GRAFT**              | Cutoff at step $i^\star$ toggles `pgraft_network.enabled=False` (`networks/spectrum.py`). Spectrum just sees two regimes of actual-step features (LoRA-on, LoRA-off); the polynomial straddles the transition but the warmup/stop_at safety forces actual forwards at the ends. Composes cleanly.           |
+| **Spectrum itself across samplers** | `sampler.step()` vs. the default `inference_utils.step()` are both called the same way regardless of actual vs. cached origin of the velocity (`networks/spectrum.py`). Any flow-matching sampler (ER-SDE, Euler, etc.) works without changes. |
 
-The pattern is consistent: **Spectrum is a meta-op on the model's forward** — whatever goes into producing $h_i$ on actual steps is preserved in the polynomial fit and replayed on cached steps.
-
-### 7.1 ComfyUI
-
-The ComfyUI node lives in a separate repo (https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler) and uses a different attachment mechanism: a `model_function_wrapper` on a cloned model, inside ComfyUI's sampling loop. Why not the same `register_forward_pre_hook`? ComfyUI's `calc_cond_batch` batches cond and uncond into a single forward call, so the wrapper-level interception is where branch identity (`cond_or_uncond`) is available — exactly what's needed to route observations into the right forecaster. The core forecasting code (`ChebyshevForecaster`, `SpectrumPredictor`) is shared between the two integrations.
+The pattern is consistent: **Spectrum is a meta-op on the model's forward** — whatever goes into producing $h_i$ on actual steps is preserved in the polynomial fit and replayed on cached steps. For ComfyUI `model_function_wrapper` wiring and CLI flags, see [../methods/spectrum.md](../methods/spectrum.md).
 
 ---
 
@@ -222,5 +223,5 @@ This is the defining property that sets it apart from every other technique docu
 3. On cached steps, run only `t_embedder` + optional mod-guidance + `final_layer` + `unpatchify`. All 28 blocks are skipped.
 4. Adaptive schedule: warmup forces actual early, window $N_\text{curr}$ grows after each post-warmup actual, last 3 steps forced actual.
 5. CFG uses two independent forecasters. Residual calibration is an optional bias term.
-6. Composes transparently with every LoRA-family adapter (they run during actual forwards, their effect rides inside the polynomial fit) and with P-GRAFT / postfix / mod-guidance.
+6. Composes transparently with every LoRA-family adapter (they run during actual forwards, their effect rides inside the polynomial fit) and with P-GRAFT / Soft Tokens / mod-guidance.
 7. Inference-only; nothing saved; no training.

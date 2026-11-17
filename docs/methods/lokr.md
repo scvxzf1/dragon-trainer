@@ -1,8 +1,8 @@
 # LoKr
 
-状态：稳定  
-适用版本：当前 main  
-入口命令：`python tasks.py lora METHOD=lokr` / WebUI 选择 `lokr`  
+状态：稳定
+适用版本：当前 main
+入口命令：`python tasks.py lora-gui lokr`（兼容别名：`make lora-gui GUI_PRESETS=lokr`）/ WebUI 选择 `lokr`（`configs/gui-methods/lokr.toml`）
 相关代码：`networks/plugins/lokr/`
 
 LoKr 把适配器增量参数化成 Kronecker 积：
@@ -15,7 +15,7 @@ delta_W = kron(w1, w2) * (network_alpha / network_dim)
 `w2` 会再拆成低秩对 `lokr_w2_a / lokr_w2_b`，此时 `network_dim` 才控制这个
 二次低秩。
 
-## anima_lora 语义说明
+## Dragon Trainer 语义说明
 
 这里的 `lokr_full_factor` 是**显式全因子声明 + 旧哨兵迁移开关**，不是
 “从低秩默认突然切到全因子默认”。

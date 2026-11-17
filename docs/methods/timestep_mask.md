@@ -1,5 +1,8 @@
 # Timestep Rank Masking (T-LoRA)
 
+状态：稳定
+适用版本：当前 main
+
 Timestep-dependent rank masking for LoRA training. Effective rank varies with the denoising step — **full at high noise, reduced toward `min_rank` at low noise** (Anima convention: `t=0` pure noise, `t=1` clean).
 
 > **For the structural walkthrough** (rank schedule math, mask application inside the LoRA bottleneck, training-only semantics, shared GPU-resident tensor), see **`docs/structure/timestep-mask.md`**. This doc is the usage / ops reference.
@@ -9,11 +12,12 @@ Timestep-dependent rank masking for LoRA training. Effective rank varies with th
 T-LoRA variants live in `configs/gui-methods/` (one file per variant, no toggle blocks):
 
 ```bash
-make lora-gui GUI_PRESETS=tlora              # OrthoLoRA + timestep masking
-make lora-gui GUI_PRESETS=tlora_ortho_reft   # OrthoLoRA + T-LoRA + ReFT stack
+python tasks.py lora-gui tlora              # OrthoLoRA + timestep masking
+python tasks.py lora-gui tlora_ortho_reft   # OrthoLoRA + T-LoRA + ReFT stack
+# Compatibility aliases: make lora-gui GUI_PRESETS=tlora / make lora-gui GUI_PRESETS=tlora_ortho_reft
 ```
 
-Or enable the T-LoRA block in `configs/methods/lora.toml` and run `make lora`.
+`configs/methods/lora.toml` (`python tasks.py lora`, compatibility alias `make lora`) also ships with T-LoRA enabled by default alongside OrthoHydra.
 
 ## Parameters
 
@@ -35,18 +39,19 @@ Timestep masking composes with every adapter module type. The mask is applied at
 | **HydraLoRA** | After shared `lora_down`; per-expert `lora_up` heads unaffected |
 | **ReFT** | Separate mask with its own `reft_dim` and floor of 1 |
 
-`configs/gui-methods/tlora_ortho_reft.toml` and the default block in `configs/methods/lora.toml` stack LoRA + OrthoLoRA + T-LoRA + ReFT together.
+`configs/gui-methods/tlora_ortho_reft.toml` stacks OrthoLoRA + T-LoRA + ReFT (`min_rank = 8`, `network_dim = 32`), whereas `configs/methods/lora.toml` ships OrthoHydra + T-LoRA enabled by default (`add_reft` commented out; see `configs/gui-methods/reft.toml` or `tlora_ortho_reft.toml` when ReFT is also desired).
 
 ## Configs
 
-`configs/methods/lora.toml` (T-LoRA toggle block) — OrthoLoRA (Cayley) + timestep masking, rank 64:
+`configs/methods/lora.toml` active default — OrthoHydra + timestep masking (`network_dim = 32`, `min_rank = 16`):
 
 ```toml
+network_dim = 32
+network_alpha = 32
 use_ortho = true
 use_timestep_mask = true
-min_rank = 1
+min_rank = 16
 alpha_rank_scale = 1.0
-network_dim = 64
 ```
 
 ## Implementation

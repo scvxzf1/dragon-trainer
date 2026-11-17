@@ -14,8 +14,8 @@ transformer blocks. Compiling each block on its own:
 - **breaks less** — each block is a small, regular subgraph, so you're far less
   likely to hit a graph break or a recompile that silently falls back to eager.
 
-This is the same strategy the `anima_lora` training/inference pipeline uses
-(`DiT.compile_blocks`).
+This is the same strategy the `dragon-trainer` training/inference pipeline uses
+(`Anima.compile_blocks` in `library/anima/models.py`).
 
 Under the hood this is just ComfyUI core's
 `set_torch_compile_wrapper(model, keys=[...])` pointed at
@@ -27,8 +27,9 @@ one-purpose, Anima-named equivalent.
 ## Install
 
 Clone or copy this folder into `ComfyUI/custom_nodes/` and restart ComfyUI.
-(Inside the `anima_lora` repo it's already under `custom_nodes/`, which is
-symlinked into the sibling ComfyUI install.)
+(Inside the `dragon-trainer` repo it's already under `custom_nodes/`, which can be
+symlinked into a sibling ComfyUI install; sibling custom nodes with `_vendor/`
+bundles are refreshed from repo root via `python tasks.py vendor-sync`.)
 
 No extra dependencies — it only uses `torch` and ComfyUI's own compile API.
 

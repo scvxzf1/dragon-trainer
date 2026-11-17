@@ -32,17 +32,17 @@ CUDA_VISIBLE_DEVICES='' timeout 60 .venv/bin/python -B \
   --output /tmp/krea2-scalar-cpu-<unique>.json
 ```
 
-CUDA 运行前必须执行本机 gpu-gate，并使用它返回的设备（此处设备值为占位符）：
+CUDA 运行前必须执行本机 gpu-gate，并使用它返回的设备（此处脚本路径与设备值为占位符）：
 
 ```bash
-/mnt/SD_Dataset/训练器相关/dsh-trainer-preset/gpu-gate.sh --need 512 --count 1 --json
+<path-to-gpu-gate.sh> --need 512 --count 1 --json
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=<gate-selected-device> \
   timeout 60 .venv/bin/python -B bench/krea2_nf4_perf/optimizer_scalar_probe.py \
   --device cuda --output /tmp/krea2-scalar-cuda-<unique>.json
 ```
 
 本轮隔离工作树没有另装环境，实际使用相邻主仓已存在的
-`/mnt/SD_Dataset/训练器相关/krea2-webui/.venv/bin/python`；没有复制或改动环境。
+`<repo>/.venv/bin/python`；没有复制或改动环境。
 本轮结果写入 findings 的两个新 JSON，复现时须换新输出文件名。
 
 **解释边界**：`_local_scalar_dense` 的输入在 CPU 时不构成 GPU→CPU 同步。

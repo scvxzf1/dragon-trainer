@@ -1,6 +1,9 @@
-# OrthoLoRA (Exp): Cayley Parameterization + SVD-Informed Init
+# OrthoLoRA: Cayley Parameterization + SVD-Informed Init
 
-Experimental variant of OrthoLoRA that replaces soft orthogonality regularization with a hard Cayley constraint and initializes bases from the pretrained weight's SVD. Gated behind `use_ortho = true`.
+状态：稳定
+适用版本：当前 main
+
+OrthoLoRA parameterization that replaces soft orthogonality regularization with a hard Cayley constraint and initializes bases from the pretrained weight's SVD. Gated behind `use_ortho = true`.
 
 Inspired by PSOFT (Wu et al., "Efficient Orthogonal Fine-Tuning with Principal Subspace Adaptation", ICLR 2026).
 
@@ -18,18 +21,20 @@ network_dim = 64
 
 Keep `alpha = dim` for neutral scaling.
 
-For timestep-masked OrthoLoRA, uncomment the T-LoRA block in `configs/methods/lora.toml` or use the per-variant path:
+For self-contained OrthoLoRA or timestep-masked OrthoLoRA variants, run:
 
 ```bash
-make lora-gui GUI_PRESETS=tlora
+python tasks.py lora-gui ortholora          # OrthoLoRA only
+python tasks.py lora-gui tlora              # OrthoLoRA + T-LoRA
+# Compatibility alias: make lora-gui GUI_PRESETS=tlora
 ```
 
 ## Trainable parameter count
 
 Per module at rank r, dim d:
 
-| Component | Standard OrthoLoRA | OrthoLoRA Exp |
-|-----------|-------------------|---------------|
+| Component | Unconstrained Basis OrthoLoRA | Cayley OrthoLoRA (`use_ortho = true`) |
+|-----------|-------------------------------|---------------------------------------|
 | Trainable | r(d_in + d_out) + r | 2r² + r |
 | Frozen buffers | r(d_in + d_out) + r | r(d_in + d_out) |
 | Optimizer states | ~ trainable | ~ trainable |
@@ -38,7 +43,7 @@ At r=64, d=3072: trainable params drop from ~394K to ~8.3K per module. Frozen bu
 
 ## VRAM overhead
 
-Compared to standard LoRA at the same rank, OrthoLoRA Exp uses slightly more activation memory (~150–200 MB at r=64 across 196 DiT modules) because `P_eff` and `Q_eff` are computed tensors saved in the autograd graph, not leaf parameters. Optimizer memory is lower (fewer trainable params). Net effect is modest.
+Compared to standard LoRA at the same rank, Cayley OrthoLoRA uses slightly more activation memory (~150–200 MB at r=64 across 196 DiT modules) because `P_eff` and `Q_eff` are computed tensors saved in the autograd graph, not leaf parameters. Optimizer memory is lower (fewer trainable params). Net effect is modest.
 
 ## Save format
 
@@ -52,11 +57,11 @@ The exported adapter `.safetensors` instead converts those keys to standard LoRA
 - Rank must satisfy `1 <= network_dim <= min(in_features, out_features)` and is checked before initialization. SVD runs on the base weight's device, without silently selecting the default CUDA device. CPU-loaded models therefore perform CPU SVD, which can make initialization noticeably slower.
 - Cayley solves run in FP32 even after adapter BF16 conversion. Bases and the activation path retain their configured compute dtype.
 - `network.set_enabled(False)` or a zero multiplier disables the adapter branch without changing base weights.
-- Krea-2 NF4 support remains an isolated experimental path, not a production registry expansion. See [the repair report](../findings/krea2_nf4_adapter_repair_20260905.md) for numerical, export/reload and bounded hardware evidence.
+- Krea-2's family registry permits network variant selection, including OrthoLoRA, though selection does not guarantee full validation across all combinations: OrthoLoRA on Krea-2 NF4 has bounded experimental verification rather than general production or quality certification. See [the repair report](../findings/krea2_nf4_adapter_repair_20260905.md) for numerical, export/reload and bounded hardware evidence.
 
 ## What to compare
 
-When benchmarking against standard OrthoLoRA:
+When benchmarking against plain LoRA or soft-regularized OrthoLoRA:
 
 1. **Training loss curves** — does Cayley plateau higher? (subspace restriction)
 2. **Generated image quality** — the real test for creative concept learning

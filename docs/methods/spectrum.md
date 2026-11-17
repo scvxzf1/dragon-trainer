@@ -1,19 +1,20 @@
 # Spectrum — Inference Acceleration
 
+状态：稳定
+适用版本：当前 main
+
 Training-free diffusion sampling acceleration via **Chebyshev polynomial feature forecasting**.
 
 > **For the structural walkthrough** (hook point, fast path, Chebyshev ridge
 > regression, adaptive schedule, CFG handling, residual calibration), see
 > **`docs/structure/spectrum.md`**. This doc is the usage / ops reference.
 
-Paper: [Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceleration](https://arxiv.org/abs/2603.01623) (Han et al., CVPR 2026, Stanford/ByteDance)
-
-Reference implementation: `Spectrum/` (cloned from upstream repo)
+Paper: [Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceleration](https://arxiv.org/abs/2603.01623) (Han et al., CVPR 2026, Stanford/ByteDance; upstream repo: https://github.com/yangheng95/Spectrum)
 
 ## Quick start
 
 ```bash
-make test SPECTRUM=1   # same as make test but with Spectrum enabled
+python tasks.py test SPECTRUM=1   # primary CLI entry (compatibility alias: make test SPECTRUM=1)
 ```
 
 Or add `--spectrum` to any `inference.py` invocation:
@@ -101,9 +102,8 @@ Higher `flex_window` → faster window growth → fewer forwards. Increase `w` t
 
 | File | Role |
 |------|------|
-| `networks/spectrum.py` | Anima integration: `SpectrumPredictor`, `spectrum_denoise()`, `_spectrum_fast_forward()` |
+| `networks/spectrum.py` | Self-contained Anima integration + core algorithm: `ChebyshevForecaster` (ridge regression, polynomial evaluation), `SpectrumPredictor`, `spectrum_denoise()`, `_spectrum_fast_forward()` |
 | [ComfyUI-Spectrum-KSampler](https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler) | ComfyUI custom node: drop-in KSampler replacement |
-| `Spectrum/src/utils/basis_utils.py` | Core algorithm: `ChebyshevForecaster`, ridge regression, polynomial evaluation |
 
 The integration uses `register_forward_pre_hook` on `Anima.final_layer` to capture block outputs without modifying the model class. Separate forecasters are maintained for conditional and unconditional (CFG) passes.
 

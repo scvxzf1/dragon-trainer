@@ -1,5 +1,8 @@
 # Channel Scaling — SmoothQuant-style LoRA pre-scaling
 
+状态：稳定
+适用版本：当前 main
+
 Per-channel input magnitude rebalancing for LoRA-family adapters. Absorbs a calibrated per-channel scale `s[c] = (mean|x[c]|)^α` into `lora_down` columns and applies `x / s` at forward, so the adapter output is unchanged at init but the down-projection's per-column gradient no longer scales with `|x[c]|^2`.
 
 > **For the motivation** (DC-bias outlier channels in the frozen Anima DiT, decomposition into "register-token sinks" vs "stable outlier features", and the GraLoRA alternative weighed against), see **`bench/channel_stats/channel_dominance_analysis.md`**. This doc is the usage reference.
@@ -48,7 +51,7 @@ Output is bit-equivalent at init (because `(x · s^-1) · (down · s) == x · do
 
 `inv_scale` is included in `state_dict` next to `lora_down.weight` / `lora_up.weight` / `alpha`. The fused-attn split/refuse round-trip (`networks/lora_anima/loading.py`) treats it as a shared tensor — q/k/v of the same Linear see the same input so they share `inv_scale`. Hydra / Chimera / StackedExperts handle it via their per-pool stacked layouts.
 
-`merge_to` and `LoRAModule.get_weight` undo absorption before computing `up @ down`, so a baked LoRA checkpoint (`make merge`) is correct without needing the calibration file at inference.
+`merge_to` and `LoRAModule.get_weight` undo absorption before computing `up @ down`, so a baked LoRA checkpoint (`python tasks.py merge`, compatibility alias `make merge`) is correct without needing the calibration file at inference.
 
 Round-trip is covered by `tests/test_per_channel_scaling_roundtrip.py`.
 

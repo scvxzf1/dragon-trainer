@@ -1,10 +1,15 @@
 # ReFT: residual-stream intervention
 
+状态：稳定
+适用版本：当前 main
+
 A sibling adapter to LoRA that wraps the **block** instead of the linears inside it. ReFT adds one learned, low-rank edit to the output hidden state of each selected DiT block, leaving every weight inside the block untouched. It composes additively with any LoRA variant (plain / ortho / hydra / T-LoRA) and lives in the same `.safetensors` file.
 
 Reference: Wu et al., *ReFT: Representation Finetuning for Language Models*, NeurIPS 2024 (LoReFT).
 
-Recap from `lora.md`: LoRA attaches to every `Linear` in a DiT `Block` — `self_attn.{qkv,o}_proj`, `cross_attn.{q,kv,o}_proj`, `mlp.{layer1,layer2}`, plus the AdaLN heads. ~10 Linears × 28 blocks ≈ 280 LoRA modules. ReFT's attachment count is different: one module per *block*, not per Linear, and it does not modify any weight inside that block. From the DiT's perspective, the block's internal computation is unchanged — ReFT only rewrites what the block hands to the residual stream on its way out.
+> **Usage & configuration:** For TOML configuration (`configs/gui-methods/reft.toml`, `tlora_ortho_reft.toml`), tuning guidance, CLI commands, and ComfyUI loader setup, see **[../methods/reft.md](../methods/reft.md)**. This document covers the mathematical and structural mechanism.
+
+Recap from `lora.md`: by default (`train_adaln = false`), LoRA attaches to the 7 attention + MLP `Linear`s in each DiT `Block` — `self_attn.{qkv,output}_proj`, `cross_attn.{q,kv,output}_proj`, `mlp.{layer1,layer2}` (AdaLN/embedder/`final_layer` are excluded by `_DEFAULT_EXCLUDE`), totaling **196** LoRA modules across 28 blocks. ReFT's attachment count is different: one module per *selected block*, not per Linear, and it does not modify any weight inside that block. From the DiT's perspective, the block's internal computation is unchanged — ReFT only rewrites what the block hands to the residual stream on its way out.
 
 ![ReFT residual-stream intervention](../structure_images/reft.png)
 
@@ -83,11 +88,11 @@ del self.org_module
 ReFT is an **additive side-channel**. It does not touch the Linear weights LoRA patches into, and LoRA does not touch the residual-stream output ReFT edits. A single training run can enable any subset of:
 
 - **LoRA** (`network_dim`, `network_alpha`) — weight patches on attention + MLP linears
-- **OrthoLoRA** (`use_ortho`) or **HydraLoRA** (`use_hydra`) — re-parameterizations of those patches
+- **OrthoLoRA** (`use_ortho`) or **HydraLoRA** (`use_moe_style = "shared_A"`, `route_per_layer = true`) — re-parameterizations of those patches
 - **T-LoRA** (`use_timestep_mask`) — applies to *both* the LoRA bottleneck and the ReFT bottleneck, independently (§5)
 - **ReFT** (`add_reft`) — block-output edits
 
-All of these coexist in the same `.safetensors`. `configs/methods/lora.toml` enables LoRA + OrthoLoRA + T-LoRA + ReFT together as the default stack.
+All of these coexist in the same `.safetensors` (see [../methods/reft.md](../methods/reft.md) for the pre-built GUI presets).
 
 ### 5. Timestep masking on ReFT
 
@@ -143,40 +148,15 @@ Plain LoRA merges losslessly because $\Delta W\,x$ is the same linear operator o
 
 ---
 
-## 8. Inference
+## 8. Inference & configuration
 
-### CLI (`inference.py`, `make test`)
+Because ReFT is an activation-space edit on the block output rather than a linear weight delta, stock static `Linear.weight` patchers (such as vanilla ComfyUI's built-in `LoraLoader`) cannot apply `reft_*` keys; inference requires per-block forward hooks (built into `inference.py` and the `custom_nodes/comfyui-hydralora/` **Anima Adapter Loader**).
 
-No special flag. `reft_*` keys are detected in the adapter file, the matching `ReFTModule`s are constructed and installed onto the DiT blocks, their weights loaded. Everything else — `multiplier`, P-GRAFT cutoff, etc. — applies to the LoRA and ReFT branches together via `network.enabled`.
-
-### ComfyUI — requires the custom node
-
-**Vanilla ComfyUI cannot load ReFT.** The built-in LoRA weight-patcher rewrites `Linear.weight` in place, which is the wrong operation by construction — ReFT is an activation-space intervention, not a weight patch. The stock loader silently drops any `reft_*` keys and ships you a LoRA-only inference.
-
-The **Anima Adapter Loader** node (`custom_nodes/comfyui-hydralora/`) installs per-block `forward_hook`s through `ModelPatcher.add_object_patch` to reproduce `ReFTModule.forward` exactly, in parallel with LoRA and HydraLoRA. Separate `strength_lora` and `strength_reft` sliders let you ablate the two branches independently at inference.
+For TOML configuration (`add_reft`, `reft_dim`, `reft_alpha`, `reft_layers`), GUI presets, tuning recipes, and CLI / ComfyUI usage, see **[../methods/reft.md](../methods/reft.md)**.
 
 ---
 
-## 9. Configuration
-
-`configs/methods/lora.toml` defaults:
-
-```toml
-add_reft      = true
-reft_dim      = 64
-reft_alpha    = 64       # scale = reft_alpha / reft_dim = 1 at default
-reft_layers   = "last_8"
-```
-
-Notes:
-
-- `reft_alpha` falls back to `network_alpha` when omitted.
-- `reft_dim` is independent of `network_dim`. Per-block parameter cost is $2 \cdot d_\text{reft} \cdot D + d_\text{reft}$ ≈ 260K at $d_\text{reft} = 64,\ D = 2048$ — small compared to a full LoRA bank on the same block.
-- Style transfer too strong but anatomy drifting? Try `reft_layers = "all"` with a larger `reft_dim`. Training is already converged and you want a light rescue? `"last_4"` or `"last_8"` at `reft_dim = 16–32` is cheap.
-
----
-
-## 10. Minimal mental model
+## 9. Minimal mental model
 
 1. One `ReFTModule` wraps one DiT `Block`'s `forward`, not its internal Linears. Block weights stay frozen.
 2. The edit is $R^\top(W_\text{src}\,h + b)$ added to the block's output. $W_\text{src}$ is zero-init, so step 0 is the base model exactly.

@@ -1,5 +1,8 @@
 # Pooled-text modulation
 
+状态：稳定
+适用版本：当前 main
+
 How the caption conditions Anima's AdaLN stack. In parallel with cross-attention, a **max-pooled** summary of `crossattn_emb` is added to the timestep embedding `t_emb` before that vector fans out to every block's AdaLN head.
 
 Recap from `anima.md`: `crossattn_emb ∈ ℝ^{B×512×1024}` is what every DiT block's cross-attention sees (produced by the LLMAdapter, §2.3). Each block also has three AdaLN-Zero sub-layers, each gated by a `(shift, scale, gate)` triple computed from `SiLU(t_emb)` (§4). Pooled-text modulation is how the caption influences that `t_emb` — in parallel with cross-attention, not replacing it.
@@ -28,7 +31,7 @@ crossattn_emb  (B, 512, 1024)
 
 Three pieces fully specify it.
 
-**Pool** (`library/anima/models.py:1636`):
+**Pool** (`Anima.forward` in `library/anima/models.py`):
 
 ```python
 pooled_text = crossattn_emb.max(dim=1).values   # (B, 1024)
@@ -36,7 +39,7 @@ pooled_text = crossattn_emb.max(dim=1).values   # (B, 1024)
 
 Global **max-pool** over the 512 context tokens — per channel, pick the most-activating token.
 
-**Project** (`library/anima/models.py:1345–1349`):
+**Project** (`Anima.__init__` in `library/anima/models.py`):
 
 ```python
 self.pooled_text_proj = nn.Sequential(
@@ -83,12 +86,12 @@ Training then learns what **caption-dependent bias** to add to the AdaLN gains, 
 
 ## 3. Hook point for modulation guidance
 
-This is the structural hook point for **modulation guidance** (Starodubcev et al., ICLR 2026; distilled via `make distill-mod`, see `docs/methods/mod-guidance.md`). The distillation trick:
+This is the structural hook point for **modulation guidance** (Starodubcev et al., ICLR 2026; distilled via `python tasks.py distill-mod`, see [../methods/mod-guidance.md](../methods/mod-guidance.md)). The distillation trick:
 
-- **Teacher forward**: standard cross-attention, unmodified.
-- **Student forward**: **zeroed cross-attention**, but receives pooled text through the modulation path shown above.
+- **Teacher forward**: standard real-prompt `crossattn_emb`, with `pooled_text_proj` disabled (`skip_pooled_text_proj=True`).
+- **Student forward**: `crossattn_emb` replaced by the **pre-cached empty-prompt unconditional encoding** (`_anima_uncond_te.safetensors`, staged by `python tasks.py distill-prep` — *not* an all-zero tensor, which would be out-of-distribution for cross-attention sinks), while the real prompt's `max_pool(crossattn_emb)` enters exclusively through `pooled_text_proj`.
 
-The student learns to produce teacher-quality velocity predictions from modulation alone. At inference, steering `t_emb` along quality-positive directions in pooled-text space then moves AdaLN coefficients toward better outputs — a lightweight CFG-replacement that doesn't require running cross-attention twice.
+The student learns to carry prompt conditioning through the modulation path on top of the unconditional cross-attention baseline. At inference, steering `t_emb` along quality-positive directions in pooled-text space then moves AdaLN coefficients toward better outputs without extra DiT forwards.
 
 All of that infrastructure lives on the single `t_emb += pooled_text_proj(max-pooled crossattn)` addition. If you're hunting for where modulation guidance attaches, that line is it.
 
@@ -100,4 +103,4 @@ All of that infrastructure lives on the single `t_emb += pooled_text_proj(max-po
 2. Max-pool because sink-padding is zero — mean would dilute.
 3. Final layer of `pooled_text_proj` is zero-init → the pretrained model runs identically at step 0; caption-to-AdaLN influence is learned from scratch on top.
 4. Output rides into AdaLN via `t_emb`, fanning out to all 28 blocks × 3 sub-layers.
-5. Modulation guidance exploits this exact path as a zero-crossattn distillation target.
+5. Modulation guidance distills this path by pairing empty-prompt unconditional cross-attention (`_anima_uncond_te.safetensors`) with real pooled-text modulation.
