@@ -527,6 +527,15 @@ def save_pp_bundle(args, runtime, *, counters: PpLoopCounters, scheduler, run_id
         # while a *new* root still refuses to overwrite anything.
         logger.info("PP bundle for step %s already exists at %s; skipping", counters.global_step, root)
         return str(root)
+    # Under 1F1B the trailing rank finishes B(mb1) as soon as it has sent the
+    # boundary gradient, then walks straight into this save while the leading
+    # rank is still back-propagating its own layers (~1.5 s here).  Without a
+    # rendezvous the trailing rank can reach the run-root creation and the stage
+    # writes before the leading rank has even finished the step.
+    group = getattr(runtime, "process_group", None) or getattr(runtime, "_group", None)
+    if dist.is_available() and dist.is_initialized():
+        Path(root).parent.mkdir(parents=True, exist_ok=True)
+        dist.barrier(group=group)
     result = save_distributed_checkpoint(
         root, runtime,
         step=int(counters.global_step),
@@ -544,6 +553,10 @@ def save_pp_bundle(args, runtime, *, counters: PpLoopCounters, scheduler, run_id
         seed=getattr(args, "seed", None),
     )
     save_trainer_resume(root, rank=runtime.layout.stage_index, payload=payload)
+    # Every rank must have its stage file and trainer payload on disk before the
+    # completeness check / LATEST.json pointer makes the bundle look finished.
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier(group=group)
     if accelerator.is_main_process:
         pointer = os.path.join(str(args.output_dir), "pp_runs", "LATEST.json")
         with open(pointer, "w", encoding="utf-8") as handle:
@@ -760,6 +773,16 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
     # resolved (epochs -> steps when needed) *before* the scheduler exists.
     total_steps = _resolve_max_steps(args, max(len(loader), 1))
     run_id = derive_run_id(args, family=adapter.name)
+    # The run id names the checkpoint directory, so it must be one pipeline-wide
+    # fact.  derive_run_id() reads only run material and is deterministic, but a
+    # per-rank difference in any of its inputs silently splits the two ranks onto
+    # different directories -- rank 0 then creates ``<a>-stepN`` while rank 1
+    # looks for ``<b>-stepN`` and the save dies with run root does not exist.
+    # Broadcasting from rank 0 makes agreement structural instead of accidental.
+    if dist.is_available() and dist.is_initialized():
+        shared = [run_id]
+        dist.broadcast_object_list(shared, src=0)
+        run_id = shared[0]
     runtime = adapter.build_runtime(
         args, accelerator, handoff.network, handoff.unet,
         latent_shape=latent_shape, max_text_tokens=max_text_tokens,
