@@ -919,9 +919,24 @@ def do_sample(
 
     use_cfg = guidance_scale > 1.0 and neg_crossattn_emb is not None
 
+    preview_net = getattr(dit, "_preview_network", None)
     for i in tqdm(range(steps), desc="Sampling", disable=not show_progress):
         sigma = sigmas[i]
         t = sigma.unsqueeze(0)  # (1,)
+        if preview_net is not None:
+            if hasattr(preview_net, "set_sigma"):
+                preview_net.set_sigma(t)
+            if (
+                getattr(preview_net, "use_fei_router", False)
+                or (
+                    getattr(preview_net, "global_router", None) is not None
+                    and getattr(getattr(preview_net, "cfg", None), "router_source", None) == "fei"
+                )
+                or getattr(preview_net, "freq_router", None) is not None
+            ):
+                from library.runtime.fei import compute_fei
+                fei = compute_fei(x.squeeze(2) if x.dim() == 5 else x)
+                preview_net.set_fei(fei)
 
         if use_cfg:
             # CFG: two separate passes to reduce memory usage

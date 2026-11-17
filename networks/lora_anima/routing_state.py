@@ -223,20 +223,26 @@ def clear_sigma(network) -> None:
         return
     sigma_loras = network._sigma_aware_loras
     canonical = sigma_loras[0]._buffers["_sigma"]
-    if network._shared_sigma is not canonical:
+    if canonical.shape != (1,):
+        canonical = torch.zeros(1, dtype=canonical.dtype, device=canonical.device)
         for lora in sigma_loras:
             lora._buffers["_sigma"] = canonical
         network._shared_sigma = canonical
-    canonical.zero_()
+    else:
+        if network._shared_sigma is not canonical:
+            for lora in sigma_loras:
+                lora._buffers["_sigma"] = canonical
+            network._shared_sigma = canonical
+        canonical.zero_()
     for dim, loras in network._sigma_aware_loras_by_dim.items():
         canonical_feat = loras[0]._buffers["_sigma_features"]
-        if network._shared_sigma_features.get(dim) is not canonical_feat:
-            for lora in loras:
-                lora._buffers["_sigma_features"] = canonical_feat
-            network._shared_sigma_features[dim] = canonical_feat
         zero_feat = _sigma_sinusoidal_features(canonical, dim)
         cast_feat = zero_feat.to(dtype=canonical_feat.dtype, device=canonical_feat.device)
         if canonical_feat.shape == cast_feat.shape:
+            if network._shared_sigma_features.get(dim) is not canonical_feat:
+                for lora in loras:
+                    lora._buffers["_sigma_features"] = canonical_feat
+                network._shared_sigma_features[dim] = canonical_feat
             canonical_feat.copy_(cast_feat)
         else:
             new_feat = cast_feat.detach().clone()
@@ -328,12 +334,20 @@ def clear_fei(network) -> None:
         return
     for dim, loras in network._fei_aware_loras_by_dim.items():
         canonical = loras[0]._buffers["_fei"]
-        current_shared = network._shared_fei.get(dim)
-        if current_shared is not canonical:
+        if canonical.shape != (1, dim):
+            canonical = torch.zeros(
+                (1, dim), dtype=canonical.dtype, device=canonical.device
+            )
             for lora in loras:
                 lora._buffers["_fei"] = canonical
             network._shared_fei[dim] = canonical
-        canonical.zero_()
+        else:
+            current_shared = network._shared_fei.get(dim)
+            if current_shared is not canonical:
+                for lora in loras:
+                    lora._buffers["_fei"] = canonical
+                network._shared_fei[dim] = canonical
+            canonical.zero_()
 
 
 def set_routing_weights(network, weights: torch.Tensor) -> None:
@@ -354,12 +368,20 @@ def clear_routing_weights(network) -> None:
         return
     routing_loras = network._routing_aware_loras
     canonical = routing_loras[0]._buffers["_routing_weights"]
-    if network._shared_routing_weights is not canonical:
-        for lora in routing_loras:
-            lora._buffers["_routing_weights"] = canonical
-        network._shared_routing_weights = canonical
     E = int(canonical.shape[-1])
-    canonical.fill_(1.0 / max(E, 1))
+    if canonical.shape != (1, E):
+        canonical = torch.full(
+            (1, E), 1.0 / max(E, 1), dtype=canonical.dtype, device=canonical.device
+        )
+        for lora in routing_loras:
+            lora._routing_weights = canonical
+        network._shared_routing_weights = canonical
+    else:
+        if network._shared_routing_weights is not canonical:
+            for lora in routing_loras:
+                lora._routing_weights = canonical
+            network._shared_routing_weights = canonical
+        canonical.fill_(1.0 / max(E, 1))
 
 
 def set_crossattn_routing(network, crossattn_emb: torch.Tensor) -> None:
@@ -389,12 +411,20 @@ def clear_freq_routing_weights(network) -> None:
         return
     freq_loras = network._chimera_aware_loras
     canonical = freq_loras[0]._buffers["_freq_routing_weights"]
-    if network._shared_freq_routing_weights is not canonical:
-        for lora in freq_loras:
-            lora._buffers["_freq_routing_weights"] = canonical
-        network._shared_freq_routing_weights = canonical
     K_f = int(canonical.shape[-1])
-    canonical.fill_(1.0 / max(K_f, 1))
+    if canonical.shape != (1, K_f):
+        canonical = torch.full(
+            (1, K_f), 1.0 / max(K_f, 1), dtype=canonical.dtype, device=canonical.device
+        )
+        for lora in freq_loras:
+            lora._freq_routing_weights = canonical
+        network._shared_freq_routing_weights = canonical
+    else:
+        if network._shared_freq_routing_weights is not canonical:
+            for lora in freq_loras:
+                lora._buffers["_freq_routing_weights"] = canonical
+            network._shared_freq_routing_weights = canonical
+        canonical.fill_(1.0 / max(K_f, 1))
 
 
 def set_content(network, crossattn_emb: torch.Tensor) -> None:
@@ -424,12 +454,20 @@ def clear_content_routing_weights(network) -> None:
         return
     content_loras = network._content_aware_loras
     canonical = content_loras[0]._buffers["_content_routing_weights"]
-    if network._shared_content_routing_weights is not canonical:
-        for lora in content_loras:
-            lora._buffers["_content_routing_weights"] = canonical
-        network._shared_content_routing_weights = canonical
     K_c = int(canonical.shape[-1])
-    canonical.fill_(1.0 / max(K_c, 1))
+    if canonical.shape != (1, K_c):
+        canonical = torch.full(
+            (1, K_c), 1.0 / max(K_c, 1), dtype=canonical.dtype, device=canonical.device
+        )
+        for lora in content_loras:
+            lora._content_routing_weights = canonical
+        network._shared_content_routing_weights = canonical
+    else:
+        if network._shared_content_routing_weights is not canonical:
+            for lora in content_loras:
+                lora._buffers["_content_routing_weights"] = canonical
+            network._shared_content_routing_weights = canonical
+        canonical.fill_(1.0 / max(K_c, 1))
 
 
 def clear_step_caches(network) -> None:

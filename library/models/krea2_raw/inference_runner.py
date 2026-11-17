@@ -182,7 +182,7 @@ def load_krea2_dit_for_inference(
         lora_sd = _load_lora_state_dict_for_inference(args, lora_path)
         # Krea-2 LoRA 复用 anima lora_unet_* 命名空间 (family-aware target spec
         # 由 factory 从 ss_model_family stamp 自动注入, 不靠 key 前缀分叉).
-        lora_sd = {k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")}
+        lora_sd = {k: v for k, v in lora_sd.items() if not k.startswith("lora_te_")}
         if not lora_sd:
             logger.warning(
                 "Krea-2: no DiT LoRA tensors left after filtering, skip %s",

@@ -124,6 +124,9 @@ def preview_state_scope(model, network, device):
         try:
             for module, _ in modules:
                 module.eval()
+            if network is not None:
+                from library.training.preview_lifecycle import reset_network_preview_routing
+                reset_network_preview_routing(network, include_timestep_mask=True)
             yield
         except BaseException as exc:
             error = exc

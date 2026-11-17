@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from library.runtime.peak_probe import record_peak_probe_event
+from ...attn_fuse import match_fused_spec
 from ...lora_modules.base import BaseLoRAModule
 from .autograd import (
     DEFAULT_LOKR_GROUPED_DELTA_BACKEND,
@@ -96,11 +97,19 @@ class LoKrModule(BaseLoRAModule):
         out_features = int(org_module.out_features)
         self.lokr_use_einsum = bool(lokr_use_einsum)
         self.lokr_full_factor = bool(lokr_full_factor)
+        fused_spec = match_fused_spec(str(lora_name))
+        n_comp = (
+            len(fused_spec.component_letters)
+            if fused_spec is not None and out_features % len(fused_spec.component_letters) == 0
+            else 1
+        )
+        single_out = out_features // n_comp
 
         if self.lokr_use_einsum:
-            self.out_a, self.out_b = _factorization(out_features, int(factor))
+            sub_out_a, self.out_b = _factorization(single_out, int(factor))
+            self.out_a = n_comp * sub_out_a
             self.in_a, self.in_b = _factorization(in_features, int(factor))
-            self.factor = self.out_a
+            self.factor = sub_out_a
             self.in_dim = self.in_b
             self.out_dim = self.out_b
 
@@ -123,15 +132,16 @@ class LoKrModule(BaseLoRAModule):
             else:
                 torch.nn.init.zeros_(self.lokr_w2)
         else:
-            self.factor = self._find_factor(in_features, out_features, int(factor))
-            self.in_dim = in_features // self.factor
-            self.out_dim = out_features // self.factor
-            self.in_a = self.factor
-            self.out_a = self.factor
+            sub_factor = self._find_factor(in_features, single_out, int(factor))
+            self.factor = sub_factor
+            self.in_dim = in_features // sub_factor
+            self.out_dim = single_out // sub_factor
+            self.in_a = sub_factor
+            self.out_a = n_comp * sub_factor
             self.in_b = self.in_dim
             self.out_b = self.out_dim
 
-            self.lokr_w1 = torch.nn.Parameter(torch.empty(self.factor, self.factor))
+            self.lokr_w1 = torch.nn.Parameter(torch.empty(self.out_a, self.in_a))
             self.lokr_w2 = torch.nn.Parameter(torch.empty(self.out_dim, self.in_dim))
             self._use_decomposed_w2 = False
 
@@ -333,7 +343,7 @@ class LoKrModule(BaseLoRAModule):
             return result
 
         if self.training:
-            if self.use_custom_lokr_autograd:
+            if self.use_custom_lokr_autograd and self.out_a == self.in_a:
                 gate_scale = self._timestep_mask[:, :1] * self.multiplier * self.scale
                 group_size = max(1, min(int(self.lokr_factor_group_size), self.factor))
                 if gate_scale.numel() == 1 and org_forwarded.is_contiguous():

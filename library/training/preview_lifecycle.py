@@ -5,6 +5,26 @@ from contextlib import contextmanager
 import torch
 
 
+def reset_network_preview_routing(network, *, include_timestep_mask: bool = False) -> None:
+    """Clear batch-bound training router/mask buffers back to broadcastable (1, ...) state."""
+    if network is None:
+        return
+    methods = (
+        ("clear_timestep_mask",) if include_timestep_mask else ()
+    ) + (
+        "clear_sigma",
+        "clear_fei",
+        "clear_routing_weights",
+        "clear_freq_routing_weights",
+        "clear_content_routing_weights",
+        "clear_step_caches",
+    )
+    for method_name in methods:
+        fn = getattr(network, method_name, None)
+        if callable(fn):
+            fn()
+
+
 @contextmanager
 def preview_lifecycle(dit, network, *, disable_block_swap=False):
     """Enter inference once and restore RNG, swap layout and adapter mode.
@@ -16,6 +36,8 @@ def preview_lifecycle(dit, network, *, disable_block_swap=False):
     rng_state = torch.get_rng_state()
     cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
     was_training = getattr(network, "training", True)
+    had_preview_net = hasattr(dit, "_preview_network") if dit is not None else False
+    prev_preview_net = getattr(dit, "_preview_network", None) if dit is not None else None
     swap_attempted = False
     pause_attempted = False
     pause_completed = False
@@ -24,8 +46,12 @@ def preview_lifecycle(dit, network, *, disable_block_swap=False):
     try:
         if network is not None:
             network.eval()
-            if hasattr(network, "clear_timestep_mask"):
-                network.clear_timestep_mask()
+            reset_network_preview_routing(network, include_timestep_mask=True)
+        if dit is not None and network is not None:
+            try:
+                object.__setattr__(dit, "_preview_network", network)
+            except Exception:
+                pass
         if disable_block_swap and hasattr(dit, "pause_block_swap"):
             swap_attempted = pause_attempted = True
             paused = dit.pause_block_swap()
@@ -47,6 +73,11 @@ def preview_lifecycle(dit, network, *, disable_block_swap=False):
                 failures.append(exc)
                 return None
 
+        if dit is not None and network is not None:
+            if had_preview_net:
+                attempt(lambda: object.__setattr__(dit, "_preview_network", prev_preview_net))
+            elif hasattr(dit, "_preview_network"):
+                attempt(lambda: delattr(dit, "_preview_network"))
         if swap_attempted:
             # A failed pause can have drained/moved blocks before recording its
             # paused marker. Resume if possible, otherwise rebuild training.
@@ -60,6 +91,7 @@ def preview_lifecycle(dit, network, *, disable_block_swap=False):
             elif hasattr(dit, "switch_block_swap_for_training"):
                 attempt(dit.switch_block_swap_for_training)
         if network is not None:
+            attempt(lambda: reset_network_preview_routing(network))
             attempt(network.train if was_training else network.eval)
         # Restore randomness last, including any consumed by recovery hooks.
         attempt(lambda: torch.set_rng_state(rng_state))

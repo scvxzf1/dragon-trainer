@@ -356,10 +356,9 @@ def attach_adapters(
             lora_sd = _load_lora_state_dict_for_inference(args, lora_weight_path)
             if is_chimera:
                 logger.info("HydraLoRA: chimera file — dual-pool routing wired")
-            else:
-                lora_sd = {
-                    k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")
-                }
+            lora_sd = {
+                k: v for k, v in lora_sd.items() if not k.startswith("lora_te_")
+            }
             if not lora_sd:
                 logger.warning(
                     "HydraLoRA: no tensors left after filtering, skip %s",

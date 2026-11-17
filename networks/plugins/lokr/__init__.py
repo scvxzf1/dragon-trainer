@@ -16,6 +16,7 @@ from .autograd import (
 )
 from .module import LoKrModule
 from .save import save_lokr_weights
+from ...attn_fuse import iter_split_groups, match_fused_spec
 from ...registry_api import (
     ContinueWeightDetectionContext,
     ModuleCreationContext,
@@ -160,7 +161,13 @@ def _detect_from_weights(ctx: WeightDetectionContext) -> bool:
         ctx.state["has_lokr"] = True
         ctx.state.setdefault("lokr_module_names", set()).add(ctx.lora_name)
         if value.dim() == 2:
-            ctx.state.setdefault("lokr_factors", set()).add(int(value.size(0)))
+            spec = match_fused_spec(ctx.lora_name)
+            n_comp = (
+                len(spec.component_letters)
+                if spec is not None and value.size(0) % len(spec.component_letters) == 0
+                else 1
+            )
+            ctx.state.setdefault("lokr_factors", set()).add(int(value.size(0)) // n_comp)
         ctx.modules_dim[ctx.lora_name] = network_dim or (
             value.size(0) if value.dim() >= 1 else 1
         )
@@ -245,6 +252,102 @@ def _continue_weight_kind(ctx: ContinueWeightDetectionContext) -> str | None:
     return None
 
 
+def _same_tensor(tensors: list[torch.Tensor]) -> bool:
+    first = tensors[0]
+    return all(
+        t.shape == first.shape and torch.equal(t, first.to(device=t.device, dtype=t.dtype))
+        for t in tensors[1:]
+    )
+
+
+def _same_alpha(values: list[Any | None]) -> bool:
+    if all(v is None for v in values):
+        return True
+    if any(v is None for v in values):
+        return False
+    def _as_float(v: Any) -> float:
+        return float(v.detach().float().cpu().item()) if isinstance(v, torch.Tensor) else float(v)
+    first = _as_float(values[0])
+    return all(_as_float(v) == first for v in values[1:])
+
+
+def _preprocess_weights(weights_sd: dict[str, Any]) -> dict[str, Any]:
+    """Fuse split q/k/v LoKR keys back to Anima's runtime qkv/kv modules."""
+
+    for shared_prefix, spec in iter_split_groups(weights_sd, ".lokr_w1"):
+        suffixes = spec.component_letters
+        w1s: list[torch.Tensor] = []
+        w2s: list[torch.Tensor] = []
+        w2as: list[torch.Tensor] = []
+        w2bs: list[torch.Tensor] = []
+        alphas: list[Any | None] = []
+        complete = True
+        decomposed: bool | None = None
+
+        for suffix in suffixes:
+            prefix = f"{shared_prefix}{suffix}_proj"
+            w1_key = f"{prefix}.lokr_w1"
+            if w1_key not in weights_sd:
+                complete = False
+                break
+            has_full = f"{prefix}.lokr_w2" in weights_sd
+            has_decomp = f"{prefix}.lokr_w2_a" in weights_sd and f"{prefix}.lokr_w2_b" in weights_sd
+            if has_full == has_decomp:
+                complete = False
+                break
+            if decomposed is None:
+                decomposed = has_decomp
+            elif decomposed != has_decomp:
+                complete = False
+                break
+            w1s.append(weights_sd[w1_key])
+            if has_full:
+                w2s.append(weights_sd[f"{prefix}.lokr_w2"])
+            else:
+                w2as.append(weights_sd[f"{prefix}.lokr_w2_a"])
+                w2bs.append(weights_sd[f"{prefix}.lokr_w2_b"])
+            alphas.append(weights_sd.get(f"{prefix}.alpha"))
+
+        if not complete:
+            continue
+        if not _same_alpha(alphas):
+            raise RuntimeError(
+                f"Split LoKR checkpoint has inconsistent alpha values at {shared_prefix}*."
+            )
+
+        fused_prefix = f"{shared_prefix}{spec.fused_letters}_proj"
+        if not decomposed:
+            if _same_tensor(w2s):
+                weights_sd[f"{fused_prefix}.lokr_w1"] = torch.cat(w1s, dim=0).contiguous()
+                weights_sd[f"{fused_prefix}.lokr_w2"] = w2s[0].contiguous()
+            else:
+                raise RuntimeError(
+                    f"Split LoKR checkpoint has q/k/v-specific inner lokr_w2 factors at "
+                    f"{shared_prefix}*; Anima's fused {spec.fused_letters}_proj requires "
+                    "shared lokr_w2 across split components."
+                )
+        else:
+            if _same_tensor(w2as) and _same_tensor(w2bs):
+                weights_sd[f"{fused_prefix}.lokr_w1"] = torch.cat(w1s, dim=0).contiguous()
+                weights_sd[f"{fused_prefix}.lokr_w2_a"] = w2as[0].contiguous()
+                weights_sd[f"{fused_prefix}.lokr_w2_b"] = w2bs[0].contiguous()
+            else:
+                raise RuntimeError(
+                    f"Split LoKR checkpoint has q/k/v-specific inner lokr_w2_a/lokr_w2_b "
+                    f"factors at {shared_prefix}*; Anima's fused {spec.fused_letters}_proj "
+                    "requires shared decomposed inner factors."
+                )
+
+        if alphas[0] is not None:
+            weights_sd[f"{fused_prefix}.alpha"] = alphas[0]
+        for suffix in suffixes:
+            prefix = f"{shared_prefix}{suffix}_proj"
+            for leaf in ("lokr_w1", "lokr_w2", "lokr_w2_a", "lokr_w2_b", "alpha"):
+                weights_sd.pop(f"{prefix}.{leaf}", None)
+
+    return weights_sd
+
+
 register_save_handler("lokr", save_lokr_weights)
 register_network_spec(
     NetworkSpec(
@@ -268,6 +371,7 @@ register_network_spec(
         selector=_selector,
         validate=_validate,
         module_kwargs=_module_kwargs,
+        preprocess_weights=_preprocess_weights,
         detect_from_weights=_detect_from_weights,
         finish_weight_detection=_finish_weight_detection,
         continue_weight_kind=_continue_weight_kind,

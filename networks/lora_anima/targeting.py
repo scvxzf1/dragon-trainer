@@ -14,7 +14,7 @@ from typing import Optional, Pattern, Sequence
 
 import torch
 
-_BLOCK_IDX_RE = re.compile(r"blocks\.(\d+)\.")
+_BLOCK_IDX_RE = re.compile(r"(?:^|\.)(?:blocks|layers|transformer_blocks)\.(\d+)\.")
 
 
 @dataclass(frozen=True)

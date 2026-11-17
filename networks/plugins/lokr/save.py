@@ -22,18 +22,29 @@ def defuse_lokr_qkv(state_dict: Dict[str, torch.Tensor]) -> None:
             fused_groups.append((prefix, spec))
 
     for prefix, spec in fused_groups:
+        n_comp = len(spec.component_letters)
         w1 = state_dict.pop(f"{prefix}.lokr_w1")
         alpha = state_dict.pop(f"{prefix}.alpha", None)
         base_prefix = prefix.removesuffix(spec.fused_frag)
+        split_outer = w1.dim() >= 1 and w1.size(0) % n_comp == 0
         if f"{prefix}.lokr_w2" in state_dict:
             w2 = state_dict.pop(f"{prefix}.lokr_w2")
-            w2_chunks = w2.chunk(len(spec.component_letters), dim=0)
-            for letter, w2_chunk in zip(spec.component_letters, w2_chunks):
-                new_prefix = base_prefix + spec.component_frag(letter)
-                state_dict[f"{new_prefix}.lokr_w1"] = w1.clone()
-                state_dict[f"{new_prefix}.lokr_w2"] = w2_chunk
-                if alpha is not None:
-                    state_dict[f"{new_prefix}.alpha"] = alpha.clone()
+            if split_outer:
+                w1_chunks = w1.chunk(n_comp, dim=0)
+                for letter, w1_chunk in zip(spec.component_letters, w1_chunks):
+                    new_prefix = base_prefix + spec.component_frag(letter)
+                    state_dict[f"{new_prefix}.lokr_w1"] = w1_chunk.contiguous()
+                    state_dict[f"{new_prefix}.lokr_w2"] = w2.clone()
+                    if alpha is not None:
+                        state_dict[f"{new_prefix}.alpha"] = alpha.clone()
+            else:
+                w2_chunks = w2.chunk(n_comp, dim=0)
+                for letter, w2_chunk in zip(spec.component_letters, w2_chunks):
+                    new_prefix = base_prefix + spec.component_frag(letter)
+                    state_dict[f"{new_prefix}.lokr_w1"] = w1.clone()
+                    state_dict[f"{new_prefix}.lokr_w2"] = w2_chunk.contiguous()
+                    if alpha is not None:
+                        state_dict[f"{new_prefix}.alpha"] = alpha.clone()
             continue
 
         w2a_key = f"{prefix}.lokr_w2_a"
@@ -45,14 +56,24 @@ def defuse_lokr_qkv(state_dict: Dict[str, torch.Tensor]) -> None:
             continue
         w2a = state_dict.pop(w2a_key)
         w2b = state_dict.pop(w2b_key)
-        w2a_chunks = w2a.chunk(len(spec.component_letters), dim=0)
-        for letter, w2a_chunk in zip(spec.component_letters, w2a_chunks):
-            new_prefix = base_prefix + spec.component_frag(letter)
-            state_dict[f"{new_prefix}.lokr_w1"] = w1.clone()
-            state_dict[f"{new_prefix}.lokr_w2_a"] = w2a_chunk
-            state_dict[f"{new_prefix}.lokr_w2_b"] = w2b.clone()
-            if alpha is not None:
-                state_dict[f"{new_prefix}.alpha"] = alpha.clone()
+        if split_outer:
+            w1_chunks = w1.chunk(n_comp, dim=0)
+            for letter, w1_chunk in zip(spec.component_letters, w1_chunks):
+                new_prefix = base_prefix + spec.component_frag(letter)
+                state_dict[f"{new_prefix}.lokr_w1"] = w1_chunk.contiguous()
+                state_dict[f"{new_prefix}.lokr_w2_a"] = w2a.clone()
+                state_dict[f"{new_prefix}.lokr_w2_b"] = w2b.clone()
+                if alpha is not None:
+                    state_dict[f"{new_prefix}.alpha"] = alpha.clone()
+        else:
+            w2a_chunks = w2a.chunk(n_comp, dim=0)
+            for letter, w2a_chunk in zip(spec.component_letters, w2a_chunks):
+                new_prefix = base_prefix + spec.component_frag(letter)
+                state_dict[f"{new_prefix}.lokr_w1"] = w1.clone()
+                state_dict[f"{new_prefix}.lokr_w2_a"] = w2a_chunk.contiguous()
+                state_dict[f"{new_prefix}.lokr_w2_b"] = w2b.clone()
+                if alpha is not None:
+                    state_dict[f"{new_prefix}.alpha"] = alpha.clone()
 
 
 def save_lokr_weights(
