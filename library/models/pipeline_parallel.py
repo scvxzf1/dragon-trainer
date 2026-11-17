@@ -169,6 +169,19 @@ def validate_pipeline_parallel_config(
 
     family_value = _get(config, "model_family", "anima") or "anima"
     canonical, pipeline_spec = _pipeline_spec(family_value)
+    # Per-stage block swap is implemented by exactly one family.  Without this
+    # guard a config that sets it for any other family would be silently
+    # ignored -- the worst failure mode, because the user believes memory was
+    # freed while forward still OOMs.  Checked here (not in the runtime) so the
+    # preflight / compat layer rejects it before any worker or NCCL starts, and
+    # because every family's PipelineRuntimeConfig.from_config() funnels through
+    # this function as well.
+    if normalized.blocks_to_swap and canonical != "krea2_raw":
+        raise ValueError(
+            "pipeline_parallel_blocks_to_swap is only implemented for "
+            f"krea2/krea2_raw, but model_family={canonical!r} sets it to "
+            f"{normalized.blocks_to_swap}; set it to 0 or use krea2_raw"
+        )
     family_spec = get_model_family_spec(canonical)
     block_count = _int(
         num_blocks,
