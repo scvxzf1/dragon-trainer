@@ -482,3 +482,100 @@ class Krea2LastStage(_Krea2StageBase):
         )
         with self._autocast():
             return krea2_forward_last(self.model, self.blocks, state)
+
+
+class _OffloadAfterBackward(torch.autograd.Function):
+    """Offload a swappable block's base weights once its gradient reaches x.
+
+    Under Schedule1F1B with 2 microbatches a rank runs F(mb0) -> F(mb1) ->
+    B(mb0) -> B(mb1), so a stateful prefetching offloader (which assumes the
+    last forward is immediately followed by the last backward) breaks on
+    F(mb1).  This hook is stateless: the checkpoint's recompute of ``_forward``
+    loads the weights, and they are released only when every operator inside
+    that block has finished back-propagating -- signalled by the gradient
+    arriving at the block's input activation.
+    """
+
+    @staticmethod
+    def forward(ctx, x: Tensor, block) -> Tensor:  # noqa: D102 - autograd API
+        ctx.block = block
+        return x
+
+    @staticmethod
+    def backward(ctx, grad_x: Tensor):  # noqa: D102 - autograd API
+        block = ctx.block
+        for parameter in block.parameters():
+            pinned = getattr(parameter, "_cpu_pinned", None)
+            if pinned is not None:
+                parameter.data = pinned
+        return grad_x, None
+
+
+def enable_stage_block_swap(stage_blocks, device, num_swap: int = 2) -> list[int]:
+    """Swap the base weights of the first ``num_swap`` non-leading blocks.
+
+    Each Krea-2 block's frozen fp16 base is 809 MiB while its LoRA lives on the
+    network object (not in ``block.parameters()``), so offloading the block's
+    parameters releases exactly the base weights and leaves every trainable
+    adapter tensor, gradient and optimizer state on the GPU.
+
+    Starts at index 1 so the activation entering a swapped block already passed
+    the previous block, i.e. ``x.requires_grad`` is guaranteed True and the
+    offload hook fires.
+
+    Returns the swapped block indices for logging.
+    """
+
+    blocks = [block for block in stage_blocks]
+    swapped: list[int] = []
+    for offset, block in enumerate(blocks[1 : 1 + num_swap], start=1):
+        pinned_resident = False
+        for parameter in block.parameters():
+            if not hasattr(parameter, "_cpu_pinned"):
+                parameter._cpu_pinned = (
+                    parameter.data.detach().to("cpu", non_blocking=False).pin_memory()
+                )
+            parameter.data = parameter._cpu_pinned
+            pinned_resident = True
+        if not pinned_resident:
+            continue
+
+        original_forward = block.forward
+        original_inner = block._forward
+        block._in_outer_forward = False
+
+        block._swap_index = offset
+
+        def _load(b=block):
+            for parameter in b.parameters():
+                pinned = getattr(parameter, "_cpu_pinned", None)
+                if pinned is not None and parameter.data.device.type == "cpu":
+                    parameter.data = pinned.to(device, non_blocking=True)
+
+        def _offload(b=block):
+            for parameter in b.parameters():
+                pinned = getattr(parameter, "_cpu_pinned", None)
+                if pinned is not None:
+                    parameter.data = pinned
+
+        def _wrapped_forward(*args, _orig=original_forward, _b=block, _l=_load, _o=_offload, **kwargs):
+            _b._in_outer_forward = True
+            _l()
+            try:
+                return _orig(*args, **kwargs)
+            finally:
+                _b._in_outer_forward = False
+                _o()
+
+        def _wrapped_inner(x, *args, _orig=original_inner, _b=block, _l=_load, **kwargs):
+            if not _b._in_outer_forward:
+                # Called by the checkpoint's recompute, not by the outer forward.
+                _l()
+                if x.requires_grad:
+                    x = _OffloadAfterBackward.apply(x, _b)
+            return _orig(x, *args, **kwargs)
+
+        block.forward = _wrapped_forward
+        block._forward = _wrapped_inner
+        swapped.append(offset)
+    return swapped

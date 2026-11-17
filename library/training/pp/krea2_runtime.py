@@ -23,6 +23,8 @@ padding ``SingleStreamDiT.forward`` applies.
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -187,7 +189,8 @@ from typing import Any  # noqa: E402
 from library.models.krea2_raw.pipeline_parallel import (  # noqa: E402
     make_krea2_pipeline_plan,
 )
-from library.models.krea2_raw.pp_stages import (  # noqa: E402
+from library.models.krea2_raw.pp_stages import (
+    enable_stage_block_swap,  # noqa: E402
     Krea2FirstStage,
     Krea2LastStage,
     release_foreign_submodules,
@@ -698,6 +701,18 @@ def build_krea2_pipeline_runtime(
                 f"the stage move (first few: {_cpu[:6]}); a cpu weight surfaces as "
                 "an ATen device mismatch inside forward",
             )
+        # Block swap: each Krea-2 block's frozen base is 809 MiB and the stage
+        # is 11.75-12.13 GiB, which left the runtime ~52 MiB short of the 16 GB
+        # ceiling.  Swapping 2 blocks frees 809 MiB of continuous space without
+        # touching LoRA (adapters live on the network, not in block.parameters).
+        _swap = int(os.environ.get("KREA2_PP_SWAP_BLOCKS", "0") or 0)
+        if _swap:
+            _swapped = enable_stage_block_swap(model.blocks, device, num_swap=_swap)
+            if _swapped:
+                print(
+                    f"[pp] rank={rank} swapping blocks {_swapped} to cpu",
+                    flush=True,
+                )
         parameters = list(stage_module.trainable_parameters())
         validate_master_weight_dtype(
             parameters, mixed_precision=config.mixed_precision, device=device
