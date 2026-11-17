@@ -239,8 +239,8 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "ko": "reuse_storage 복원 청크당 행 수입니다. 0은 전체 텐서를 복원하며, 작은 값은 피크를 낮추지만 커널을 추가합니다.",
     },
     "pipeline_parallel": {
-        "en": "Enable the experimental two-GPU pipeline for the selected model family. Anima and MOSS-Image are wired to the dedicated PP trainer session (2 stages / 1F1B / fp16 / plain LoRA / full caches); every other family keeps a named launch refusal.",
-        "ko": "선택한 모델 패밀리의 실험적 2-GPU 파이프라인을 활성화합니다. Anima와 MOSS-Image는 전용 PP 트레이너 세션(2 스테이지 / 1F1B / fp16 / plain LoRA / 전체 캐시)으로 연결되어 있으며, 다른 패밀리는 시작이 명시적으로 거부됩니다.",
+        "en": "Enable the experimental two-GPU pipeline for the selected model family. Anima, MOSS-Image and Krea-2 are wired to the dedicated PP trainer session (2 stages / 1F1B / fp16 / plain LoRA / full caches); other families keep a named launch refusal. Krea-2 additionally needs pipeline_parallel_blocks_to_swap above 0 to fit 896x1200 on two 16 GB cards.",
+        "ko": "선택한 모델 패밀리의 실험적 2-GPU 파이프라인을 활성화합니다. Anima, MOSS-Image, Krea-2는 전용 PP 트레이너 세션(2 스테이지 / 1F1B / fp16 / plain LoRA / 전체 캐시)으로 연결되어 있으며, 다른 패밀리는 시작이 명시적으로 거부됩니다. Krea-2는 16GB 카드 2장에서 896x1200을 돌리려면 pipeline_parallel_blocks_to_swap을 0보다 크게 설정해야 합니다.",
     },
     "pipeline_parallel_stages": {
         "en": "Pipeline stage count. The current topology requires exactly two stages and two worker processes.",
@@ -249,6 +249,10 @@ FIELD_HELP: dict[str, dict[str, str]] = {
     "pipeline_parallel_microbatches": {
         "en": "Microbatches per pipeline step. Four to eight reduces the two-stage bubble while each microbatch remains batch size one.",
         "ko": "파이프라인 스텝당 마이크로배치 수입니다. 각 마이크로배치가 배치 1일 때 4~8개가 2단계 버블을 줄입니다.",
+    },
+    "pipeline_parallel_blocks_to_swap": {
+        "en": "Per-stage block swap for pipeline parallel. Independent from blocks_to_swap: PP swaps only this rank's own blocks after their backward, and a model that already has blocks_to_swap above 0 is refused. Krea-2 only. 0 disables it; two 16 GB cards at 896x1200 need about 4.",
+        "ko": "파이프라인 병렬용 스테이지별 블록 스왑입니다. blocks_to_swap과 별개입니다. PP는 이 랭크가 소유한 블록만 역전파 후 스왑하며, blocks_to_swap이 0보다 큰 모델은 거부됩니다. Krea-2 전용입니다. 0은 비활성이며, 16GB 카드 2장에서 896x1200은 약 4가 필요합니다.",
     },
     "pipeline_parallel_schedule": {
         "en": "Pipeline execution schedule. The first production target accepts only 1F1B.",
@@ -447,6 +451,7 @@ FORM_GROUPS = {
         "pipeline_parallel",
         "pipeline_parallel_stages",
         "pipeline_parallel_microbatches",
+        "pipeline_parallel_blocks_to_swap",
         "pipeline_parallel_schedule",
         "pipeline_parallel_split",
         "base_compute",

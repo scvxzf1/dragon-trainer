@@ -683,3 +683,61 @@ GradScaler 在某一侧不一致，这里必然出现台阶。整条 0→27 呈�
 
 配合 §4.11.4（固定 `(t, noise)` 单调下降）与 §4.12.1（True/False 10 步差 6.6e-5），
 三点共同构成 PP v0 数值正确性的完整证据链：**loss 层、权重层、跨卡边界层**。
+
+## 4.15 配置契约：PP 块交换的键、默认值与族边界
+
+### 4.15.1 两个 swap 是不同的东西（不可互换）
+
+| | 普通 swap | PP 块交换 |
+|---|---|---|
+| 键 | `blocks_to_swap` | `pipeline_parallel_blocks_to_swap` |
+| 实现 | `dit.enable_block_swap()` | `pp_stages.enable_stage_block_swap()` |
+| 选块 | 整模型尾部连续 N 块 | 本 rank 实际持卡的块，**跳过 block 0** |
+| 卸载时机 | 前向前加载 | `_OffloadAfterBackward` autograd hook，反向用完即卸 |
+| 与 PP 关系 | **必须为 0**，否则 `placement.py` fail-closed 拒绝 | PP 专用 |
+
+优先级：`pipeline_parallel_blocks_to_swap`（CLI/TOML）> `KREA2_PP_SWAP_BLOCKS`（环境变量，
+向后兼容）> 0。
+
+### 4.15.2 族边界
+
+`validate_pipeline_parallel_config` 在拿到 canonical family 后检查：只有
+`krea2` / `krea2_raw` 接受 `pipeline_parallel_blocks_to_swap > 0`，其他族直接 `ValueError`。
+守卫放在这一处可同时覆盖 **preflight/compat 层**（起 worker/NCCL 之前拦截）和
+**runtime 层**（各族 `PipelineRuntimeConfig.from_config()` 都经过它）。不做这层检查的话，
+别的族配了 >0 会被静默忽略——用户以为省了显存而 forward 照样 OOM。
+
+### 4.15.3 上界保护
+
+请求数超过本 rank 可交换块数时截断并打印明确 warning。实测 `=20` 时：
+rank0 持 0–12 → 交换 `[1..12]` 共 12 块；rank1 持 13–27、跳过首块 → `[14..27]` 共
+14 块；两卡均 warning，`EXIT=0`。**block 0 永不交换**（它是 1F1B warmup 的第一个
+forward，激活还没有 grad，卸载钩子不会触发）。
+
+另实测：swap 越多越慢。`=20` 为 29.5/25.5 s，`=4` 为 21.6 s —— PCIe 搬运是真实成本，
+4 是 16 GB 双卡 896×1200 的甜点。
+
+### 4.15.4 16 GB 双卡可复制的基线
+
+```toml
+pipeline_parallel = true
+pipeline_parallel_stages = 2
+pipeline_parallel_microbatches = 2      # 必须整除 train_batch_size，且 >= stages
+pipeline_parallel_blocks_to_swap = 4    # 0 会 OOM
+blocks_to_swap = 0                      # 普通 swap 必须保持 0
+torch_compile = false                   # PP v0 与 compile 互斥
+mixed_precision = "fp16"                # PP 只接受 fp16
+network_train_unet_only = true
+lora_fp32_compute = false               # -4.3% 步时 / -100 MiB，数值等价（§4.12）
+```
+
+### 4.15.5 WebUI 暴露现状（诚实标注）
+
+`web/services/config/form_metadata.py` 已补齐 `pipeline_parallel_blocks_to_swap` 的中英
+描述并把键加入 PP 字段清单，同时修正了 `pipeline_parallel` 的过期文案（原文称非
+Anima/MOSS 族一律拒绝启动，已不符合 krea2 已接入的事实）。
+
+**注意**：`TrainingDistributedCard.tsx` 里的「流水线阶段 / 微批数量」两个输入框写的是
+**本机设置 `[distributed]` 节的卡片缺省值**，不是训练配置本身；真正的训练配置字段由
+metadata 驱动的配置表单渲染。因此「WebUI 能否配出可用的 PP 配置」需要在浏览器里实测
+确认，不能仅凭该卡片的字段推断。
