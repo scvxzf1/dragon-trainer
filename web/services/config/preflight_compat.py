@@ -483,7 +483,7 @@ def _check_checkpointing_config(
         if defer_adaptive_contract and item.code == "adaptive_precision_contract":
             continue
         add("error", item.key, _compat_web_message(item, device=device))
-    _check_pipeline_trainer_admission(cfg, add)
+    _check_pipeline_trainer_admission(cfg, add, world_size=world_size)
 
     if defer_adaptive_contract:
         add(
@@ -508,7 +508,12 @@ def _check_checkpointing_config(
         add("info", item.key, _compat_web_message(item, device=device))
 
 
-def _check_pipeline_trainer_admission(cfg: dict[str, Any], add) -> None:
+def _check_pipeline_trainer_admission(
+    cfg: dict[str, Any],
+    add,
+    *,
+    world_size: int | None = None,
+) -> None:
     """Surface the wired PP trainer admission before the launch (contract §5).
 
     The compat layer stays family-agnostic; this adds the trainer-path knob
@@ -528,8 +533,13 @@ def _check_pipeline_trainer_admission(cfg: dict[str, Any], add) -> None:
     from library.training.pp.trainer_admission import require_family_trainer_admission
     from web.services.config.preflight_pp import krea2_batch_checks
 
+    reported_codes: set[str] = set()
     for check in krea2_batch_checks(cfg):
-        add(check["level"], check["key"], check["message"])
+        extra = {}
+        if check.get("code"):
+            reported_codes.add(check["code"])
+            extra["code"] = check["code"]
+        add(check["level"], check["key"], check["message"], **extra)
     add(
         "info", "pipeline_parallel_blocks_to_swap",
         "PP 配置：pipeline_parallel_blocks_to_swap="
@@ -537,14 +547,17 @@ def _check_pipeline_trainer_admission(cfg: dict[str, Any], add) -> None:
     )
 
     try:
-        require_family_trainer_admission(cfg, where="webui_preflight")
-    except PipelineParallelError as exc:
-        add(
-            "error",
-            "pipeline_parallel",
-            f"PP 训练准入预检：启动时会以 {exc.code} 具名拒绝：{exc.detail}",
-            code=exc.code,
+        require_family_trainer_admission(
+            cfg, world_size=world_size, where="webui_preflight"
         )
+    except PipelineParallelError as exc:
+        if exc.code not in reported_codes:
+            add(
+                "error",
+                "pipeline_parallel",
+                f"PP 训练准入预检：启动时会以 {exc.code} 具名拒绝：{exc.detail}",
+                code=exc.code,
+            )
 
 
 def _check_core_training_semantics(

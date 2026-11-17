@@ -194,3 +194,79 @@ def test_worker_receives_physical_external_config_path(tmp_path, monkeypatch):
     actual = tmp_path / "external" / "config.runtime.toml"
     monkeypatch.setattr(launcher_runtime, "_resolve_display_path", lambda name: actual)
     assert launcher_runtime._training_config_argument("configs/imported/config.runtime.toml") == str(actual)
+
+
+def test_krea2_pp_batch_mismatch_is_reported_once_and_world_size_forwarded():
+    from web.services.config.preflight_compat import _check_pipeline_trainer_admission
+
+    cfg = {
+        "model_family": "krea2_raw",
+        "pipeline_parallel": True,
+        "pipeline_parallel_stages": 2,
+        "pipeline_parallel_microbatches": 4,
+        "train_batch_size": 2,
+        "mixed_precision": "fp16",
+        "gradient_checkpointing": True,
+        "use_vae_cache": True,
+        "use_text_cache": True,
+        "network_train_unet_only": True,
+    }
+    recorded: list[tuple[str, str, str, dict]] = []
+    _check_pipeline_trainer_admission(
+        cfg,
+        lambda level, key, msg, **kw: recorded.append((level, key, msg, kw)),
+        world_size=2,
+    )
+    errors = [row for row in recorded if row[0] == "error"]
+    assert len(errors) == 1
+    assert errors[0][1] == "pipeline_parallel_microbatches"
+
+    diag_checks = distributed.diagnose_pp_config(cfg, world_size=2, device_indices=[1, 2])
+    divisibility_errors = [
+        c for c in diag_checks if c["level"] == "error" and "batch" in c["message"].lower()
+    ]
+    assert len(divisibility_errors) == 1
+
+
+def test_schema_gate_accepts_moss_max_token_length_tiers():
+    from web.services.config import schema_gate
+
+    errors, warnings = schema_gate.validate_patch_values({"max_token_length": 1024})
+    assert errors == []
+    assert warnings == []
+
+
+def test_frontend_moss_allows_fp16_and_pp_fallback():
+    import json
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    if not shutil.which("node"):
+        pytest.skip("node is required for frontend checks")
+    root = Path(__file__).resolve().parents[1]
+    family_uri = (
+        root / "web/frontend-next/src/features/training-config/domain/model-family.js"
+    ).as_uri()
+    script = f"""
+const family = await import({json.dumps(family_uri)});
+console.log(JSON.stringify({{
+    mossFp16: family.modelFamilyOptionSupported('mixed_precision', 'moss_image', 'fp16'),
+    mossBf16: family.modelFamilyOptionSupported('mixed_precision', 'moss_image', 'bf16'),
+    mossPp: family.modelFamilySupportsPipelineParallel('moss_image'),
+    krea2Pp: family.modelFamilySupportsPipelineParallel('krea2'),
+    animaPp: family.modelFamilySupportsPipelineParallel('anima'),
+}}));
+"""
+    res = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=root, check=True, capture_output=True, text=True, timeout=20,
+    )
+    payload = json.loads(res.stdout)
+    assert payload == {
+        "mossFp16": True,
+        "mossBf16": True,
+        "mossPp": True,
+        "krea2Pp": True,
+        "animaPp": True,
+    }

@@ -3,6 +3,7 @@ import type {
   DistributedDiagnosis,
   WiredPpFamily,
 } from "./distributedApi";
+import { normalizeModelFamily } from "./domain/model-family.js";
 export const DISTRIBUTED_MODES = [
   { value: "single", label: "单卡", hint: "只在一张 GPU 上训练" },
   { value: "ddp", label: "多卡 · 数据并行", hint: "每张卡一份完整模型副本" },
@@ -32,7 +33,7 @@ export function ppWiredForFamily(
   wiredFamilies?: WiredPpFamily[],
 ): boolean {
   const raw = String(family || "anima").trim();
-  const name = raw === "krea2" ? "krea2_raw" : raw;
+  const name = normalizeModelFamily(raw) || raw;
   if (wiredFamilies?.length) {
     return wiredFamilies.some((item) => item.family === name && item.wired);
   }

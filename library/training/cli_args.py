@@ -462,8 +462,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--max_token_length",
         type=int,
         default=None,
-        choices=[None, 150, 225, 4096],
-        help="max token length of text encoder (legacy 150/225; MOSS-Image supports 4096)",
+        help="max token length of text encoder (legacy 150/225; MOSS-Image supports 1..4096)",
     )
     parser.add_argument(
         "--mem_eff_attn",
@@ -1079,7 +1078,7 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
             "A positive config value wins; 0 falls back to KREA2_PP_SWAP_BLOCKS. "
             "When both are 0 or unset, swapping is disabled."
         ),
-    ),
+    )
     parser.add_argument(
         "--pipeline_parallel_microbatches",
         type=int,
@@ -1397,10 +1396,10 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
             "How training-compat checks report audited unverified combinations. "
             "strict restores the historical hard errors; warn (default) only "
             "relaxes the audited C1 codes (implementation exists but lacks "
-            "real-machine acceptance); allow also relaxes audited C2/C3 codes "
-            "(no code path in the family, or official-recipe/VRAM policy) and "
-            "prints a warning naming the ignored key. Input-validation and "
-            "semantic-conflict codes stay errors under every policy."
+            "real-machine acceptance); allow additionally relaxes audited "
+            "C2-ignored codes (no-op keys ignored by the family) and prints a "
+            "warning naming the ignored key. C2-raise, C3, input-validation, "
+            "and semantic-conflict codes stay errors under every policy."
         ),
     )
 

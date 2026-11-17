@@ -29,8 +29,9 @@ export const TRAINING_FIELDS: TrainingFieldSpec[] = [
     label: "模型族",
     group: "input",
     kind: "select",
-    options: ["anima", "krea2_raw", "z_image", "qwen_image_2_1"],
+    options: ["moss_image", "anima", "krea2_raw", "z_image", "qwen_image_2_1"],
     optionLabels: {
+      moss_image: "MOSS-Image",
       anima: "Anima",
       krea2_raw: "Krea-2 Raw",
       z_image: "Z-Image",

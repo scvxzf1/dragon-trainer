@@ -484,7 +484,9 @@ def diagnose_pp_config(
     compatibility = check_training_compat(cfg, world_size=world_size)
     from web.services.config.preflight_pp import krea2_batch_checks
 
-    checks.extend(krea2_batch_checks(cfg))
+    batch_checks = krea2_batch_checks(cfg)
+    reported_codes = {item["code"] for item in batch_checks if item.get("code")}
+    checks.extend(batch_checks)
     for item in compatibility.errors:
         if item.key == "pipeline_parallel":
             checks.append(_pp_check("error", "compat_error", item.message))
@@ -497,8 +499,9 @@ def diagnose_pp_config(
             cfg, world_size=world_size, where="distributed-diagnosis"
         )
     except Exception as exc:  # noqa: BLE001 - admission refusal becomes a finding
-        level, key, message, detail = _classify_admission_failure(exc)
-        checks.append(_pp_check(level, key, message, detail=detail))
+        if getattr(exc, "code", None) not in reported_codes:
+            level, key, message, detail = _classify_admission_failure(exc)
+            checks.append(_pp_check(level, key, message, detail=detail))
     else:
         pipeline = PipelineParallelConfig.from_config(cfg)
         checks.append(_pp_check(
