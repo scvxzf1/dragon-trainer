@@ -6,7 +6,7 @@
 
 ## 开启
 
-Dragon 的「资源与预检 / 模型驻留」提供 `AUTO 块交换（实验）`。
+Next 工作台 `/next/training` 的「资源与预检 / 模型驻留」提供 `AUTO 块交换（实验）`。
 也可在训练 TOML 中设置：
 
 ```toml
@@ -77,7 +77,7 @@ auto_block_swap_mode = "dynamic"
 auto_block_swap_interval = 8
 ```
 
-CLI 使用 `--auto_block_swap --auto_block_swap_mode dynamic`。Dragon 在「资源与预检 /
+CLI 使用 `--auto_block_swap --auto_block_swap_mode dynamic`。Next 工作台 `/next/training` 在「资源与预检 /
 模型驻留」提供模式选择与评估窗口。动态模式不使用 `auto_block_swap_max_trials`，
 `auto_block_swap_timeout` 只约束独立模型盘点进程。
 
@@ -226,6 +226,7 @@ A/B/A 复测和成本门槛；实测23块只比25块快约0.9%，正确拒绝了
 | Krea-2-Raw | 28（`blocks`） | `0`（关闭）或 `1..26` | 828.1 MiB | 45153 MB |
 | Z-Image | 30（`layers`） | `0`（关闭）或 `1..28` | 345.1 MiB | 20262 MB |
 | Qwen-Image 2.1 | 32（`transformer_blocks`） | `0`（关闭）或 `1..30` | 416.0 MiB | 26172 MB |
+| MOSS-Image（`moss_image`） | 42（`layers`） | `0`（关闭）或 `1..40` | 216.0 MiB | 18120 MB |
 
 每步搬运量 = `2 × blocks_to_swap × 单块载荷`（每个换出块一步恢复两次）。给出上界是因为
 超限会被断言或校验直接拒绝，典型报错：
@@ -233,40 +234,33 @@ A/B/A 复测和成本门槛；实测23块只比25块快约0.9%，正确拒绝了
 - Anima：`AssertionError: Cannot swap more than 26 blocks. Requested: N blocks.`（`library/anima/models.py`）；
 - Krea-2-Raw：同样的 `Cannot swap more than 26 blocks` 断言（`library/models/krea2_raw/dit.py`）；
 - Qwen-Image 2.1：`blocks_to_swap must be between 0 and 30`（`library/training/compat_matrix.py`）；
-- Z-Image：`Z-Image has 30 main layers and requires at least two resident layers; use blocks_to_swap between 0 and 28.`。
+- Z-Image：`Z-Image has 30 main layers and requires at least two resident layers; use blocks_to_swap between 0 and 28.`；
+- MOSS-Image：`ValueError: MOSS blocks_to_swap must be 0..40`（`library/models/moss_image/block_swap.py`）。
 
-`0` 表示完全关闭块交换。这些数字来自只读 safetensors 头部的真实权重字节，且四族都已在本机
-真机训练中逐字节验证；推算方法见
-[各族分块载荷与晋升算术](../findings/block_swap_family_payload_50hx_20261019.md)。
+`0` 表示完全关闭块交换。这些数字来自只读权重头部的真实字节量并经真机训练核对；推算方法见
+[各族分块载荷与晋升算术](../findings/block_swap_family_payload_50hx_20261019.md) 与
+[MOSS 块交换字节规律](../findings/moss_block_swap_law_20261021.md)。
 单块载荷决定「省一块」的价值：Krea-2 上少换出一块约省 0.55 s/步，是 Anima（0.088 s/步）的
 6 倍以上，所以大块族更应该开启自动水位。
 
 ## 各族运行时键约束（训练前校验）
 
-部分运行时键有**按族硬性约束**，只在训练启动时由
-`library/training/compat_matrix.py::check_training_compat` 校验，**不满足就直接报错退出**，
-不会静默回退。手写运行时 TOML 或拼装 CLI 时最容易踩到 `timestep_sampling`：
+训练启动时 `library/training/compat_matrix.py::check_training_compat` 会结合
+[`--compat_unverified_policy`](model-training-capabilities.md#兼容预检策略--compat_unverified_policy)
+（`strict` / 默认 `warn` / `allow`）对各族运行时键做分级校验，不再一律按单档报错：
 
-| 键 | 约束 | 涉及的族 |
+| 类别 | 在 `strict` / 默认 `warn` / `allow` 下的行为 | 典型键（Z-Image / Qwen-Image 2.1 / MOSS） |
 | --- | --- | --- |
-| `timestep_sampling` | 必须为 `"uniform"` | Z-Image、Qwen-Image 2.1 |
-| `weighting_scheme` | 必须为 `"none"` | Z-Image、Qwen-Image 2.1 |
-| `loss_type` | 仅 L2 | Z-Image、Qwen-Image 2.1 |
-| `caption_dropout_rate` | 必须为 `0` | Z-Image、Qwen-Image 2.1 |
-| `masked_loss` | 必须关闭 | 仅 Qwen-Image 2.1 |
-| `attn_mode` | 仅 `torch` / `sdpa` / `flash`；Z-Image 不接受 `xformers`，`sdpa` 视作 `torch` 别名 | Z-Image、Qwen-Image 2.1 |
+| **C1（实现已生效、仅缺真机验收）** | `strict` 报 error；**默认 `warn` 与 `allow` 降级为带 `[unverified 未验证]` 标记的 warning 放行** | Z-Image / Qwen-Image 2.1 的 `loss_type`、`weighting_scheme`，Z-Image 的 `discrete_flow_shift`，Qwen-Image 2.1 的 `masked_loss` 与 `torch`/`sdpa` 下的 `mixed_precision` |
+| **C2-ignored（族内不读取的无效果开关）** | `strict` 与默认 `warn` 仍报 error；**仅在显式 `--compat_unverified_policy allow` 时降级为 warning 放行** | Z-Image / Qwen-Image 2.1 的 `timestep_sampling`（不为 `"uniform"` 时）、`base_compute`、`selective_checkpoint` 等 |
+| **硬约束（C2-raise / C3 / A / B 与族专属门禁）** | **三档恒为 error，任何档位都不会放行** | Z-Image / Qwen-Image 2.1 的 `caption_dropout_rate != 0`、`weighted_captions`、非法 `attn_mode`（仅 `torch` / `sdpa` / `flash`）与越界 `blocks_to_swap`；MOSS（`moss_compat.py`）的全部契约项 |
 
-关键在于 **`configs/base.toml` 默认 `timestep_sampling = "sigmoid"`**：走标准
-`base.toml → presets.toml → methods/*.toml` 合并链时，方法配置会覆盖它，所以正常训练不受
-影响；但只要绕开方法配置（手写 runtime TOML、bench 脚本、临时 CLI），`sigmoid` 就会漏进去，
-报错形如：
-
-```text
-ValueError: Qwen Image 2.1 T2I adapter uses uniformly sampled dynamic-shift sigmas
-```
-
-修法是显式写 `timestep_sampling = "uniform"`。其它族的兼容组合以 `compat_matrix.py` 的
-实时源码为准，本文不复制完整矩阵。
+手写运行时 TOML 或拼装 CLI 时最容易踩到的仍是 **`timestep_sampling`**（属于 C2-ignored，默认 `warn` 下依旧报错）：
+`configs/base.toml` 默认 `timestep_sampling = "sigmoid"`，走标准
+`base.toml → presets.toml → methods/*.toml` 合并链时方法配置会将其覆盖为 `"uniform"`；
+若绕开方法配置手写 runtime TOML 或临时 CLI，未覆盖的 `sigmoid` 在默认 `warn` 档位下仍会被预检拦截。
+标准修法是在配置或 CLI 中显式写 `timestep_sampling = "uniform"`（完整分级列表与审计依据见
+[兼容预检策略说明](model-training-capabilities.md#兼容预检策略--compat_unverified_policy)）。
 
 ## 进程内水位调优（--block_swap_auto，2026-10-19 新增）
 
@@ -276,10 +270,12 @@ ModelOffloader.reconfigure() 事务一次性晋升。两者可以并存，但不
 
 ```toml
 block_swap_auto = true
-block_swap_vram_margin_mib = 400   # 默认 400 MiB
+block_swap_vram_margin_mib = 400     # 默认 400 MiB
+block_swap_auto_stop_ratio = 0.0     # 默认 0.0（不设下限，按显存余量尽量晋升）
 ```
 
-CLI 对应 --block_swap_auto / --no-block_swap_auto 与 --block_swap_vram_margin_mib。
+CLI 对应 `--block_swap_auto` / `--no-block_swap_auto`、`--block_swap_vram_margin_mib` 与
+`--block_swap_auto_stop_ratio`（环境变量 `ANIMA_BLOCK_SWAP_AUTO_DMA_RATIO_FLOOR`）：`0.0`（默认）表示只受空闲显存余量约束尽量晋升常驻块以最大化吞吐；设为正比例（如 `0.5`）时，一旦预计剩余 DMA 搬运耗时低于实测步时的该比例便提前停止晋升，以极小速度代价保留更多换出块和显存缓冲。
 
 | 维度 | 启动校准 AUTO | 进程内 --block_swap_auto |
 | --- | --- | --- |

@@ -6,7 +6,7 @@
 
 ## 概述
 
-anima_lora 现在支持将配置目录外置到独立位置，便于：
+Dragon Trainer 支持将配置目录外置到独立位置，便于：
 - 多实例部署时隔离配置
 - 容器化环境中分离系统配置和用户数据
 - 将运行时数据（训练历史、队列）从代码仓库分离
@@ -16,11 +16,11 @@ anima_lora 现在支持将配置目录外置到独立位置，便于：
 
 ### 方法 1：WebUI 全局设置（推荐）
 
-在 WebUI 的“全局设置”页面配置：
+在 Next WebUI 的“全局设置”（`/next/settings`）页面配置：
 
-1. 打开“路径与默认模型”。
-2. 在“配置目录路径”中设置“配置根目录”。
-3. 保存设置。
+1. 打开「文件与任务」分组。
+2. 设置「配置根目录」。
+3. 点击保存全局设置。
 
 该值会写入项目根目录的 `.anima-webui-settings.toml [paths]`，这是本机
 配置文件，已被 `.gitignore` 忽略。
@@ -36,7 +36,7 @@ ANIMA_CONFIGS_ROOT=/path/to/configs
 
 ## 路径解析规则
 
-- **相对路径**：相对于项目根目录（anima_lora/）解析
+- **相对路径**：相对于项目根目录（`dragon-trainer/`，旧目录名如 `anima_lora/` 同理）解析
 - **绝对路径**：直接使用
 - **环境变量扩展**：支持 `$HOME`、`~` 等扩展
 - **安全检查**：自动拒绝包含 `..` 的路径（防止路径遍历）
@@ -68,8 +68,8 @@ ANIMA_CONFIGS_ROOT=/etc/anima/configs
 
 ```yaml
 services:
-  anima-lora:
-    image: anima-lora:latest
+  dragon-trainer:
+    image: dragon-trainer:latest
     environment:
       ANIMA_CONFIGS_ROOT: /etc/anima/configs
     volumes:
@@ -84,7 +84,7 @@ services:
 ## 默认行为
 
 未设置任何环境变量时，保持原有行为：
-- 配置根目录：`anima_lora/configs`
+- 配置根目录：`dragon-trainer/configs`（即项目根下的 `configs/`）
 - 包含所有配置文件、训练历史和队列
 
 无需任何迁移，完全向后兼容。
@@ -149,7 +149,7 @@ A: 确保 `.env` 文件在项目根目录，并重启 WebUI 或训练进程。
 
 **Q: 相对路径相对于哪里？**
 
-A: 所有相对路径都相对于项目根目录（`anima_lora/`），而不是当前工作目录。
+A: 所有相对路径都相对于项目根目录（如 `dragon-trainer/`），而不是当前工作目录。
 
 **Q: 外置后原 configs/ 目录会被删除吗？**
 

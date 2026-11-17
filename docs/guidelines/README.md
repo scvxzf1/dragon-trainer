@@ -20,14 +20,7 @@
 
 ## 历史参考
 
-以下综合指南保留已退役 PySide6 桌面 GUI 的流程；安装和 WebUI 操作请使用上面的当前入口。
-
-| 文档 | 说明 |
-| --- | --- |
-| [指南书.md](指南书.md) | 中文历史综合指南 |
-| [guidebook.md](guidebook.md) | 英文历史综合指南 |
-| [ガイドブック.md](ガイドブック.md) | 日文历史综合指南 |
-| [가이드북.md](가이드북.md) | 韩文历史综合指南 |
+早期单模型与已移除桌面 GUI 的四语综合指南已归档至 [`../../_archive/docs/guidelines/README.md`](../../_archive/docs/guidelines/README.md)（参见 [`../archive-index.md`](../archive-index.md)）。
 
 ## 维护规则
 

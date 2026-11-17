@@ -1,11 +1,13 @@
 # 数据集缓存语义
 
-Dragon 数据集编辑器和训练 runtime 共享以下契约：
+状态：稳定
+
+Next `/next/datasets` 数据集编辑器和训练 runtime 共享以下契约：
 
 - `mask_mode` 是唯一的遮罩模式字段：`none`、`external`、`embedded`、`auto`。
 - `external` 只表示外部遮罩目录；缺少某张图的遮罩时，训练按全 1 mask 继续，latent NPZ 不要求 `alpha_mask`。
 - `embedded` 要求 latent NPZ 包含当前桶尺寸的 `alpha_mask_<HxW>`；`none` 不读取遮罩；`auto` 仅为旧配置保留默认目录发现。
-- latent 和文本缓存后缀来自 `library/models/family_registry.py`：Krea-2 使用 `_anima.npz` + `_krea2_te.safetensors`，Z-Image 使用 `_z_image.npz` + `_z_image_te.safetensors`。
+- latent 和文本缓存后缀来自 `library/models/family_registry.py`（及各族 strategy）：Anima 使用 `_anima.npz` + `_anima_te.safetensors`，Krea-2 使用 `_anima.npz` + `_krea2_te.safetensors`，Z-Image 使用 `_z_image.npz` + `_z_image_te.safetensors`，Qwen Image 2.1 使用 `_qwen_image_2_1.npz` + `_qwen_image_2_1_te.safetensors`，MOSS-Image 使用 `_moss_image.npz` + `_moss_image_te_nf4.safetensors`（切换 `moss_te_quantization="bf16"` 时为 `_moss_image_te_bf16.safetensors`）。
 - runtime preflight 按每张训练图解析镜像缓存路径并复用训练策略 validator；部分缓存或无效缓存直接阻止 runtime 启动。
 - `ip_features_cache_to_disk=false` 时不检查 PE sidecar；启用磁盘缓存时按 `ip_encoder` 检查 `{stem}_anima_{encoder}.safetensors`。
 - 普通训练配置由 Web 编排先启动预处理，完成后自动进入训练；训练进程不在缺缓存时临时加载编码器补缓存，以保持懒加载顺序。

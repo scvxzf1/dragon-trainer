@@ -21,7 +21,7 @@ git remote -v
 ```bash
 git fetch <target-remote> --prune
 git switch dev
-git pull --rebase
+git pull --rebase <target-remote> dev
 git rev-list --left-right --count HEAD...<target-remote>/dev
 git log --oneline <target-remote>/dev..HEAD
 ```

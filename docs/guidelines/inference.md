@@ -1,5 +1,7 @@
 # Inference Reference
 
+状态：稳定
+
 ## Basic usage
 
 ```bash
@@ -30,7 +32,40 @@ default model/weight assumptions do not imply support for every model family;
 use a family-specific command only where that family's documented capabilities
 allow it. The example above is for Anima.
 
-## Qwen Image 2.1 standalone inference
+## Multi-model standalone inference scope
+
+Standalone CLI inference (`inference.py`) is registered per model family in
+`library/models/family_registry.py`:
+
+- **`anima`**: `single`, `batch` (`--from_file`), and `interactive` modes; `euler`, `er_sde`, and `lcm` samplers.
+- **`krea2_raw`**: `single` mode + `euler` sampler (`library/models/krea2_raw/inference_runner.py`).
+- **`qwen_image_2_1`**: `single` mode + `euler` sampler for T2I, Edit (1–4 references), and saved-latent decoding.
+- **`z_image`** and **`moss_image`**: generic standalone CLI inference / `image-test` is **not** registered (they currently support training-time sample preview only).
+
+### Krea-2-Raw standalone inference
+
+Use `--model_family krea2_raw --sampler euler` with Krea-2 DiT, Qwen3-VL text
+encoder, and the shared Qwen-Image VAE:
+
+```bash
+python inference.py --model_family krea2_raw \
+    --dit /path/to/krea2-dit.safetensors \
+    --text_encoder /path/to/qwen3-vl \
+    --vae models/vae/qwen_image_vae.safetensors \
+    --sampler euler --attn_mode flash \
+    --prompt "your prompt" --image_size 1024 1024 \
+    --save_path output/tests
+```
+
+Krea-2 uses its official automatic mu-shift (leave `--flow_shift` at its CLI
+default `3.0`) and supports `flash` or `torch` (`sdpa` alias) attention. Optional
+`--lora_weight` checkpoints must carry `ss_model_family=krea2_raw`. Batch /
+interactive modes and Anima-only extras (`--spectrum`, `--spd`, `--dcw`,
+`--smc_cfg`, `--cns`, `--pooled_text_proj`, `--pgraft`, `--tiled_diffusion`,
+`--ip_adapter_weight`, `--easycontrol_weight`, `--soft_tokens_weight`) are
+rejected explicitly.
+
+### Qwen Image 2.1 standalone inference
 
 Use `--model_family qwen_image_2_1 --runtime_dtype bf16 --sampler euler` with
 Qwen Image 2.1 DiT, Qwen3-VL text encoder and its dedicated VAE. The default
@@ -87,16 +122,20 @@ still requires `--text_encoder` and `--save_path`; the encoder is not loaded.
 | Target | What it runs |
 |--------|--------------|
 | `python tasks.py test` | Latest LoRA |
-| `python tasks.py test SPECTRUM=1` | Latest LoRA + Spectrum acceleration |
-| `python tasks.py test MOD=1` | Latest LoRA + distilled `pooled_text_proj` (modulation guidance). Composes with `SPECTRUM=1`. |
+| `python tasks.py test SPECTRUM=1` | Latest LoRA + Spectrum acceleration (mutually exclusive with `SPD=1`) |
+| `python tasks.py test SPD=1` | Latest LoRA + training-free SPD multi-resolution sampling |
+| `python tasks.py test MOD=1` | Latest LoRA + distilled `pooled_text_proj` (modulation guidance). Composes with `SPECTRUM=1` or `SPD=1`. |
+| `python tasks.py test-mod` | Compatibility alias for `python tasks.py test MOD=1` |
 | `python tasks.py test NOLORA=1` | Bare DiT (skips `--lora_weight`). Compose with `MOD=1` for a mod-only sample. |
-| `python tasks.py test-smc-cfg` | Latest LoRA + SMC-CFG; composes with `SPECTRUM=1`, `MOD=1`, and `NOLORA=1`. |
+| `python tasks.py test-smc-cfg` | Latest LoRA + SMC-CFG; composes with `SPECTRUM=1`, `SPD=1`, `MOD=1`, and `NOLORA=1`. |
 | `python tasks.py test-hydra` | Latest HydraLoRA / FeRA `*_moe.safetensors` (router-live) |
 | `python tasks.py test-merge MODEL_DIR=...` | Inference against a baked DiT under `MODEL_DIR=` |
 | `python tasks.py test-dcw` | Latest LoRA + DCW scalar bias correction (task target passes λ = 0.01) |
 | `python tasks.py test-dcw-v4` | Bare DiT + DCW v4 learnable calibrator by default; set `NOLORA=0` for latest LoRA |
 | `python tasks.py test-spectrum-dcw` | Spectrum + DCW scalar |
 | `python tasks.py test-dcw-v4-spectrum` | Spectrum + DCW v4 |
+| `python tasks.py exp-test-spd` | Latest SPD trajectory LoRA on the SPD sampler at its trained schedule |
+| `python tasks.py exp-test-soft` | Latest `soft_tokens` checkpoint (`--soft_tokens_weight`) |
 | `python tasks.py exp-invert-directedit` | DirectEdit postfix-tail inversion probe |
 | `python tasks.py exp-test-ip <ref_image>` | IP-Adapter (image-conditioned) |
 | `python tasks.py exp-test-easycontrol <ref_image>` | EasyControl |
@@ -109,25 +148,30 @@ still requires `--text_encoder` and `--save_path`; the encoder is not loaded.
 |------|---------|-------------|
 | `--lora_weight` | — | Adapter path(s); space-separated for stacking |
 | `--lora_multiplier` | 1.0 | Scalar (one per weight or one for all) |
+| `--anima_selective_lora` | off | Enable Anima selective LoRA loading by preset or per-block selection |
+| `--soft_tokens_weight` | — | Soft Tokens `.safetensors` bank spliced into cross-attention |
 | `--ip_adapter_weight` | — | IP-Adapter checkpoint |
 | `--ip_image` | — | Reference image for IP-Adapter |
-| `--ip_scale` | 1.0 | IP-Adapter image-CFG scale |
+| `--ip_scale` | `None` | Override IP-Adapter scale (defaults to `ss_ip_scale` in checkpoint metadata) |
 | `--ip_image_match_size` | off | Match target H/W to the ref image bucket |
 | `--easycontrol_weight` | — | EasyControl checkpoint |
 | `--easycontrol_image` | — | Reference image for EasyControl |
-| `--easycontrol_scale` | 1.0 | EasyControl scale |
+| `--easycontrol_scale` | `None` | Override EasyControl scale (defaults to `ss_cond_scale` in checkpoint metadata) |
 | `--easycontrol_image_match_size` | off | Match target H/W to ref bucket |
 | `--infer_steps` | 50 | Denoising steps (28 via `python tasks.py test`) |
 | `--guidance_scale` | 3.5 | Text CFG scale (4.0 via `python tasks.py test`) |
 | `--flow_shift` | 3.0 | Flow-matching schedule shift (1.0 via `python tasks.py test`) |
 | `--sampler` | `euler` | `euler` (deterministic ODE), `er_sde` (stochastic), `lcm` (x0 re-noise — distilled few-step models) |
+| `--spd` | off | Spectral Progressive Diffusion multi-resolution denoising (forces `euler`; mutually exclusive with `--spectrum`) |
+| `--cns` | `None` | Colored Noise Sampling on `er_sde` (`auto` or `cns_gamma.npz` path; no-op on deterministic samplers) |
 | `--attn_mode` | `torch` | `torch` / `flash` / `flex` / `sageattn` / `xformers` (`sdpa` alias) |
 | `--from_file` | — | Batch prompts from a text file |
 | `--interactive` | off | REPL prompt loop |
-| `--compile` | off | `torch.compile` speedup |
+| `--compile` | off | Whole-model `torch.compile` speedup |
+| `--compile_blocks` | off | Compile each DiT block's `_forward` individually |
 | `--text_encoder_cpu` | off | Keep the text encoder on CPU (low-VRAM) |
-| `--vae_chunk_size` | — | VAE decode tile size |
-| `--vae_disable_cache` | off | Skip the per-tile cache |
+| `--vae_chunk_size` | — | Spatial chunk size for VAE encode/decode (even integer) |
+| `--vae_disable_cache` | off | Skip the internal VAE cache |
 | `--no_metadata` | off | Don't embed training metadata in the PNG |
 | `--save_path` | — | Output directory |
 
@@ -170,8 +214,8 @@ Composes with every adapter and with Spectrum. Two modes — see
 |------|-------------|
 | `--dcw` | Scalar mode (one global λ) |
 | `--dcw_lambda` | λ value (`inference.py` default: -0.015; `python tasks.py test-dcw` passes 0.01) |
-| `--dcw_band_mask` | Where to apply: `LL` (default) / `HF` / `all` |
-| `--dcw_schedule` | Per-step shaping (e.g. flat / cosine) |
+| `--dcw_band_mask` | Haar subband mask: `'LL'` (default), `'HH'`, `'LH+HL+HH'`, or `'all'` |
+| `--dcw_schedule` | Per-step shaping: `one_minus_sigma` (default), `sigma_i`, `const`, or `none` |
 | `--dcw_calibrator` | Path to a v4 fusion-head safetensors (replaces scalar) |
 | `--dcw_calibrator_gain` | Multiplicative scale on the calibrator's α̂ |
 
@@ -191,21 +235,32 @@ python inference.py ... \
     --lora_cutoff_step 37    # LoRA active for steps 0–36, disabled 37+
 ```
 
-## Tiled decode
+## Tiled denoising and VAE chunked decode
 
-For high-resolution outputs that don't fit the VAE in one shot:
+Denoising-stage tiling and VAE spatial chunking are independent switches with
+different units:
 
-```bash
---tiled_diffusion --tile_size 1024 --tile_overlap 64
-```
+- **Denoising tiled diffusion** (`--tiled_diffusion`): runs MultiDiffusion-style
+  overlapping tiles in **latent space** (even integers; `--tile_size` defaults
+  to `128` latent = 1024px, `--tile_overlap` defaults to `16` latent = 128px,
+  with `tile_overlap < tile_size`):
+  ```bash
+  --tiled_diffusion --tile_size 128 --tile_overlap 16
+  ```
+- **VAE chunked decode** (`--vae_chunk_size`): spatial chunking inside the VAE
+  when full-frame VAE decode exceeds VRAM (even integer, e.g.
+  `--vae_chunk_size 64`, optionally paired with `--vae_disable_cache`).
 
 ## Prompt-file format
 
-One prompt per line; flags can be appended inline.
+One prompt per line (`--from_file`); inline options parsed by
+`inference.py::parse_prompt_line` are `--w` (width), `--h` (height), `--d`
+(seed), `--s` (steps), `--g` / `--l` (guidance scale), `--fs` (flow shift),
+and `--n` (negative prompt):
 
 ```
 a girl standing in a field --w 1024 --h 1024 --s 50 --g 5.0
-another prompt --seed 42 --flow_shift 4.0
+another prompt --d 42 --fs 4.0 --n blurry, low quality
 ```
 
 ## LoRA in ComfyUI

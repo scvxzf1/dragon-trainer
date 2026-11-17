@@ -1,5 +1,9 @@
 # HydraLoRA + ReFT — nsys-driven optimization, 2026-05-03
 
+状态：历史（2026-05-03 剖析快照）
+
+> **Note:** This document is a point-in-time profiling snapshot from 2026-05-03. The inter-step helpers referenced under `networks/lora_anima/network.py` (`get_router_stats` and shared `_sigma` / `set_sigma` buffer wiring) have since been decomposed into `networks/lora_anima/router_stats.py` and `networks/lora_anima/routing_state.py`; the canonical task entrypoint is now `python tasks.py lora` (`make lora` remains a compatibility wrapper).
+
 Source artifacts: `output/nsys/`
 - `profile.nsys-rep` — open with Nsight Systems GUI for the full timeline
 - `profile.sqlite` — queryable kernel/API tables
