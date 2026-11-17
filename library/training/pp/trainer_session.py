@@ -465,9 +465,22 @@ def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) 
         prediction, losses = result.prediction, list(result.losses)
     else:
         prediction, losses = result
+    if int(os.environ.get("KREA2_PP_LOSS_PROBE", "0") or 0):
+        print(
+            f"[lossprobe] step={counters.global_step} n_losses={len(losses)} "
+            f"vals={[round(float(v), 6) for v in losses]} is_last={runtime.is_last}",
+            flush=True,
+        )
     outcome = runtime.optimizer_step()
     counters.global_step += 1
     counters.skipped += 1 if outcome.skipped else 0
+    # Reset before the per-rank loss is computed.  Only the trailing stage fills
+    # it in, and the cross-rank SUM at the end of this function must see *only*
+    # this step's contribution -- without the reset a non-trailing rank carried
+    # the previous step's aggregated value into the next sum, so the progress
+    # line read 0.18, 0.36, 0.54, ... (n x the real per-step loss) and looked
+    # like an inexorable divergence.
+    counters.last_loss = None
     if outcome.skipped:
         counters.last_loss = None
     else:
@@ -828,6 +841,16 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
             if counters.batch_index < resume_batch_index:
                 counters.batch_index += 1
                 continue
+            # Numerical soundness probe: re-seeding at the top of every step
+            # makes each step draw the SAME (timestep, noise) pair, turning the
+            # run into a fixed-target overfit test.  Without it the loss moves
+            # with the sampled timestep and "did the update help?" is
+            # unanswerable.  Off by default.
+            _fixed_seed = int(os.environ.get("KREA2_PP_FIXED_STEP_SEED", "0") or 0)
+            if _fixed_seed:
+                torch.manual_seed(_fixed_seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(_fixed_seed)
             inputs = build_family_step_inputs(
                 adapter,
                 trainer, args, batch,
