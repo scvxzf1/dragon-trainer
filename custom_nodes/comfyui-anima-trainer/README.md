@@ -28,7 +28,7 @@ Required inputs:
 - `lr` — `FLOAT` (default `5e-5`, range `1e-7..1e-2`). Learning rate (`learning_rate`).
 - `gpu` — hardware preset selector:
   - `8GB` → `[low_vram]` preset (`gradient_checkpointing = true`, `unsloth_offload_checkpointing = true`)
-  - `16GB` / `high` → `[default]` preset (`blocks_to_swap = 0`, reinforced by `node_defaults.toml`; note `training.py::GPU_TIER_PRESET` currently maps `"8GB" -> "low_vram"` and `"16GB" -> "default"`, so pick `16GB` for 16 GB+ GPUs)
+  - `16GB` / `high` → `[default]` preset (`blocks_to_swap = 0`, reinforced by `node_defaults.toml`)
 
 Optional inputs:
 - `mask` — `MASK` loss mask(s) (white = train on region, black = ignore; one mask per image or a single mask broadcast across the batch). Connecting it enables `masked_loss = true`.
@@ -47,7 +47,7 @@ Required inputs:
 - `rank` — `INT` (default `16`).
 - `epochs` — `INT` (default `25`).
 - `lr` — `FLOAT` (default `5e-5`).
-- `gpu` — hardware preset (`8GB` → `low_vram`, `16GB` → `default`, `blocks_to_swap = 0` in `node_defaults.toml`).
+- `gpu` — hardware preset (`8GB` → `low_vram`, `16GB` / `high` → `default`, `blocks_to_swap = 0` in `node_defaults.toml`).
 
 Optional inputs:
 - `mask_dir` — subfolder of `ComfyUI/input/` holding `{stem}_mask.png` loss masks (white = keep) matched by stem, or `(none)` to disable masked loss.
