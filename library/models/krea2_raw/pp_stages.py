@@ -550,13 +550,33 @@ def enable_stage_block_swap(stage_blocks, device, num_swap: int = 2) -> list[int
             for parameter in b.parameters():
                 pinned = getattr(parameter, "_cpu_pinned", None)
                 if pinned is not None and parameter.data.device.type == "cpu":
-                    parameter.data = pinned.to(device, non_blocking=True)
+                    # A fresh buffer, not a view of the pinned copy: the pinned
+                    # tensor keeps its own cpu storage and this one is what the
+                    # autograd graph will reference for this pass.
+                    gpu_buf = torch.empty_like(pinned, device=device)
+                    gpu_buf.copy_(pinned, non_blocking=True)
+                    parameter._gpu_active = gpu_buf
+                    parameter.data = gpu_buf
 
         def _offload(b=block):
             for parameter in b.parameters():
                 pinned = getattr(parameter, "_cpu_pinned", None)
+                gpu_buf = getattr(parameter, "_gpu_active", None)
                 if pinned is not None:
                     parameter.data = pinned
+                if gpu_buf is not None:
+                    # Repointing ``.data`` is not enough: any transposed view
+                    # saved by a linear's backward (``weight.t()``) keeps a
+                    # strong reference to the same StorageImpl, so the 809 MiB
+                    # stays resident even though no parameter points at it.
+                    # Shrinking the storage is the FSDP way to actually hand the
+                    # block back, and the recompute path re-creates the buffer
+                    # from the pinned copy anyway.
+                    try:
+                        gpu_buf.untyped_storage().resize_(0)
+                    except RuntimeError:
+                        pass
+                    parameter._gpu_active = None
 
         def _wrapped_forward(*args, _orig=original_forward, _b=block, _l=_load, _o=_offload, **kwargs):
             _b._in_outer_forward = True
