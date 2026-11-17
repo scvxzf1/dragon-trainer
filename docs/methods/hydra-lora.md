@@ -1,5 +1,8 @@
 # HydraLoRA: Multi-Style Routing via Layer-Local Experts
 
+状态：稳定
+适用版本：当前 main
+
 MoE-style multi-head LoRA with per-module routing. Targets multi-artist training in a single LoRA without style bleed — a standard LoRA trained on multiple artists blends all styles into one shared low-rank subspace, so distinct fingerprints are lost. HydraLoRA attaches several `lora_up` heads per adapted `Linear` and lets a learned router pick a per-sample mixture.
 
 > We published paper about this! read [paper](https://arxiv.org/abs/2605.03252) if interested.
@@ -28,11 +31,11 @@ Training state dict (runtime form, used inside the trainer):
 
 ### CLI (router-live)
 
-`inference.py` auto-detects moe files by safetensors-header sniff (`library/inference/models.py:_is_hydra_moe`). When detected, static merge is skipped and the network is attached as dynamic forward hooks — the training-time `HydraLoRAModule.forward` runs for every adapted layer on every denoising step, reproducing the trained router's per-sample, per-layer behavior.
+`inference.py` auto-detects moe files via adapter capability classification (`library/inference/models.py::_classify_adapter_capability`). When detected, static merge is skipped and the network is attached as dynamic forward hooks — the training-time `HydraLoRAModule.forward` runs for every adapted layer on every denoising step, reproducing the trained router's per-sample, per-layer behavior.
 
 Static merge and router-live are mutually exclusive: mixing hydra moe files with regular LoRA files in one `--lora_weight` list is refused. P-GRAFT composes cleanly — the cutoff step toggles `network.enabled` for both, and `HydraLoRAModule` honors the flag.
 
-Use `make test-hydra` (or `python tasks.py test-hydra`) to run inference against the latest moe output.
+Use `python tasks.py test-hydra` (compatibility alias: `make test-hydra`) to run inference against the latest moe output.
 
 ### ComfyUI (live routing)
 
@@ -40,14 +43,14 @@ Use the **Anima Adapter Loader** node (`custom_nodes/comfyui-hydralora/`), which
 
 ## Orthogonalized experts — fallback behavior
 
-The `OrthoHydraLoRAModule` default (both `use_ortho = true` and `use_hydra = true`) is the structural deadlock fix described in `docs/structure/hydralora.md` §5. One operational detail worth knowing:
+The `OrthoHydraLoRAModule` default (`use_ortho = true` together with `use_moe_style = "shared_A"` and `route_per_layer = true`) is the structural deadlock fix described in `docs/structure/hydralora.md` §5. One operational detail worth knowing:
 
 **Fallback.** If `min(out_dim, in_dim) < num_experts · lora_dim` the disjoint SVD-slice partition can't fit, so `P_bases` degenerates to the legacy shared `P_basis` replicated `E` times (with a warning in the log). In that case all experts start identical (shared basis + zero `S_p` + zero `lambda_layer`) and must diverge through training-time updates to `S_p` — if the router collapses they never will. Prefer to size `num_experts` so the partition fits. Implementation: `networks/lora_modules/ortho.py:OrthoHydraLoRAModule`.
 
 ## Composition with other variants
 
 - **T-LoRA** — timestep rank masking applies to `lora_down` (shared across experts), so it composes directly. HydraLoRA + T-LoRA is the configured default.
-- **OrthoLoRA** — supported via `OrthoHydraLoRAModule` (`networks/lora_modules/ortho.py`). Cayley-parameterized orthogonal `S_p` becomes per-expert (`(num_experts, r, r)`), `S_q` stays shared (matching the shared `lora_down` story). Activated by setting both `use_ortho = true` and `use_hydra = true` — this is the configured default.
+- **OrthoLoRA** — supported via `OrthoHydraLoRAModule` (`networks/lora_modules/ortho.py`). Cayley-parameterized orthogonal `S_p` becomes per-expert (`(num_experts, r, r)`), `S_q` stays shared (matching the shared `lora_down` story). Activated by setting `use_ortho = true` alongside `use_moe_style = "shared_A"` and `route_per_layer = true` — this is the configured default.
 - **Spectrum** — composes cleanly. Cached steps skip all transformer blocks entirely (router included), so hydra just runs fewer times.
 - **Modulation guidance** — orthogonal. Touches AdaLN only, outside the hydra-adapted Linears.
 
@@ -58,15 +61,17 @@ The first HydraLoRA implementation used a single global router that read max-poo
 1. **One-layer-wide routing.** The same gate was applied everywhere, so experts couldn't specialize per layer (e.g. an expert that's strong in early blocks but irrelevant in late blocks had no way to express that).
 2. **Router decoupled from DiT input distribution.** The training signal for the router came from a fixed, pre-computed text embedding — not from what the adapted module actually sees at denoising time — so the routing decision was blind to noise level and image content.
 
-The current layer-local design drops the text-space clustering path and reads each adapted layer's actual input. Old checkpoints with `_hydra_router.*` keys are refused at load time (see `networks/lora_anima/`) with an error message pointing at retraining.
+The current layer-local design drops the text-space clustering path by default and reads each adapted layer's actual input (or optional σ features; network-global text routing remains explicitly selectable via `route_per_layer = false` + `router_source = "crossattn_emb"`). Old checkpoints with `_hydra_router.*` keys and legacy config keys (`use_hydra`, `use_sigma_router`, `use_fei_router`) are refused with an error pointing to the three-axis config (`networks/lora_anima/config.py`).
 
 ## Configuration
 
-The HydraLoRA toggle block in `configs/methods/lora.toml` (and the dedicated `configs/gui-methods/hydralora.toml` for GUI users) controls:
+Routing uses the unified three-axis surface in `configs/methods/lora.toml` (`python tasks.py lora`, compatibility alias `make lora`) and the self-contained GUI variant `configs/gui-methods/hydralora.toml` (`python tasks.py lora-gui hydralora`):
 
-- `use_hydra = true` — switches `module_class` to `HydraLoRAModule`.
-- `num_experts = 4` — default. Higher values give more specialization capacity at the cost of more `(out_dim * rank)` parameters per module.
-- `balance_loss_weight = 0.001` — Switch Transformer load-balancing coefficient. Lowered from 0.01 because the original value dominated the weak router-gradient signal and pinned every router to uniform. Raise back toward 0.01 if you observe expert collapse after the rank-R router fix (see "Fixes" below); lower further (or zero) if specialization stays too weak.
+- `use_moe_style = "shared_A"` — shared `lora_down` + per-expert `lora_up` heads (`"independent_A"` switches to FeRA-style independent experts; `false` disables MoE; the legacy `use_hydra` key is rejected).
+- `route_per_layer = true` — layer-local `HydraLoRAModule` / `OrthoHydraLoRAModule` routers (`false` selects a single network-level global router).
+- `router_source = "input" | "sigma"` — `"input"` (default in `configs/methods/lora.toml`) routes purely from the rank-R `lx` signal; `"sigma"` (default in `configs/gui-methods/hydralora.toml`) appends a `sigma_feature_dim`-wide sinusoidal(σ) feature. (`"fei"`, `"crossattn_emb"`, and `"none"` are also supported on the three-axis surface.)
+- `num_experts` — `4` in `configs/methods/lora.toml`, `6` in `configs/gui-methods/hydralora.toml`. Higher values give more specialization capacity at the cost of more `(out_dim * rank)` parameters per module.
+- `balance_loss_weight` — Switch Transformer load-balancing coefficient, calibrated to **`1e-7`** (`configs/methods/lora.toml`) or **`3e-7`** (`configs/gui-methods/hydralora.toml`), paired with `balance_loss_warmup_ratio = 0.4`. Keep this in the `1e-7`–`1e-6` regime: values **`> 5e-5` risk router saturation**, overpowering task gradients and pinning gates to uniform.
 
 HydraLoRA requires `cache_llm_adapter_outputs = true` (same as standard LoRA in this repo — unrelated to routing, but the cached crossattn is assumed by the surrounding training plumbing).
 
@@ -91,9 +96,9 @@ Applied:
 
 1. **Pool after `lora_down`.** `_compute_gate` now takes the rank-R `lx` (post `lora_down`) and RMS-pools it across the sequence dim. Content survives aggregation; no DC-bias outliers; router parameter count drops ~64× (e.g. `2048 × 4 → 32 × 4`).
 2. **Gate computed before T-LoRA mask / dropout** so the gate is identical at train and inference time.
-3. **Balance-loss weight pre-cut** from 0.01 → 0.001 in `lora.toml`, `gui-methods/hydralora.toml`, `gui-methods/hydralora_sigma.toml`, since with real router gradient restored the old weight would dominate.
-4. **Old-shape router refused at load.** `create_network_from_weights` raises when `router.weight.shape[1] != rank`, with a retrain message — pre-fix routers never learned anything, so there's no salvage path.
+3. **Balance-loss weight recalibrated** — initially cut from `0.01` down to `0.001` at the time of the rank-R fix, and subsequently calibrated to **`1e-7`** (`configs/methods/lora.toml`) and **`3e-7`** (`configs/gui-methods/hydralora.toml`), since weights `> 5e-5` still risk saturating the router toward uniform gates.
+4. **Old-shape router refused at load.** `create_network_from_weights` raises when `router.weight.shape[1] != rank` (for `router_source="input"`), with a retrain message — pre-fix routers never learned anything, so there's no salvage path.
 5. **OrthoHydraLoRAModule mirrored** with the same change. Pool runs on the post-`Q_eff` `lx` but *before* λ scaling — λ is zero-init, so pooling post-λ would zero the router input at step 0 and freeze gradient.
 6. **ComfyUI live-routing hook updated** to mirror the training-time forward exactly (rank-R RMS pool). See `custom_nodes/comfyui-hydralora/README.md` for node-side details.
 
-Exit criteria for the first retrain: `‖router.weight‖` at final step > 1.5× init (init for `(E=4, rank=32)` @ std=0.01 ≈ 0.113); median normalized entropy ∈ [0.6, 0.95]; mean dominant-top1 > 0.2; zero dead experts; `make test-hydra` quality ≥ non-hydra LoRA baseline; ComfyUI `Anima Adapter Loader` visually matches CLI at `strength_lora=1.0`.
+Exit criteria for the first retrain: `‖router.weight‖` at final step > 1.5× init (init for `(E=4, rank=32)` @ std=0.01 ≈ 0.113); median normalized entropy ∈ [0.6, 0.95]; mean dominant-top1 > 0.2; zero dead experts; `python tasks.py test-hydra` quality ≥ non-hydra LoRA baseline; ComfyUI `Anima Adapter Loader` visually matches CLI at `strength_lora=1.0`.

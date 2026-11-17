@@ -1,5 +1,8 @@
 # Modulation Guidance
 
+状态：稳定
+适用版本：当前 main
+
 Quality steering via text-conditioned AdaLN modulation, based on [Starodubcev et al., "Rethinking Global Text Conditioning in Diffusion Transformers" (ICLR 2026)](https://arxiv.org/abs/2602.09268). Requires a short distillation step to train the `pooled_text_proj` MLP; thereafter inference-time steering is training-free.
 
 ## How it works
@@ -48,7 +51,7 @@ t_embedding_B_T_D = t_embedding_B_T_D + self.pooled_text_proj(pooled).unsqueeze(
 | EOS token | prompt_embeds | 0.170 |
 | EOS token | crossattn_emb | 0.089 |
 
-Max pool captures per-dimension peak activations from positions 16–50 (visual attribute tags), which fingerprint prompt-specific features. HydraLoRA already computes `crossattn_emb.max(dim=1).values` for expert routing — one pooling, two consumers.
+Max pool captures per-dimension peak activations from positions 16–50 (visual attribute tags), which fingerprint prompt-specific features. (Historically, the initial global HydraLoRA router also consumed `crossattn_emb.max(dim=1).values`, whereas current layer-local HydraLoRA routes on the post-`lora_down` rank-R signal — see [Compatibility](#compatibility) below.)
 
 ### Injection point: after `t_embedding_norm`
 
@@ -86,11 +89,11 @@ Two named profiles cover the useful operating points — pick the safe one if a 
 | **`step_i8_skip27`** (default) | 8 | 27 | 0.0 | Best overall quality. Protects blocks 0–7 + 27. May occasionally show minor anatomy drift on drift-prone LoRAs. |
 | **`step_i14`** (safe) | 14 | — | 0.0 | Reliably stays inside the trained manifold. Slightly less expressive — use when `step_i8_skip27` shows drift on the prompt at hand. |
 
-Default guidance prompts use booru-style quality/score tags (in-distribution for Anima's text encoder):
+Default guidance prompts use booru-style quality/score tags (in-distribution for Anima's text encoder, matching `inference.py`):
 
 | Aspect | p₊ | p₋ |
 |--------|-----|-----|
-| Quality+resolution | *"absurdres, masterpiece, score_9"* | *"worst quality, low quality, score_1"* |
+| Quality+resolution | *"absurdres, score_9, score_8"* | *"worst quality, low quality, score_1, score_2, score_3"* |
 
 Resolution tags (`absurdres`) are included because the quality and resolution directions correlate per-content (cosine 0.50), which works in our favor — quality guidance naturally pulls toward resolution too.
 
@@ -104,8 +107,8 @@ Default CLI invocation (reproduces the `step_i8_skip27` profile — recommended 
 python inference.py \
     --pooled_text_proj path/to/pooled_text_proj.safetensors \
     --mod_w 3.0 \
-    --mod_pos_prompt "absurdres, masterpiece, score_9" \
-    --mod_neg_prompt "worst quality, low quality, score_1" \
+    --mod_pos_prompt "absurdres, score_9, score_8" \
+    --mod_neg_prompt "worst quality, low quality, score_1, score_2, score_3" \
     # ... other args
 ```
 
@@ -125,8 +128,8 @@ To recover pre-0413 uniform behavior (not recommended — prone to pink-collapse
 |------|---------|-------------|
 | `--pooled_text_proj` | — | Path to trained projection weights (.safetensors) |
 | `--mod_w` | 3.0 | Peak guidance strength (`w` applied inside `[start_layer, end_layer)`) |
-| `--mod_pos_prompt` | `"absurdres, masterpiece, score_9"` | Positive quality prompt |
-| `--mod_neg_prompt` | `"worst quality, low quality, score_1"` | Negative quality prompt |
+| `--mod_pos_prompt` | `"absurdres, score_9, score_8"` | Positive quality prompt |
+| `--mod_neg_prompt` | `"worst quality, low quality, score_1, score_2, score_3"` | Negative quality prompt |
 | `--mod_start_layer` | `8` | Inclusive first block that receives the steering delta. `0` = uniform (pre-0413). `8` = protect tonal-DC blocks 0–7. `14` = safe option. |
 | `--mod_end_layer` | `27` | Exclusive last block + 1. `-1` = all remaining blocks. `27` skips Anima's final compensation block. |
 | `--mod_taper` | `0` | Number of late slots inside `[start, end)` to scale by `--mod_taper_scale`. `0` disables taper. |
@@ -143,15 +146,15 @@ The projection MLP must be trained via distillation before modulation guidance c
 2. **Student** forward — `crossattn_emb` swapped for a cached `T5("")` unconditional baseline (same input Anima's own CFG-uncond branch uses), with the real pooled text injected via `pooled_text_proj`. This forces the projection to carry every bit of text information through the modulation path.
 3. **Loss** — MSE between student and teacher noise predictions.
 
-#### Step 1 — pre-stage with `make distill-prep`
+#### Step 1 — pre-stage with `python tasks.py distill-prep`
 
-`make distill-prep` runs two phases:
+`python tasks.py distill-prep` (compatibility alias: `make distill-prep`) runs two phases:
 
-- **Phase 1 (mandatory)** — encodes `T5("")` once into `post_image_dataset/lora/_anima_uncond_te.safetensors`. The training loop loads this as the student's unconditional crossattn input; without it `make distill-mod` won't start.
+- **Phase 1 (mandatory)** — encodes `T5("")` once into `post_image_dataset/lora/_anima_uncond_te.safetensors`. The training loop loads this as the student's unconditional crossattn input; without it `python tasks.py distill-mod` won't start.
 - **Phase 2 (optional, recommended)** — runs the frozen teacher (full CFG denoise from fresh noise, conditioned on each cached prompt) and writes clean latents under `post_image_dataset/distill_mod_synth/`. Training against these instead of real-image latents removes the real-vs-teacher distribution gap that floored the original val loss.
 
 ```bash
-make distill-prep                       # both phases (default)
+python tasks.py distill-prep                      # both phases (default; alias: make distill-prep)
 python -m scripts.distill_mod.prep --skip_synth   # Phase 1 only (uncond sidecar)
 python -m scripts.distill_mod.prep --skip_uncond  # Phase 2 only (assumes sidecar exists)
 python -m scripts.distill_mod.prep --max_samples 16   # smoke-test the synth pass
@@ -159,14 +162,15 @@ python -m scripts.distill_mod.prep --max_samples 16   # smoke-test the synth pas
 
 Phase 2 defaults are tuned to Anima's production environment (`num_steps=20`, `cfg_scale=2.5`, `flow_shift=1.0`, top portrait bucket). Override `--buckets`, `--n_per_bucket`, `--num_steps`, `--cfg_scale` to taste.
 
-#### Step 2 — run `make distill-mod`
+#### Step 2 — run `python tasks.py distill-mod`
 
 ```bash
-make distill-mod                                                 # train on real-image latents
-make distill-mod ARGS='--synth_data_dir post_image_dataset/distill_mod_synth'   # paper-faithful (recommended)
+python tasks.py distill-mod                                      # train on real-image latents
+python tasks.py distill-mod --synth_data_dir post_image_dataset/distill_mod_synth   # paper-faithful (recommended)
+# Compatibility aliases: make distill-mod / make distill-mod ARGS='--synth_data_dir post_image_dataset/distill_mod_synth'
 ```
 
-`make distill-mod` honors `PRESET` — `PRESET=low_vram make distill-mod` adds grad ckpt + unsloth CPU offload from `configs/presets.toml`.
+`python tasks.py distill-mod` honors `PRESET` — `python tasks.py distill-mod PRESET=low_vram` adds grad ckpt + unsloth CPU offload from `configs/presets.toml`.
 
 Direct invocation (current defaults shown):
 
@@ -186,10 +190,10 @@ python -m scripts.distill_mod.distill \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--data_dir` | `post_image_dataset/lora` | Directory with cached latents + TE sidecars. Also where the Phase 1 `_anima_uncond_te.safetensors` sidecar is looked up. |
-| `--uncond_te_path` | `<data_dir>/_anima_uncond_te.safetensors` | Override path to the T5("") sidecar from `make distill-prep` Phase 1. |
+| `--uncond_te_path` | `<data_dir>/_anima_uncond_te.safetensors` | Override path to the T5("") sidecar from `python tasks.py distill-prep` Phase 1. |
 | `--synth_data_dir` | `None` | Phase 2 synthetic-latent dir. When set, latents come from here (matched by stem + resolution); TE caches still come from `--data_dir`. |
 | `--dit_path` | `models/diffusion_models/anima-base-v1.0.safetensors` | Base model. |
-| `--output_path` | `output/ckpt/pooled_text_proj.safetensors` | Where to save the trained projection (`make test MOD=1` picks this path up automatically). |
+| `--output_path` | `output/ckpt/pooled_text_proj.safetensors` | Where to save the trained projection (`python tasks.py test MOD=1` picks this path up automatically). |
 | `--iterations` | 5000 | Training iterations. |
 | `--lr` | 2e-5 | Peak learning rate (cosine to 10%). |
 | `--warmup` | 0.02 | ≥1 = absolute steps; <1 = ratio of iterations. |
@@ -209,7 +213,7 @@ python -m scripts.distill_mod.distill \
 
 **Teacher cache.** Because the K-grid pre-samples both σ and per-(sample, σ_idx) noise, every cache miss commits one deterministic teacher prediction that every later visit hits directly — no recomputation, identical (latents, noise, σ) inputs to the student whether the cache hit or missed. RAM footprint scales as `dataset_size × K × latent_bytes` (≈ few GB at default K=6 + Anima's 16×H×W bf16 latents); shrink K if RAM is tight.
 
-Output: `output/ckpt/pooled_text_proj.safetensors`. Use it at inference via `--pooled_text_proj <path>` (or `make test MOD=1`, which auto-discovers it).
+Output: `output/ckpt/pooled_text_proj.safetensors`. Use it at inference via `--pooled_text_proj <path>` (or `python tasks.py test MOD=1`, compatibility alias `make test MOD=1`, which auto-discovers it).
 
 ## Compatibility
 
@@ -219,8 +223,8 @@ Output: `output/ckpt/pooled_text_proj.safetensors`. Use it at inference via `--p
 | **CFG** | Complementary — CFG in noise space, modulation guidance in AdaLN space. They stack. |
 | **P-GRAFT** | Compatible — modulation guidance runs independently of LoRA presence. |
 | **Spectrum** | Compatible — Spectrum skips blocks but still runs `t_embedder` + `final_layer`. Guidance delta applies to `emb_B_T_D` before blocks, carried through on cached steps. |
-| **HydraLoRA** | Both have consumed pooled crossattn in the past, but HydraLoRA's current router reads the post-`lora_down` rank-R signal — so no shared pool any more. Orthogonal paths. |
-| **LoRA training** | No conflict — LoRA explicitly excludes `pooled_text_proj` via the exclude pattern in `networks/lora_anima/factory.py`. |
+| **HydraLoRA** | Both have consumed pooled crossattn in the past, but HydraLoRA's current layer-local router reads the post-`lora_down` rank-R signal — so no shared pool by default. Orthogonal paths. |
+| **LoRA training** | No conflict — LoRA explicitly excludes `pooled_text_proj` via `_DEFAULT_EXCLUDE` in `networks/lora_anima/config.py`. |
 
 ## ComfyUI
 

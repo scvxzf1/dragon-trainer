@@ -46,8 +46,7 @@ skip 不计通过；`run_two_rank` 在 `nccl` 且未 `MULTIGPU_REFERENCE_HARDWAR
 
 `plan_hot_run` 产出的命令可以**真的**执行，但有三件事不在仓库里，必须由跑的人补上：
 
-1. **解释器**：runner 必须用项目 venv 的解释器
-   `/mnt/SD_Dataset/训练器相关/krea2-webui/.venv-v100/bin/python`，不能依赖 `PATH`。
+1. **解释器**：runner 必须用项目 venv 的解释器（如 `<repo>/.venv/bin/python` 或 V100 专用 `<repo>/.venv-v100/bin/python`），不能依赖 `PATH`。
    `hot_run` 现在默认取 `sys.executable`（也就是启动 harness 的那个 python），并接受
    显式参数 `python=<绝对路径>`；传入裸名（如 `"python"`）会被
    `hot_run_interpreter_invalid` 拒绝。t13 的第 2 次尝试就是因为前缀是裸 `python`，
@@ -55,8 +54,7 @@ skip 不计通过；`run_two_rank` 在 `nccl` 且未 `MULTIGPU_REFERENCE_HARDWAR
    自检：`plan.command[0]` 必须是绝对路径，且 `[plan.command[0], "-c", "import torch"]` 能过。
 
 2. **基座权重**：树内默认 `base_assets` 路径当前是**断链**，真跑必须显式覆盖到实际存在的
-   文件，例如
-   `/mnt/SD_Dataset/训练器测试/comfyui/models/diffusion_models/anima/anima-base-v1.0.safetensors`。
+   文件，例如 `<path-to-dit>/anima-base-v1.0.safetensors`。
    这是运行参数，不改 `configs/`、不改库默认值；断链在 `plan_hot_run` 之前的资产校验里
    就会失败，不会退化成一个"看起来跑过了"的结果。
 

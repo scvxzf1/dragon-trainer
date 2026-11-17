@@ -1,5 +1,7 @@
 # bench/spd — Spectral Progressive Diffusion precondition tests
 
+状态：实验 / 历史设计记录（后续阶段见 [plan.md](plan.md) 与 [compose_report.md](compose_report.md)，现行实现与用法见 [../../docs/experimental/spd.md](../../docs/experimental/spd.md)）
+
 [Spectral Progressive Diffusion](https://howardxiao.ca/speed/) (SPD, Xiao et al.,
 arXiv:2605.18736) accelerates DiT/flow-matching inference by growing spatial
 resolution along the denoising trajectory — running early (noise-dominated)
@@ -69,7 +71,7 @@ The probe loads the bare DiT (no LoRA) eager/dynamic-shape (no `torch.compile`),
 encodes one prompt, and runs from the same seed noise a full-res Euler baseline
 vs an SPD variant (DCT low-pass init → low-res steps → spectral expansion Eq. i–iii
 + timestep alignment Eq. 5–6 → full-res finish). The SPD math mirrors the
-community `SamplerSPEED` node (`../comfy/custom_nodes/comfyui-speed/`), so
+external community `SamplerSPEED` node (`comfyui-speed`, external reference outside this repo), so
 `--community` reproduces the exact `GJ5Rt3Xz` workflow schedule.
 
 ```bash
@@ -115,11 +117,8 @@ not a transparent speedup. Recommended `SamplerSPEED` widgets (start, mid, t1, t
 max), standalone SPD is slower than the Spectrum node we already ship (~3.75×) — the
 real question is SPD∘Spectrum (Phase 3), untested.
 
-## What this does NOT yet test (separate preconditions for SPD)
+## Follow-up phases (completed after this v0 note)
 
-1. **Autoregression *dynamics* (Fig 2b):** that low frequencies actually resolve
-   early in *Anima's* denoising trajectory. Needs DiT forwards — a per-step
-   `x_t` spectral-emergence probe. (Not yet built — Phase 1.) This is what would
-   let the δ-optimal schedule be *derived* (Prop 1/2) instead of hand-tuned like
-   the `GJ5Rt3Xz` knobs.
-2. ~~Resolution generalization~~ — **tested 2026-05-20, PASSES** (see above).
+1. **Autoregression *dynamics* (Fig 2b):** built in `measure_autoregression.py` and evaluated in [plan.md](plan.md) Phase 1.
+2. **Resolution generalization:** tested 2026-05-20, PASSES (see above).
+3. **SPD ∘ Spectrum composition:** evaluated in `probe_compose.py` and documented in [compose_report.md](compose_report.md); shipped SPD usage lives in [../../docs/experimental/spd.md](../../docs/experimental/spd.md).

@@ -1,8 +1,10 @@
 # SPD ∘ Spectrum composition — Phase-0 report
 
-Bench record for `docs/proposal/spd_spectrum_compose.md` Phase 0. All runs
+状态：实验 / 历史设计记录（NO-GO 结论；原提案草稿 `docs/proposal/spd_spectrum_compose.md` 已随本结论清理，现行 SPD 说明见 [../../docs/experimental/spd.md](../../docs/experimental/spd.md)）
+
+Bench record for the retired `docs/proposal/spd_spectrum_compose.md` Phase 0. All runs
 2026-05-21 on a single RTX 5060 Ti (16 GB), bare Anima DiT unless noted, via
-`bench/spd/probe_compose.py`. Builds on the SPD precondition work in `plan.md`
+`bench/spd/probe_compose.py`. Builds on the SPD precondition work in [plan.md](plan.md)
 (Phase 0/1) — Anima latents are power-law (β≈2.26), bands resolve in frequency
 order, σ_resolve monotone.
 
@@ -131,7 +133,7 @@ metric.)
 ## Phase-0(b) follow-on — the "opposite LoRA" frontier (`--mode frontier`) — also FAILS
 
 The 0(b) finding ("the SPD-LoRA *widens* the seam because it's trained to reveal
-HF") prompted a natural counter-idea (`proposal.md` discussion 2026-05-21): instead
+HF") prompted a natural counter-idea (contemporary proposal discussion, 2026-05-21): instead
 of training the trajectory adapter to reveal HF, train an **opposite** adapter that
 *minimizes* the seam reorientation — a `loss_seam` regularizer. Before training
 anything, the cheap gate is: does the **frozen** DiT have *any* operating point where
@@ -206,6 +208,6 @@ uv run python -m bench.spd.probe_compose --mode frontier --n_prompts 5 \
     --frontier_transition_sigmas 0.7 0.5 --frontier_hf_scales 0.0 0.25 0.5 0.75 1.0  # opposite-LoRA gate
 ```
 
-Result envelopes (corrected metric): `bench/spd/results/20260521-1405-phase0b-bare-s07-fix/`,
+Historical local result envelopes (untracked runtime outputs, not checked into Git): `bench/spd/results/20260521-1405-phase0b-bare-s07-fix/`,
 `…-1407-phase0b-bare-s05-fix/`, `…-1410-phase0b-spdlora-s05-fix/` (each with
 `ll_continuity.png`); frontier follow-on: `…-1507-seam-frontier/` (`frontier.png`).

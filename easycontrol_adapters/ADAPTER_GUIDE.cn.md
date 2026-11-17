@@ -1,6 +1,9 @@
 # 构建你自己的 EasyControl 适配器
 
-本指南说明如何为 Anima 添加一个**新的 EasyControl 控制任务**，供你自己使用。这是一个本地适配器，存放在 `easycontrol_adapters/<your_task>/` 下，不提交到 git。我们以示例 **colorize** (`easycontrol_adapters/colorization/`) 为例逐步讲解，并明确指出针对你自己的任务需要修改哪些地方。
+状态：实验
+适用版本：当前 main；可运行边界以 `tasks.py --help` 和实时源码为准
+
+本指南说明如何为 Anima 添加一个**新的 EasyControl 控制任务**，供你自己使用。这是一个本地适配器，存放在 `easycontrol_adapters/<your_task>/` 下，不提交到 git。我们以示例 **colorize** (`easycontrol_adapters/colorization/`) 为例逐步讲解，并明确指出针对你自己的任务需要修改哪些地方（跨图主体配对与编辑指令挖掘工具见下文 `easycontrol_adapters/tools/` 说明）。
 
 记住一件事：
 
@@ -33,10 +36,10 @@ colorize 的做法——你可以复用的思路：**真实的黑白漫画没有
 
 | # | 内容 | colorize 版本 | 作用 |
 |---|---------|-------------------|--------------|
-| 1 | `easycontrol_adapters/<task>/` 项目 | `colorization/`（`mangafy*.py`、`color_caption.py`、`prep.py`） | 构建并缓存参考图像（以及可选的较短文本缓存） |
-| 2 | `configs/datasets/<task>.toml` | `configs/datasets/colorize.toml` | 通过 **cond_cache_dir** 将每个目标与参考配对的数据集 |
-| 3 | `configs/methods/<task>.toml`（+ `configs/gui-methods/<task>.toml`） | `configs/methods/colorize.toml` | config——指向数据集，设置 LR / epochs / `network_args` |
-| 4 | `scripts/experimental_tasks/{training,inference}.py` | `_EASYADAPTERS = {"colorize"}` + 分支 | 让 `EASYADAPTER=<task>` 在 `make exp-easycontrol*` 命令中正常工作 |
+| 1 | `easycontrol_adapters/<task>/` 项目 | `colorization/`（`mangafy.py`、`mangafy_gpu.py`、`screentone_sd.py`、`color_caption.py`、`prep.py`） | 构建并缓存参考图像（以及可选的较短文本缓存） |
+| 2 | `configs/datasets/<task>.toml` | `configs/datasets/colorize.toml` | 通过 **cond_cache_dir** 将每个目标与参考配对的数据集（跨图配对任务也可由 `easycontrol_adapters/tools/blueprint.py` 自动生成蓝图尾部） |
+| 3 | `configs/methods/<task>.toml`（可选 GUI 变体参看 `configs/gui-methods/easycontrol.toml`） | `configs/methods/colorize.toml` | config——指向数据集，设置 LR / epochs / `network_args` |
+| 4 | `scripts/experimental_tasks/{training,inference}.py` | `_EASYADAPTERS = {"colorize"}` + 分支 | 让 `EASYADAPTER=<task>` 在 `python tasks.py exp-easycontrol*` 命令中正常工作 |
 
 我们按顺序逐一讲解。这里没有任何内容需要改动 `networks/`。
 
@@ -50,7 +53,7 @@ colorize 的做法——你可以复用的思路：**真实的黑白漫画没有
 
 这是一个普通函数：接受彩色图像 RGB `uint8 (H,W,3)` 和一个种子，返回**相同尺寸**的参考图像 RGB `uint8 (H,W,3)`。（相同尺寸很重要——见 §3。）对相同种子必须给出相同输出，这样重跑和并行 worker 才能保持一致。
 
-在 colorize 中这是 `mangafy.py::mangafy_array`（及其 GPU 版本 `mangafy_gpu.py::mangafy_array_gpu`）：
+在 colorize 中提供三种同签名的筛选/网点化引擎：`mangafy.py::mangafy_array`（纯 CPU `cv2`/`numpy`）、`mangafy_gpu.py::mangafy_array_gpu`（同结构的 CUDA/PyTorch 加速版）以及 `screentone_sd.py`（基于 `Sketch2Manga` + ControlNet 线稿的分布内网点引擎，额外权重通过 `python tasks.py exp-easycontrol-download EASYADAPTER=colorize` 下载）：
 
 ```python
 # easycontrol_adapters/colorization/prep.py
@@ -96,7 +99,7 @@ colorize 处理了两个正确性陷阱，照搬它的结构即可免费获得�
 
 ## 3. 不能违反的规则——参考和目标的 token 数必须匹配
 
-DiT 运行在 Anima 的**原生形状分桶**上（两个 token 数家族，4032 和 4200；见 CLAUDE.md 和 `docs/experimental/easycontrol.md` 中的"Cond token count"）。**没有填充旋钮**——参考以其 latent 实际的 token 数运行。
+DiT 运行在 Anima 的**原生形状分桶**上（两个 token 数家族，4032 和 4200；见根目录 `AGENTS.md` 和 `docs/experimental/easycontrol.md` 中的"Cond token count"）。**没有填充旋钮**——参考以其 latent 实际的 token 数运行。
 
 这正是 §2a 要求参考与输入**尺寸相同**、§2c 要求按**原生尺寸**编码的原因：两者都做到，参考 latent 就会自动落入与目标相同的桶，一切正常工作。如果你想要较小的参考（完全可以——越小越省内存、越快），请在**图像**层面、编码之前缩小，这样 latent 仍然落在真实的桶上。不要试图在网络内部限制 token 数。
 
@@ -134,7 +137,15 @@ validation_seed = 42
 - **`text_cache_dir`** — **只**重定向文本缓存（latent 仍来自 `cache_dir`）。如果你保留完整标注，可以完全省略它——这样加载器会使用共享文本缓存，你也可以跳过 `prep.py` 的文本阶段。
 - **`flip_aug = false`** — 必须。翻转后的目标需要翻转后的参考 latent，而你没有缓存那个。保持翻转关闭。
 
-注意 colorize**复用**共享的 `post_image_dataset/lora` 缓存作为目标 latent 和文本——`make preprocess` 已经构建了它们，没有任何东西被重新编码。你的适配器只需添加*参考*缓存（以及可能的较短文本缓存）。
+注意 colorize**复用**共享的 `post_image_dataset/lora` 缓存作为目标 latent 和文本——`python tasks.py preprocess`（兼容别名：`make preprocess`）已经构建了它们，没有任何东西被重新编码。你的适配器只需添加*参考*缓存（以及可能的较短文本缓存）。
+
+### 跨图配对与描述符蓝图体系（`easycontrol_adapters/tools/`）
+
+如果你的控制任务不是单图逐像素派生（如 `colorize`），而是**跨图像主体检索或指令编辑**（`cond = 同一角色的图像 A`，`target = 图像 B`），可以直接复用 `easycontrol_adapters/tools/` 下的共享蓝图与配对挖掘工具：
+
+- **`easycontrol_adapters/tools/blueprint.py`**：描述符 TOML 蓝图重写器。保留文件头部用户维护的 `[staging]` / `[preprocess]` / `[training]` 表，仅原地重写哨兵注释下方的 `[general]` + `[[datasets]]` + `[[datasets.subsets]]` 生成段。
+- **`easycontrol_adapters/tools/subject_pairs.py`**：基于 `caption_index.json` 挖掘同角色跨图配对（优先跨画师目录，消除位置复制捷径），生成 `staging/` 软链接、`pairs.json` 清单及 `cond/` latent 软链接（`--cond-only`），并调用 `blueprint.py` 写回描述符数据集蓝图。
+- **`easycontrol_adapters/tools/subject_edit_pairs.py`**：在同角色跨图配对基础上计算两图标签对称差分（新增标签 + `-tag` 移除前缀），把目标标注转化为精简的**编辑指令（delta caption）**，迫使身份信息完全经由 cond 流传递。
 
 ---
 
@@ -180,13 +191,13 @@ unsloth_offload_checkpointing = true
 - **`easycontrol_drop_p`** — 用于图像 CFG 的参考 dropout 频率。colorize 使用 `0`（总是需要参考）；默认值是 `0.1`。
 - **`output_name`** — 必须唯一；推理步骤通过此名称找到最新的检查点（§6）。
 
-你也可以添加 `configs/gui-methods/<task>.toml`——一个独立版本（无切换块），带有 `[variant]` 块（`family = "easycontrol"`、`label`、`description`、`order`），使其出现在 GUI 的 EasyControl 下拉菜单中。参见 `configs/gui-methods/colorize.toml`。如果你只从命令行运行，可以跳过这一步。
+如果需要让变体出现在 WebUI 的下拉菜单中，也可以参考 `configs/gui-methods/easycontrol.toml` 添加自包含的 `configs/gui-methods/<task>.toml`（带 `[variant]` 表：`family = "easycontrol"`、`label`、`description`、`order`；注意仓库内置的 `colorize` 仅提供 `configs/methods/colorize.toml`，未单独提供 GUI 变体）。如果你只从命令行运行，可以跳过这一步。
 
 ---
 
 ## 6. 第四件事——让 `EASYADAPTER=<task>` 工作
 
-`make exp-easycontrol*` 命令通过 `EASYADAPTER` 环境变量进行切换。三处小改动可以让 `EASYADAPTER=<task>` 使用你的 config、prep 和检查点。
+`python tasks.py exp-easycontrol*`（兼容别名：`make exp-easycontrol*`）命令通过 `EASYADAPTER` 环境变量进行切换。三处小改动可以让 `EASYADAPTER=<task>` 使用你的 config、prep 和检查点。
 
 **在 `scripts/experimental_tasks/training.py` 中：**
 
@@ -226,21 +237,25 @@ ref_fallback_dir = (ROOT/"post_image_dataset"/"resized") if is_colorize else (RO
 ## 7. 运行它
 
 ```bash
-# 1. Build the reference cache (build + VAE-encode). Idempotent.
-make exp-easycontrol-preprocess EASYADAPTER=<task>
-#    Check a few first:
+# 0. （可选）如果构建器需要额外模型权重（例如 colorize 的 screentone_sd 引擎）：
+python tasks.py exp-easycontrol-download EASYADAPTER=colorize
+
+# 1. 构建参考缓存（build + VAE-encode），幂等可重跑：
+python tasks.py exp-easycontrol-preprocess EASYADAPTER=<task>
+#    先小批量检查暂存图：
 python easycontrol_adapters/<task>/prep.py --limit 8
-#    Eyeball the staged reference PNGs under post_image_dataset/<task>_staging/
+#    目视检查 post_image_dataset/<task>_staging/ 下的参考 PNG
 
-# 2. Train (DiT frozen, adapter only).
-make exp-easycontrol EASYADAPTER=<task>
+# 2. 训练（冻结 DiT，仅训 adapter）：
+python tasks.py exp-easycontrol EASYADAPTER=<task>
 
-# 3. Inference — give it a real, in-distribution reference image.
-REF_IMAGE=path/to/condition.png make exp-test-easycontrol EASYADAPTER=<task>
-#    Steer with text:  ... ARGS='--prompt "..."'
+# 3. 推理——提供真实的分布内参考图像：
+python tasks.py exp-test-easycontrol EASYADAPTER=<task> REF_IMAGE=path/to/condition.png
+#    用文本引导：追加 --prompt "..."
+# （兼容别名：make exp-easycontrol-preprocess / exp-easycontrol / exp-test-easycontrol EASYADAPTER=<task>）
 ```
 
-前置条件：先运行一次 `make preprocess`，使共享的目标 latent 和文本缓存存在于 `post_image_dataset/lora`（你的适配器会复用它们）。
+前置条件：先运行一次 `python tasks.py preprocess`（兼容别名：`make preprocess`），使共享的目标 latent 和文本缓存存在于 `post_image_dataset/lora`（你的适配器会复用它们）。
 
 ### 推理技巧（来自 colorize 的经验）
 

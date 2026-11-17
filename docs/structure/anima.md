@@ -1,5 +1,8 @@
 # Anima model
 
+状态：稳定
+适用版本：当前 main
+
 A walkthrough of how the Anima diffusion model is put together — the text-conditioning pipeline, the VAE, the DiT block stack, and how a training step flows through all of it.
 
 ![Anima architecture](../structure_images/anima.png)
@@ -24,7 +27,7 @@ Anima is a **flow-matching DiT** (Diffusion Transformer) operating in latent spa
 
 The DiT's output $\hat v$ is the **predicted velocity** at the noisy point $x_t$ — a tensor of the same shape as the latent that, under rectified flow, points from the noise toward the clean data: $\hat v = v_\theta(x_t, t, c) \approx \varepsilon - x_0$. Integrating $\hat v$ along the trajectory $t: 1 \to 0$ at inference time is what turns pure noise into a latent the VAE can decode. Training teaches the DiT to make $\hat v$ match the true velocity; see §5 for the loss.
 
-- **DiT.** `class Anima` in `library/anima/models.py:1227–1816`. 28 `Block`s with hidden dim `D = 2048`, 16 heads × 128 head-dim, MLP expansion ratio 4 → hidden `8192`. Cross-attention `context_dim = 1024`.
+- **DiT.** `class Anima` in `library/anima/models.py`. 28 `Block`s with hidden dim `D = 2048`, 16 heads × 128 head-dim, MLP expansion ratio 4 → hidden `8192`. Cross-attention `context_dim = 1024`.
 - **Token budget.** Bucketing sorts each batch into one of two token-count families (4032 / 4200 patches), each bucket *exactly* filling its count — so by default forwards run at native token counts with no intra-bucket padding.
 
 ---
@@ -113,7 +116,7 @@ PatchEmbed inside the DiT then divides the latent spatially by 2 and maps channe
 
 ## 4. What one DiT block contains
 
-One `Block` (`library/anima/models.py:962–1223`) has three residual sub-layers, each gated by **AdaLN-Zero** modulation:
+One `Block` (`library/anima/models.py`) has three residual sub-layers, each gated by **AdaLN-Zero** modulation:
 
 $$
 \begin{aligned}
@@ -123,16 +126,18 @@ x &\leftarrow x + g_{\text{mlp}} \cdot \text{MLP}\!\big((1+s_{\text{mlp}})\,\tex
 \end{aligned}
 $$
 
-Each `(shift, scale, gate)` triple is produced per sub-layer by a small head:
+In all shipped Anima pretrained weights (`use_adaln_lora = True`, `adaln_lora_dim = 256`), each `(shift, scale, gate)` triple is generated via a **256-dim AdaLN-LoRA bottleneck** rather than a dense `2048 → 6144` head:
 
 $$
-(b_\star,\,s_\star,\,g_\star)\ =\ \text{split}_3\!\big(W_\star^{\text{adaLN}}\,\text{SiLU}(t_{\text{emb}})\big),
-\quad W_\star^{\text{adaLN}} \in \mathbb{R}^{6D \times D}
+\begin{aligned}
+[d_{\text{sa}},\,d_{\text{ca}},\,d_{\text{mlp}}] &= \text{chunk}_3\!\big(\text{adaln\_fused\_down}(t_{\text{emb}})\big) \in \mathbb{R}^{3 \times 256} \\
+(b_\star,\,s_\star,\,g_\star) &= \text{split}_3\!\big(\text{adaln\_up}_\star(d_\star) + \text{adaln\_lora}_\star\big) \in \mathbb{R}^{3 \times 2048}
+\end{aligned}
 $$
 
-i.e. a `Linear(2048 → 6144)` that is then split into three `2048`-vectors.
+On disk (ComfyUI / Cosmos convention), the bottleneck is stored per sub-layer as `adaln_modulation_{self_attn,cross_attn,mlp}.1` (`2048 → 256`) and `.2` (`256 → 6144`); at runtime (`library/anima/weights.py`), the three down-projections are fused into `adaln_fused_down` (`SiLU → Linear(2048 → 768)`) and the three up-projections become `adaln_up_{self_attn,cross_attn,mlp}` (`Linear(256 → 6144)`).
 
-The concrete Linear layers inside one block:
+The concrete `Linear` layers inside one block:
 
 | Sub-layer   | Module       | Linear                                | Shape (in → out)   |
 | ----------- | ------------ | ------------------------------------- | ------------------ |
@@ -143,9 +148,10 @@ The concrete Linear layers inside one block:
 |             |              | `output_proj`                         | 2048 → 2048        |
 | MLP         | `mlp`        | `layer1`                              | 2048 → 8192        |
 |             |              | `layer2`                              | 8192 → 2048        |
-| AdaLN heads | `adaln_…[1]` | ×3 per sub-layer                      | 2048 → 6144        |
+| AdaLN bottleneck | `adaln_fused_down[1]` | fused down for all 3 sub-layers | 2048 → 768         |
+| AdaLN up heads   | `adaln_up_{sa,ca,mlp}` | ×3 per sub-layer (`adaln_modulation_*.2` on disk) | 256 → 6144         |
 
-Across 28 blocks that is ~280 `Linear`s, plus the patch-embed / timestep-embed / final-layer heads outside the stack.
+By default (`train_adaln = false`), LoRA wraps only the **7** attention + MLP `Linear`s per block (**196** LoRA modules across 28 blocks; AdaLN, embedders, and `final_layer` are excluded via `_DEFAULT_EXCLUDE`, see [../methods/adaln.md](../methods/adaln.md)).
 
 ---
 
@@ -157,7 +163,7 @@ $$
 x_t = (1-\sigma)\,x_0 + \sigma\,\varepsilon
 $$
 
-(`library/runtime/noise.py:160–164`). The DiT predicts the straight-line **velocity**, and the target is:
+(`library/runtime/noise.py`). The DiT predicts the straight-line **velocity**, and the target is:
 
 $$
 v^\star = \varepsilon - x_0,
@@ -165,13 +171,13 @@ v^\star = \varepsilon - x_0,
 \hat v = v_\theta(x_t,\,t,\,c)
 $$
 
-(`train.py:841` — literally `target = noise - latents`). Loss is $\sigma$-weighted MSE:
+(`library/training/noise_target.py` / `library/training/forward/` — `target = noise - latents`). Loss is $\sigma$-weighted MSE:
 
 $$
 \mathcal{L}\ =\ \mathbb{E}_{x_0,\varepsilon,\sigma}\!\left[w(\sigma)\cdot \big\|\hat v - v^\star\big\|_2^2\right]
 $$
 
-with weighting chosen by `--weighting_scheme` (`library/runtime/noise.py:83–92`):
+with weighting chosen by `--weighting_scheme` (`library/runtime/noise.py`):
 
 $$
 w(\sigma) =

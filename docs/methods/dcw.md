@@ -1,5 +1,8 @@
 # DCW — Post-Step SNR-t Bias Correction
 
+状态：稳定
+适用版本：当前 main
+
 Training-free, sampler-level correction that closes the SNR-t bias of flow-matching DiTs by mixing each Euler step's `prev_sample` toward (or away from) the model's `x0_pred`.
 
 Paper: [Elucidating the SNR-t Bias of Diffusion Probabilistic Models](https://arxiv.org/abs/2604.16044) (Yu et al., CVPR 2026)
@@ -16,8 +19,8 @@ See §"Bias direction by CFG × aspect" below.
 
 | Mode | What `λ` is | When to use |
 |---|---|---|
-| **scalar** (v0/v1) — `--dcw` | a single global constant tuned offline (`inference.py` argparse default `−0.015`; canned `make test-dcw` overrides to `0.01`) | minimal/safe default; one-line ablation; fallback when v4 isn't calibrated |
-| **v4 learnable** — `--dcw_calibrator <artifact>` | a function of `(aspect, prompt, observed prefix gap)` produced at runtime by a small MLP | per-prompt amplitude + per-trajectory steering; trained per checkpoint via `make dcw` |
+| **scalar** (v0/v1) — `--dcw` | a single global constant tuned offline (`inference.py` argparse default `−0.015`; canned `python tasks.py test-dcw` overrides to `0.01`) | minimal/safe default; one-line ablation; fallback when v4 isn't calibrated |
+| **v4 learnable** — `--dcw_calibrator <artifact>` | a function of `(aspect, prompt, observed prefix gap)` produced at runtime by a small MLP | per-prompt amplitude + per-trajectory steering; trained per checkpoint via `python tasks.py dcw` |
 
 The math at the apply site is identical:
 
@@ -29,16 +32,18 @@ diff_LL    = haar_idwt(LL(diff), 0, 0, 0)             # LL-only band mask
 prev      += λ_i · diff_LL                            # DCW correction
 ```
 
-What differs is how `λ_i` is produced. In scalar mode, `λ_i = λ · sched(σ_i)`. In v4, `λ_i = base + bucket_corr + α_eff · μ_g[i] / Σ_tail(μ_g·S_pop)` with the controller observing the first `k=7` step's LL gap before firing.
+What differs is how `λ_i` is produced. In scalar mode, `λ_i = λ · sched(σ_i)`. In calibrator mode, `λ_i = baseline_lambda · (1 − σ_i) + α_eff · gain · (1 − σ_i)` (clamped to `±0.05`) with the controller observing the first `k_warmup` steps' LL gap (or FEI low-band energy) before firing.
 
-This page contains the current v4 derivation, gates, and fallback ladder.
+This page contains the current calibrator derivation, gates, and fallback ladder.
 
 ## Quick start
 
 ```bash
-make test-dcw                           # latest LoRA + scalar λ=0.01 (task target override)
-make test-dcw-v4                        # bare DiT + v4 controller by default; set NOLORA=0 for latest LoRA
-make test-spectrum-dcw                  # Spectrum + scalar DCW composed
+python tasks.py test-dcw                 # latest LoRA + scalar λ=0.01 (task target override)
+python tasks.py test-dcw-v4              # bare DiT + calibrator by default; set NOLORA=0 for latest LoRA
+python tasks.py test-spectrum-dcw        # Spectrum + scalar DCW composed
+python tasks.py test-dcw-v4-spectrum     # Spectrum + DCW calibrator composed
+# Compatibility aliases: make test-dcw / make test-dcw-v4 / make test-spectrum-dcw
 ```
 
 Scalar mode also works on any `inference.py` invocation:
@@ -50,10 +55,11 @@ python inference.py --dcw                                      \
     ...  # other inference args
 ```
 
-v4 mode (auto-resolves the most-recent `fusion_head.safetensors` under `output/dcw/` first, then `bench/dcw/results/`; `--dcw_v4` is still accepted as a legacy alias):
+Calibrator mode (`python tasks.py test-dcw-v4` auto-resolves the newest `fusion_head.safetensors` under `output/dcw/`; when calling `inference.py` directly, pass the artifact file or run directory path; `--dcw_v4` is still accepted as a legacy alias):
 
 ```bash
-python inference.py --dcw_calibrator auto --dcw_v4_disable_shrinkage   \
+python inference.py --dcw_calibrator output/dcw/<run>/fusion_head.safetensors \
+    --dcw_calibrator_gain 1.0 \
     ...
 ```
 
@@ -61,32 +67,31 @@ The tqdm progress bar shows per-step `λ` (and `α` once the head fires) so the 
 
 ## v4 architecture in one paragraph
 
-Three input channels feed one shared MLP. (1) **Aspect prior** — per-bucket profile `(μ_g[i], S_pop[i], λ_scalar)` indexed by `(H, W)`. (2) **Prompt embedding** — mean-pooled `crossattn_emb` (`c_pool`, 1024-dim) plus auxiliary scalars `[caption_length, cos(c_pool, μ_centroid), token_l2_std]`. (3) **Observed prefix** — LL-band Haar norms of `noise_pred` over the first `k=7` denoising steps (free at inference; the post-CFG velocity is already computed). The MLP outputs `(α̂, log σ̂²)` at step `k`, then `α_eff` is distributed across the remaining `(N − k)` steps proportionally to `μ_g[i]`. Per-step `λ_i` is clamped to `±3·|λ_scalar[aspect]|` as an overshoot guard.
+Three input channels feed one shared MLP. (1) **Aspect prior** — per-bucket profile indexed by `(H, W)`. (2) **Prompt embedding** — mean-pooled `crossattn_emb` (`c_pool`, 1024-dim) plus auxiliary scalars `[caption_length, cos(c_pool, μ_centroid), token_l2_std]`. (3) **Observed prefix** — LL-band Haar norms of `noise_pred` (or 2-band FEI low-band energy in v6 artifacts) over the first `k_warmup` denoising steps (default `k=7`). The MLP predicts `α̂` at step `k_warmup`, scaled by `--dcw_calibrator_gain` along the `(1 − σ_i)` envelope across `[target_start, target_end)`, with per-step `λ_i` clamped to `±0.05` as an overshoot guard.
 
-## Calibration: `make dcw`
+## Calibration: `python tasks.py dcw`
 
 ```bash
-make dcw                                # default calibration: 8 prompts × 2 seeds × 5 aspect buckets
-make dcw ARGS="--n_images 32 --n_seeds 2"  # larger pool; pass args through Make's ARGS=
-make dcw-train                          # train-only on existing pool (~30s)
+python tasks.py dcw                              # default calibration: 8 prompts × 2 seeds × 5 aspect buckets
+python tasks.py dcw --n_images 32 --n_seeds 2    # larger pool (extra args forwarded directly)
+python tasks.py dcw-train                        # train-only on existing output/dcw/ pool (~30s)
+# Compatibility aliases: make dcw / make dcw ARGS="--n_images 32 --n_seeds 2" / make dcw-train
 ```
 
-`make dcw` runs `scripts/dcw/measure_bias.py --dump_per_sample_gaps` against the five `DCW_ASPECT_BUCKETS` at the production env (CFG=4, mod_w=3.0), then chains `scripts/dcw/train_fusion_head.py` on the pooled output. Current defaults: 8 prompts × 2 seeds × 5 buckets, collected with `--baseline_lambda 0.0`. All new outputs land in `output/dcw/<timestamp>-<label>/`; `train_fusion_head.py` reads `output/dcw/` by default. Legacy roots such as `post_image_dataset/dcw/` and `bench/dcw/results/` only participate when passed explicitly via `--results_root`.
+`python tasks.py dcw` runs `scripts/dcw/measure_bias.py --dump_per_sample_gaps` against the five `DCW_ASPECT_BUCKETS` at the production env (CFG=4, mod_w=3.0), then chains `scripts/dcw/train_fusion_head.py` on the pooled output. Current defaults: 8 prompts × 2 seeds × 5 buckets, collected with `--baseline_lambda 0.0`. All new outputs land in `output/dcw/<timestamp>-<label>/`; `train_fusion_head.py` reads `output/dcw/` by default (legacy roots such as `post_image_dataset/dcw/` only participate when present on disk or passed explicitly via `--results_root`).
 
-End artifact: `<run>/fusion_head.safetensors` — single file, ~285k params + per-aspect bucket profile + standardization stats + metadata. `make test-dcw-v4` auto-resolves the newest by mtime across `output/dcw/`, legacy `post_image_dataset/dcw/`, and `bench/dcw/results/`.
+End artifact: `output/dcw/<run>/fusion_head.safetensors` — single file containing the `FusionHead` weights, standardization stats, and metadata. `python tasks.py test-dcw-v4` auto-resolves the newest artifact by mtime.
 
 ## CLI
 
 | Flag | Mode | Default | Notes |
 |------|------|---------|-------|
 | `--dcw` | scalar | off | Enable post-step correction with a constant `λ`. |
-| `--dcw_lambda` | scalar | `-0.015` in `inference.py`; `make test-dcw` passes `0.01` | Historical negative scalar came from CFG=1/no-LoRA findings; the canned task target now overrides it for current smoke runs. |
+| `--dcw_lambda` | scalar | `-0.015` in `inference.py`; `python tasks.py test-dcw` passes `0.01` | Historical negative scalar came from CFG=1/no-LoRA findings; the canned task target overrides it for current smoke runs. |
 | `--dcw_schedule` | scalar | `one_minus_sigma` | One of `one_minus_sigma`, `sigma_i`, `const`, `none`. |
 | `--dcw_band_mask` | scalar | `LL` | Haar subband mask: `LL`, `HH`, `LH+HL+HH`, `all`. LL-only is strictly better than `all` on Anima — see §LL-only correction. |
-| `--dcw_calibrator` / legacy `--dcw_v4` | v4 | unset | Path to `fusion_head.safetensors` (or directory containing one). When set, overrides scalar `--dcw_lambda` with per-step controller output. |
-| `--dcw_v4_warmup_k` | v4 | (from artifact) | Override the warmup-k baked into the artifact metadata. |
-| `--dcw_v4_disable_shrinkage` | v4 | off | Skip σ̂²-based shrinkage on `α̂`. **Recommended** while the prototype's σ̂² channel doesn't pass Gate B. |
-| `--dcw_v4_disable_backstop` | v4 | off | Skip the caption-length backstop. Currently a no-op (`tau_short` not yet shipped in the artifact). |
+| `--dcw_calibrator` / legacy `--dcw_v4` | calibrator | unset | Path to `fusion_head.safetensors` (or a directory containing one). When set, overrides scalar `--dcw_lambda` with per-step controller output (LL-only). |
+| `--dcw_calibrator_gain` / legacy `--dcw_v4_alpha_gain` | calibrator | `1.0` | Multiplier on top of the head's predicted `α̂` (which is in `λ`-units, median `|α̂| ≈ 0.015`). `1.0` is identity; `2.0` doubles magnitude; negative flips sign. Final per-step `λ_i` is clamped to `±0.05`. |
 
 The final step (`σ_{i+1} == 0`) is always skipped in both modes — at that step `prev == x0_pred` exactly, so DCW would be a numerical no-op.
 
@@ -96,7 +101,7 @@ The **scalar default `λ = −0.015`** was tuned on the CFG=1 / no-LoRA bench. P
 
 Practical guidance:
 - **Scalar mode**: helps when the target is detail-dense (busy compositions, intricate textures); leave off for intentionally simple/flat styles. The recommendation gates on prompt intent. Detail-dense + non-square at CFG=4 is the cell where the scalar's negative λ is most clearly wrong-direction; the perceptual win there comes from the LL-band restriction + `(1−σ)` schedule shape, not from the sign of λ.
-- **v4 mode**: addresses the uniform-λ problem by predicting per-prompt α̂. Cross-attention features feed the head directly via `c_pool`, so style-intent is in scope; `g_obs` adds per-trajectory steering. The expected behaviour on flat-style prompts is α̂ near zero or sign-corrected — that's the validation point in `dcw-questions.md §7`. Until Gate C (perceptual side-by-side) passes, scalar remains the safer default for production runs of unknown style.
+- **v4 mode**: addresses the uniform-λ problem by predicting per-prompt α̂. Cross-attention features feed the head directly via `c_pool`, so style-intent is in scope; `g_obs` adds per-trajectory steering. The expected behaviour on flat-style prompts is α̂ near zero or sign-corrected. Until perceptual side-by-side validation passes across diverse styles, scalar remains the safer default for production runs of unknown style.
 
 ## Composition
 
@@ -107,7 +112,7 @@ DCW lives at the sampler boundary, not inside any module — composes with every
 | `--sampler er_sde` | Applied post-`er_sde.step`. |
 | `--tiled_diffusion` | Applied to post-merge latents, not per-tile. **v4 controller currently no-ops in tiled mode** (single-tile assumption in `c_pool`/`g_obs`); scalar still works. |
 | `--spectrum` | Applied at the same sampler-step site on both actual-forward and cached-step branches. On cached steps, `x0_pred = latents − σ_i · noise_pred` carries Spectrum's prediction error; correction is bias-agnostic so this is fine. v4 hasn't been ablated on cached steps. |
-| `--lora_weight` / Hydra / OrthoLoRA / T-LoRA / ReFT / postfix | Orthogonal — no module patching, no extra weights. v4 calibrates against the base DiT by default; per-LoRA calibration is `make dcw --lora_weight <path>` (writes a separate artifact). |
+| `--lora_weight` / Hydra / OrthoLoRA / T-LoRA / ReFT / postfix | Orthogonal — no module patching, no extra weights. v4 calibrates against the base DiT by default; per-LoRA calibration is `python tasks.py dcw --lora_weight <path>` (writes a separate artifact). |
 
 Untested at v0:
 - CFG ≠ 4 with v4 (the prototype was calibrated at CFG=4; falls back to bucket prior or scalar via the proposal's fallback ladder).
@@ -115,7 +120,7 @@ Untested at v0:
 
 ## v4 status (prototype)
 
-Trained on existing `bench/dcw/results/` data — 176 rows, 40 unique stems, 8-fold prompt-stratified CV. Headline gates from `bench/dcw/results/20260504-1831-v4-fusion-head-prototype/`:
+Trained on the historical prototype calibration pool — 176 rows, 40 unique stems, 8-fold prompt-stratified CV:
 
 | Metric | Threshold | Prototype |
 |---|---|---|
@@ -124,11 +129,9 @@ Trained on existing `bench/dcw/results/` data — 176 rows, 40 unique stems, 8-f
 | r(σ̂_p, std_s r) | ≥ 0.4 | −0.01 ✗ |
 | NLL improvement vs N(0, σ²_pop) | ≥ 15% | +5.7% ✗ |
 
-α̂ channels pass strongly; σ̂² channel doesn't (under-supervised at one-seed-per-prompt-mostly data). **Ships with `--dcw_v4_disable_shrinkage` by default** until `make dcw`'s 3-seed pool reruns the gate. If σ̂² still fails after, the controller stays shrinkage-off in production — α̂ alone with the clamp guard is gate-passing.
+α̂ channels pass strongly, whereas the prototype σ̂² channel was under-supervised at single-seed-majority data. Consequently, `OnlineDCWCalibrator` (`dcw_v5_lambda_scalar` / `dcw_v6_fei_*`) predicts direct `λ`-unit `α̂` without runtime σ̂² shrinkage, relying on `--dcw_calibrator_gain` (default `1.0`) and the hard `±0.05` per-step clamp guard.
 
-**Tail-formula correction.** The proposal pseudocode's `head_corr = α_eff · μ_g[i] / tail_norm` mixes gap-units (α_eff is the integrated tail gap residual, not λ) with λ-units. The controller actually uses the LSQ-projected form `Δλ_i = −α_eff · μ_g[i] / Σ_{tail}(μ_g · S_pop)`, which matches the proposal's intent of distributing correction proportional to μ_g while preserving units.
-
-**Output clamp.** Per-step `λ_i` is bounded at `±3 · |λ_scalar[aspect]|` as a safety guard. On the prototype's noisy α̂ this is currently binding on every tail step (visible in the tqdm trace as a flat tail). Once shrinkage is calibrated this clamp should rarely bind.
+**Output clamp.** Per-step `λ_i` is bounded at `±0.05` (`_LAMBDA_CLAMP` in `library/inference/corrections/dcw_calibrator.py`) as a safety guard against tail overshoot.
 
 ## Anima form details (kept for reference)
 
@@ -139,7 +142,7 @@ The bias direction is a **(CFG × aspect)** interaction, not a fixed property of
 | Setting | ∫ gap_LL | Direction | λ_scalar (LSQ) |
 |---|---:|---|---:|
 | CFG=1, no LoRA, no mod-guidance (historical run `20260503-1720`) | −406 | paper-opposite | −0.015 (shipped scalar) |
-| CFG=4, 1024² (`bench/dcw/results/20260504-1648`) | −188 | paper-opposite | +0.0046 |
+| CFG=4, 1024² (historical run `20260504-1648`) | −188 | paper-opposite | +0.0046 |
 | CFG=4, 832×1248 HD portrait (`output/dcw/20260505-0130`) | +89 | paper-direction | +0.0059 |
 | CFG=4, 1248×832 inv-HD landscape (`output/dcw/20260505-0612`) | +205 | paper-direction | +0.0127 |
 
@@ -164,11 +167,11 @@ The default `λ=-0.015` was derived from two independent estimates that agreed (
    ```
 3. Confirm with a tighter sweep `{λ*−ε, λ*, λ*+ε}`.
 
-For v4 calibration, use `make dcw` instead — it produces the per-aspect bucket profile + fusion head in one go.
+For calibrator re-training, use `python tasks.py dcw` instead — it produces the per-aspect pool + fusion head in one go.
 
 ## LL-only correction (2026-05-03 finding)
 
-`bench/dcw/results/20260503-2102-band-mask-eyeball/` ran a per-Haar-subband sweep on the same 4-image / 2-seed bench. Headline:
+A per-Haar-subband sweep (historical run `20260503-2102-band-mask-eyeball`) on a 4-image / 2-seed bench produced:
 
 | Config | late-half integrated \|gap\| | Δ vs baseline | per-band signed gap (LL / LH / HL / HH) |
 |---|---|---|---|
@@ -194,7 +197,7 @@ Closes 83% of the LL gap at the worst step (σ=0.04) and leaves headroom for per
 
 ## Limitations / open questions
 
-- **σ̂² channel under-trained** (Gate B fails on prototype). 3-seed `make dcw` rerun is the next experiment; if it still fails, ship with shrinkage permanently disabled and rely on the clamp guard.
+- **Multi-seed uncertainty supervision** — the prototype σ̂² channel failed Gate B on single-seed-majority data, so the shipping calibrator relies on direct `α̂` prediction + `±0.05` clamp rather than runtime variance shrinkage.
 - **Tiled inference** — v4 controller no-ops; scalar still works. The tile-merge boundary makes single-tile `c_pool` / `g_obs` ill-defined.
 - **CFG drift** — v4 calibrated at CFG=4 only. Other CFGs fall back to scalar (proposal §"Risks" #7).
 - **Cached-Spectrum `x0_pred`** is biased by Chebyshev forecaster error. Empirically should still help (correction is bias-agnostic) but worth one explicit ablation row.
@@ -205,9 +208,9 @@ Closes 83% of the LL gap at the worst step (σ=0.04) and leaves headroom for per
 | File | Role |
 |---|---|
 | `networks/dcw.py` | `apply_dcw` (the apply site, shared by both modes) + `FusionHead` (shared by trainer + inference) + `haar_LL_norm` |
-| `library/inference/corrections/dcw_calibrator.py` | `OnlineDCWCalibrator` — loads artifact, observes warmup, fires head at step `k`, emits per-step `λ_i` |
+| `library/inference/corrections/dcw_calibrator.py` | `OnlineDCWCalibrator` — loads artifact, observes warmup, fires head at step `k_warmup`, emits per-step `λ_i` |
 | `library/inference/generation.py` | controller setup pre-loop + per-step apply at the DCW call site (non-tiled path) |
 | `scripts/dcw/measure_bias.py` | offline trajectory dump + S_pop sweep — produces `gaps_per_sample.npz` consumed by the trainer |
 | `scripts/dcw/train_fusion_head.py` | offline head training — produces `fusion_head.safetensors` |
-| `scripts/tasks/dcw.py` | `make dcw` / `make dcw-train` task wrappers |
-| `docs/methods/dcw.md` | Current v4 derivation, gates, fallback ladder, evidence appendix |
+| `scripts/tasks/dcw.py` | `python tasks.py dcw` / `python tasks.py dcw-train` task wrappers |
+| `docs/methods/dcw.md` | Current calibrator derivation, gates, fallback ladder, evidence appendix |

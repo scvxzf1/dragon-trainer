@@ -1,8 +1,13 @@
 # HydraLoRA: layer-local MoE over LoRA heads
 
+状态：稳定
+适用版本：当前 main
+
 A mixture-of-experts re-parameterization of the LoRA up-projection. Each adapted `Linear` gets a **shared** `lora_down`, **$E$ parallel `lora_up` heads**, and a **layer-local** router that reads the rank-$r$ bottleneck activation and emits a per-sample softmax over those $E$ heads. The effective up-matrix becomes sample-dependent, so distinct clusters of training samples (e.g. different artists, different styles) can push different heads in different directions without collapsing into a single shared subspace.
 
 > We published paper about this! read [paper](https://arxiv.org/abs/2605.03252) if interested.
+
+> **Usage & configuration:** For the three-axis TOML configuration (`use_moe_style`, `route_per_layer`, `router_source`), `balance_loss_weight` tuning, CLI commands, and ComfyUI loader setup, see **[../methods/hydra-lora.md](../methods/hydra-lora.md)**. This document covers the mathematical and structural mechanism.
 
 Recap from `lora.md`: every target `Linear` $W_0$ is adapted by $y = W_0 x + m \cdot s \cdot B A x$, with $A \in \mathbb{R}^{r \times d_\text{in}}$ (down, shared) and $B \in \mathbb{R}^{d_\text{out} \times r}$ (up). HydraLoRA keeps $A$ exactly as before and replaces the single $B$ with $E$ stacked copies plus a routing module that mixes them per sample.
 
@@ -91,9 +96,9 @@ $$
 \mathcal{L}_\text{balance}\ =\ \alpha_\text{bal} \cdot E \cdot \sum_{i=1}^{E} f_i \cdot \bar{g}_i
 $$
 
-where $f_i$ is the fraction of samples in the batch whose dominant expert at this layer is $i$, and $\bar{g}_i$ is the mean gate value for expert $i$. The network-level loss sums this across every `_last_gate` cached during the forward, so the penalty integrates routing pressure across all ~280 hydra modules at once.
+where $f_i$ is the fraction of samples in the batch whose dominant expert at this layer is $i$, and $\bar{g}_i$ is the mean gate value for expert $i$. The network-level loss sums this across every `_last_gate` cached during the forward, so the penalty integrates routing pressure across all routed modules at once (a subset of the 196 adapted Linears selected by `router_targets`).
 
-Default $\alpha_\text{bal} = 0.001$ (`configs/methods/lora.toml` HydraLoRA block, and the gui-methods variants). It was 0.01 before the rank-$r$ router fix — the old weight dominated the tiny router gradient and squeezed every gate to uniform.
+$\alpha_\text{bal}$ (`balance_loss_weight`) is kept very small (`1e-7`–`3e-7` in current configs; values `> 5e-5` risk saturating the router and pinning gates to uniform — see [../methods/hydra-lora.md](../methods/hydra-lora.md)).
 
 ---
 
@@ -124,7 +129,7 @@ Why this is a *structural* deadlock breaker: with a shared basis, every $P_\text
 
 If $\min(d_\text{in}, d_\text{out}) < E \cdot r$ the partition cannot fit and `P_bases` falls back to the legacy shared `P_basis` replicated $E$ times (with a warning). In that fallback, every expert starts identical (shared basis + zero $S_p$ + zero $\lambda$) and must diverge through training-time updates to $S_p$ — if the router collapses they never will. Prefer to size $E$ so the disjoint partition fits.
 
-Activated by setting both `use_ortho = true` and `use_hydra = true`, which is the configured default in the HydraLoRA block of `configs/methods/lora.toml`.
+Activated on the three-axis routing surface (`use_ortho = true`, `use_moe_style = "shared_A"`, `route_per_layer = true`; see [../methods/hydra-lora.md](../methods/hydra-lora.md)).
 
 ---
 
@@ -148,19 +153,11 @@ The bake-down is a pragmatic compromise: it lets HydraLoRA ship as a standard Lo
 
 ---
 
-## 8. Inference
+## 8. Inference & configuration
 
-### CLI — router-live
+Because the effective up-matrix $\sum_e g_e B_e$ depends on the runtime input $x$ at each denoising step, lossless HydraLoRA inference cannot be folded into static `Linear.weight` tensors: both the CLI (`library/inference/models.py::_classify_adapter_capability`) and the ComfyUI **Anima Adapter Loader** (`custom_nodes/comfyui-hydralora/`) attach dynamic forward hooks that run the router live at every step.
 
-`inference.py` auto-detects moe files by safetensors-header sniff (`library/inference/models.py:_is_hydra_moe`). When detected, static merge is skipped and the network is attached as **dynamic forward hooks** — the training-time `HydraLoRAModule.forward` runs on every adapted layer on every denoising step, reproducing the trained router's per-sample, per-layer behavior.
-
-Static merge and router-live are mutually exclusive: mixing an moe file with regular LoRA files in one `--lora_weight` list is refused with an error. P-GRAFT composes cleanly — the cutoff toggles `network.enabled` for both, and HydraLoRA honors the flag.
-
-`make test-hydra` runs inference against the latest moe output in `output/`.
-
-### ComfyUI — live routing via the custom node
-
-The **Anima Adapter Loader** node installs per-Linear `forward_hook`s that reproduce `HydraLoRAModule.forward` exactly, including the rank-$r$ RMS pool and the softmax over experts. Separate `strength_lora` slider acts on `multiplier`. See `custom_nodes/comfyui-hydralora/README.md` for installation, hook mechanics, and changelog.
+For exact three-axis TOML configuration, σ-band expert partitioning, CLI commands, and ComfyUI loader usage, see **[../methods/hydra-lora.md](../methods/hydra-lora.md)**.
 
 ---
 
@@ -168,7 +165,7 @@ The **Anima Adapter Loader** node installs per-Linear `forward_hook`s that repro
 
 | Stacks with              | How it composes                                                                                  |
 | ------------------------ | ------------------------------------------------------------------------------------------------ |
-| **T-LoRA**               | Mask applies to shared `lora_down`, before the router already cached its gate. Default on.       |
+| **T-LoRA**               | Mask applies to shared `lora_down`, after the router already cached its gate.                    |
 | **OrthoLoRA**            | Supported via `OrthoHydraLoRAModule`. Per-expert Cayley rotations, disjoint output subspaces. |
 | **ReFT**                 | Orthogonal side-channel. No interaction.                                                         |
 | **Spectrum**             | Cached steps skip all transformer blocks (router included) — hydra just runs fewer times.        |
@@ -176,24 +173,10 @@ The **Anima Adapter Loader** node installs per-Linear `forward_hook`s that repro
 
 ---
 
-## 10. Configuration
-
-`configs/methods/lora.toml` HydraLoRA toggle block (and `configs/gui-methods/hydralora.toml` for GUI users):
-
-```toml
-use_hydra           = true
-num_experts         = 4       # more → more specialization, more params
-balance_loss_weight = 0.001   # Switch Transformer coefficient; was 0.01 pre-fix
-```
-
-Requires `cache_llm_adapter_outputs = true` (same as standard LoRA in this repo — unrelated to routing, but assumed by the surrounding training plumbing).
-
----
-
-## 11. Minimal mental model
+## 10. Minimal mental model
 
 1. Shared `lora_down`, stacked per-expert `lora_up`, layer-local router.
-2. Router reads **RMS-pooled rank-$r$** activation, softmax over $E$. Per-sample, per-layer gate.
-3. Symmetry break comes from disjoint SVD-slice output subspaces for each expert (OrthoHydra-disjoint — the configured default). Structural at init.
-4. Switch Transformer balance loss at $\alpha_\text{bal} = 0.001$ averaged across all hydra modules keeps experts alive.
-5. Ships as two files: a merged-down plain LoRA (lossy, ComfyUI native) and a full moe file (lossless, requires the custom node).
+2. Router reads **RMS-pooled rank-$r$** activation (or optional σ features), softmax over $E$. Per-sample, per-layer gate.
+3. Symmetry break comes from disjoint SVD-slice output subspaces for each expert (OrthoHydra-disjoint). Structural at init.
+4. Switch Transformer balance loss (`1e-7`–`3e-7`) averaged across routed modules keeps experts alive without saturating gates.
+5. Ships as two files: a merged-down plain LoRA (lossy, ComfyUI native) and a full moe file (lossless, requires router-live hooks).

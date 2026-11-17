@@ -1,10 +1,14 @@
 # Colorization (EasyControl)
 
+状态：实验
+适用版本：当前 main；可运行边界以 `tasks.py --help` 和实时源码为准
+
 Manga / illustration **colorization** as an EasyControl control task: feed a
 black-and-white screentoned page (line art + halftone tone), get a colorized
 image. This is the first project under `easycontrol_adapters/` — a workspace for
 per-task EasyControl control adapters that share the shipped EasyControl network
-(`networks/methods/easycontrol.py`) but differ in how the *condition* is built.
+(`networks/methods/easycontrol.py`) but differ in how the *condition* is built
+(for cross-image subject/edit pairing utilities, see `easycontrol_adapters/tools/{blueprint,subject_pairs,subject_edit_pairs}.py`).
 
 ## The idea
 
@@ -68,42 +72,49 @@ Note the information-theoretic floor: B&W manga doesn't contain hair/eye/costume
 color, so the empty-prompt default guesses — correct it with a color prompt when
 it matters. This is expected, not a bug.
 
-## v0 scope (this build)
+## Screening engines & scope
 
-- **Pure `cv2`/`numpy` mangafication** — no model downloads. See `mangafy.py`.
-- Training targets (danbooru illustrations) have **no speech bubbles**; inference
-  manga pages do. v0 colorizes the art and you composite the original B&W text
-  back over the result at inference. (Bubble pass-through is Phase B.)
+Three interchangeable screening engines share the `(img_rgb, seed) -> cond_rgb` contract:
+
+- **CPU `cv2`/`numpy` (`mangafy.py`)** — zero extra model downloads; XDoG lineart + per-band algorithmic screentone.
+- **CUDA/PyTorch (`mangafy_gpu.py`)** — GPU port reusing `mangafy.resolve_params` / `_band_plan` verbatim for fast batch preprocessing without extra weights.
+- **Learned SD + ControlNet (`screentone_sd.py`)** — on-manifold `Sketch2Manga` (`mangatone` SD1.5 + ControlNet lineart + selective screentone) engine; fetch extra weights via `python tasks.py exp-easycontrol-download EASYADAPTER=colorize`.
+- Training targets (illustrations) have **no speech bubbles**; inference manga pages do. Current builds colorize the art and you composite the original B&W text back over the result at inference (speech-bubble pass-through remains deferred).
 
 ## Files
 
 | File | Role |
 |------|------|
-| `mangafy.py` | color RGB → B&W manga (XDoG lineart + dot/line/cross screentone), per-stem jitter |
+| `mangafy.py` | CPU color RGB → B&W manga (XDoG lineart + dot/line/cross screentone), per-stem jitter |
+| `mangafy_gpu.py` | CUDA/PyTorch port of `mangafy.py` with identical band/pattern structure |
+| `screentone_sd.py` | Learned `Sketch2Manga` + ControlNet lineart + selective screentone engine (`exp-easycontrol-download EASYADAPTER=colorize`) |
 | `color_caption.py` | reduce a full Anima caption to color tags only (`filter_to_colors`) |
 | `prep.py` | mangafy `resized/` → VAE-encode into `colorize_cond/`; re-encode color-only captions into `colorize_text/` |
 
-Configs: `configs/datasets/colorize.toml`, `configs/methods/colorize.toml`.
+Configs: `configs/datasets/colorize.toml`, `configs/methods/colorize.toml` (base GUI EasyControl variant lives at `configs/gui-methods/easycontrol.toml`; `colorize` does not ship a separate GUI-method variant).
 
 ## Run
 
-The colorization project rides the existing `exp-easycontrol*` targets via the
-`EASYADAPTER=colorize` selector (no separate targets):
+The colorization project rides the existing `exp-easycontrol*` commands via the
+`EASYADAPTER=colorize` selector:
 
 ```bash
-# 1. Build the condition latents (mangafy + VAE-encode). Idempotent.
-make exp-easycontrol-preprocess EASYADAPTER=colorize
+# 0. (Optional) Download Sketch2Manga weights if using the `sd` screentone engine:
+python tasks.py exp-easycontrol-download EASYADAPTER=colorize
+
+# 1. Build the condition latents (mangafy + VAE-encode + color-only TE cache). Idempotent.
+python tasks.py exp-easycontrol-preprocess EASYADAPTER=colorize
 #    or directly:  python easycontrol_adapters/colorization/prep.py
 #    QA a few first:  python easycontrol_adapters/colorization/prep.py --limit 8
 #    Inspect staged manga PNGs under post_image_dataset/colorize_staging/
 
-# 2. Train (frozen DiT, adapter-only, caption-free default).
-make exp-easycontrol EASYADAPTER=colorize
+# 2. Train (frozen DiT, adapter-only, color-only caption cache + 5% empty-prompt dropout).
+python tasks.py exp-easycontrol EASYADAPTER=colorize
 
-# 3. Inference — feed a real B&W manga page as the control image (empty prompt).
-REF_IMAGE=post_image_dataset/resized/takaman_\(gaffe\)/7645571.png \
-    make exp-test-easycontrol EASYADAPTER=colorize
-#    Color steer:  ... ARGS='--prompt "pink hair, blue eyes, white dress"'
+# 3. Inference — feed a real B&W manga page as the control image (empty prompt by default).
+python tasks.py exp-test-easycontrol EASYADAPTER=colorize REF_IMAGE=path/to/manga_page.png
+#    Color steer:  python tasks.py exp-test-easycontrol EASYADAPTER=colorize REF_IMAGE=path/to/manga_page.png --prompt "pink hair, blue eyes, white dress"
+# (Compatibility aliases: make exp-easycontrol-preprocess / exp-easycontrol / exp-test-easycontrol EASYADAPTER=colorize)
 ```
 
 ### Inference settings
@@ -125,10 +136,8 @@ REF_IMAGE=post_image_dataset/resized/takaman_\(gaffe\)/7645571.png \
 checkpoint + `output/tests/colorize/` (inference). Unset ⇒ default ref==target
 EasyControl.
 
-## Phase B (deferred)
+## Deferred roadmap
 
-- Learned lineart (Anime2Sketch / sketchKeras) + **ScreenVAE** screentone synthesis
-  for on-manifold tones.
 - **Speech-bubble pass-through:** paste synthetic bubbles onto the manga cond and
   mask those regions from the loss, so the model leaves text untouched.
 - Gradient/special screentones; difficulty curriculum (single clean figure →

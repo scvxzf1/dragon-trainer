@@ -1,23 +1,24 @@
 # CNS — Colored Noise Sampling (arXiv 2605.30332) on Anima
 
+状态：实验 / 历史设计记录（Phase 0/1 已完成并合入主线，现行使用说明见 [../../docs/methods/cns.md](../../docs/methods/cns.md)）
+
 Training-free SDE sampler. Replaces the **white** noise that `ERSDESampler` injects
-each step (`library/inference/sampling.py:163-171`) with **frequency-colored**,
+each step (`library/inference/sampling.py`) with **frequency-colored**,
 RMS-normalized noise that dumps the fixed stochastic-energy budget into the
 frequency bands the network has **not yet resolved** at that step.
 
 Source paper: "Colored Noise Diffusion Sampling", Davidson/Issachar/Benaim
-(Hebrew U.). Project page https://hadardavidson.github.io/CNS/ . Local PDF at
-repo root `2605.30332v1.pdf`.
+(Hebrew U., arXiv:2605.30332). Project page: https://hadardavidson.github.io/CNS/ .
 
 ## Why it might work on Anima — precondition already half-verified
 
 CNS feeds on **spectral bias**: low-freq structure resolves early in sampling,
-high-freq detail late. We have *independently measured this* on Anima:
-`project_sigma_signal_resolves_by_045` (base resolves x0 by σ≈0.45; e_low
-triples in the σ<0.45 tail). That finding **is** the CNS γ-matrix viewed from
+high-freq detail late. Empirical trajectory probes on Anima independently showed
+that the base model resolves coarse $x_0$ structure by $\sigma \approx 0.45$, while low-frequency
+residual energy drops sharply in the $\sigma < 0.45$ tail. That profile **is** the CNS γ-matrix viewed from
 the σ axis. So the premise survives contact with Anima — unlike Spectral
 Guidance (no low-rank subspace → NO-GO). This probe confirms the staircase is
-sharp enough *as a frequency-resolved matrix* before we touch the sampler.
+sharp enough *as a frequency-resolved matrix* before touching the sampler.
 
 ## The mechanism (Algorithm 1, paper p.7)
 
@@ -50,15 +51,15 @@ Seams in the per-step loop (`generation.py:708-826`):
 |--------------|-----------------------------------|----------------------------------|
 | **mod-guid** | model-forward AdaLN (t-embedding) | none — orthogonal seam. *But* it changes the v-trajectory, so γ should be recalibrated with mod-guidance ON if co-deployed (2nd-order). |
 | **SMC-CFG**  | velocity/drift CFG combine (pre-`denoised`) | none — drift seam, CNS is the noise term. Genuinely independent. |
-| **Spectrum** | model-forward (skip blocks on cached steps) | structurally clean (different seam) BUT real tension: Spectrum forecasts a *smooth* feature trajectory; recolored noise concentrates energy in **high-freq late**, exactly where the Chebyshev forecaster is weakest. We already tolerate er_sde white noise under Spectrum, and CNS conserves total variance, so expect ≤ that perturbation — but **A/B Spectrum cached-step error must not grow**. cf. `project_spectrum_er_sde_forecastability` (er_sde forecasts 1.6× worse than euler). |
+| **Spectrum** | model-forward (skip blocks on cached steps) | structurally clean (different seam) BUT real tension: Spectrum forecasts a *smooth* feature trajectory; recolored noise concentrates energy in **high-freq late**, exactly where the Chebyshev forecaster is weakest. We already tolerate er_sde white noise under Spectrum, and CNS conserves total variance, so expect ≤ that perturbation — but **A/B Spectrum cached-step error must not grow** (`er_sde` trajectories already forecast ~1.6× worse than `euler`, see `bench/spectrum_pareto/`). |
 | **DCW**      | post-step LL-band x-space correction | watch, not block: CNS already injects *less* energy into resolved LL; DCW then bias-corrects LL. Could partially double-count. |
 
 ## Phases
 
 - **Phase 0 — DONE, GO (2026-05-31).** Base 1024², 8 trajectories, cfg=1:
   staircase σ50 spread **+0.410** (low-freq σ≈0.79 → high-freq σ≈0.38),
-  linear-target MAE 0.101, aggregate σ50 **0.486** (independently re-derives
-  `project_sigma_signal` ≈0.45). γ heatmap = paper Fig. 3 on Anima. Result:
+  linear-target MAE 0.101, aggregate σ50 **0.486** (aligning with the
+  σ ≈ 0.45 coarse-resolution midpoint). γ heatmap = paper Fig. 3 on Anima. Local run output (untracked, not committed to Git):
   `bench/cns/results/20260531-1625-base-1024/`. Full sweep (4 configs, n=8):
   | config | spread | agg σ50 | linear MAE |
   |---|---|---|---|
@@ -73,8 +74,7 @@ Seams in the per-step loop (`generation.py:708-826`):
   trajectories on the base model via a wrapped Euler step, compute γ(f,t),
   radial-bin, and report whether the low-freq-early/high-freq-late staircase is
   sharp. GO gate: clear t50 spread across frequency + strong deviation from the
-  linear γ=1−σ target + aggregate-γ crossing near σ≈0.45 (consistency with
-  `project_sigma_signal_resolves_by_045`). Also emits a `beta_preview` matrix =
+  linear γ=1−σ target + aggregate-γ crossing near σ≈0.45. Also emits a `beta_preview` matrix =
   the exact per-step colored scale CNS would apply, so Phase 1 wiring is drop-in.
   - Run once on **base**, once on the **LoRA** (does the adapter flatten the
     bias?), and at **cfg=1 and cfg=4** (DCW taught us CFG shifts the spectrum).
@@ -94,12 +94,12 @@ Seams in the per-step loop (`generation.py:708-826`):
     cross-aspect MAD.
   - **Single averaged γ, shipped under `networks/calibration/cns_gamma.npz`**
     (not models/). Cross-aspect variation is **cosmetic** (β MAD ~0.01, mean
-    dev-from-avg 0.008 — same conclusion as `project_dcw_bucket_prior_cosmetic`),
+    dev-from-avg 0.008 across calibrated buckets),
     so `--average_aspects` (default on) writes one `(1,T,F)` γ; the recolorer's
     nearest-aspect select degrades to index 0, serving any resolution. Radial
     bins are normalized [0,1] → resolution-agnostic by construction. Caveat: all
     calibrated aspects are 4200-token AR 0.6–1.34; extreme shapes are unmeasured
-    extrapolation. Per-aspect γ kept in the results/ bench record for audit.
+    extrapolation. Per-aspect γ is written only to the local untracked run output directory when `calibrate.py` is executed.
   - **Runtime** = `library/inference/corrections/cns.py::CNSRecolorer`: locks
     onto the calibrated aspect nearest in AR to the latent shape, **σ-interpolates**
     the γ row each step (robust to step-count / flow_shift mismatch vs calib),
@@ -118,7 +118,7 @@ Seams in the per-step loop (`generation.py:708-826`):
     the eager *sampler* step, outside the compiled DiT region — orthogonal.
 - **Shelve cheaply** if Phase 0 staircase is flat (e.g. LoRA flattens it).
 
-## Artifacts (per run, under `bench/cns/results/<ts>[-label]/`)
+## Local probe outputs (per run, untracked under `bench/cns/results/<ts>[-label]/`)
 - `gamma.npz` — `gamma[T,F]`, `beta_preview[T,F]`, `sigmas[T+1]`, `timesteps[T]`,
   `radial_centers[F]`, `gamma_linear_target[T,F]`.
 - `gamma_matrix.png` — γ + β heatmaps + t50-vs-freq staircase.

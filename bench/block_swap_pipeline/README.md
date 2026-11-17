@@ -1,5 +1,7 @@
 # Block Swap 宏观流水线探针
 
+状态：实验
+
 独立于 `bench/cache_identity_hot/` 的性能/调度测量工具：它**只测量，不改变**任何训练行为。
 
 ## 为什么需要它
@@ -34,7 +36,7 @@
 | `--block-swap-auto --margin-mib N` | 打开进程内水位调优（`block_swap_auto`），并在 `result.json` 的 `block_swap_auto` 字段回收日志行 |
 | `--restore-mode foreach\|slab` | 固定恢复模式，做 A/B |
 | `--side 256\|512` | 分辨率；非默认分辨率使用独立工作区目录（`workspace-<side>`）避免缓存互串 |
-| `--family {anima,krea2_raw,z_image,qwen_image_2_1}` | 族预设：模型路径、sidecar 后缀、运行时键；非 anima 族用 `workspace-<family>[-<side>]` |
+| `--family {anima,krea2_raw,z_image,qwen_image_2_1}` | 族预设：模型路径、sidecar 后缀、运行时键；非 anima 族用 `workspace-<family>[-<side>]`（`family_registry` 中的 `moss_image` 尚未接入本探针 `FAMILY_PRESETS`，请使用 `python tasks.py moss-tier-hot` 或 `family_bytes.py --dit <path>`） |
 
 产物：`<run>/result.json`（原始 metrics）、`<run>/train.log`、`<run>/config.runtime.toml`、profile JSONL。
 
@@ -66,9 +68,9 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID .venv/bin/python -m bench.block_swap_pipeline.run_p
 
 ## 跨族运行
 
-`--family` 预设了每族的 dit/te/vae、缓存后缀与运行时键，并按族选择 TE 缓存脚本：
-anima 用 `scripts/preprocess/cache_text_embeddings.py`，`krea2_raw` / `z_image` /
-`qwen_image_2_1` 各有自己的脚本（编码器参数名统一为 `--qwen3`）。
+`--family` 预设了 `run_probe.py::FAMILY_PRESETS` 已收录四族（`anima`、`krea2_raw`、`z_image`、`qwen_image_2_1`）的 dit/te/vae、缓存后缀与运行时键（仓库第五个注册族 `moss_image` 的热测位于 `bench/moss_tier_hot/`，`family_bytes.py` 亦可通过 `--dit <path>` 直接分析其 safetensors 头部），并按族选择 TE 缓存模块：
+`anima` 用 `scripts/preprocess/cache_text_embeddings.py`（`python -m scripts.preprocess.cache_text_embeddings`），`krea2_raw` / `z_image` /
+`qwen_image_2_1` 各用 `scripts/{krea2,z_image,qwen_image_2_1}/preprocess_te_cache.py`（编码器参数名统一为 `--qwen3`）。
 Anima 沿用历史工作区 `workspace`，其它族使用 `workspace-<family>`，缓存互不串用。
 
 各族还会覆盖运行时的族契约键：`z_image` 与 `qwen_image_2_1` 都显式写

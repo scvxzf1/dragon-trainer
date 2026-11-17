@@ -1,8 +1,11 @@
 # Spectrum Benchmark Redesign Proposal
 
+状态：实验 / 历史设计记录
+实现状态：仅 Phase-0 预测可外推性探针（`capture_features.py`、`replay_forecaster.py`、`compare_samplers.py`，见同目录 [README.md](README.md)）已落地；下文提议的 `base_gate.py`、`shadow_forward.py`、`analyze_pareto.py` 及 `--spectrum_policy` / `--spectrum_error_budget` CLI 旋钮均尚未实现；文中提及的旧版 `_archive/bench/spectrum/` 已从仓库清理。
+
 ## Context
 
-The archived Spectrum benchmark under `_archive/bench/spectrum` produced a
+The earlier retired Spectrum benchmark (formerly under `_archive/bench/spectrum/`, since removed from the tree) produced a
 misleading Pareto ranking: `dpmpp_sde + linear_quadratic` looked best, Heun was
 ranked highly in some slices, and `linear_quadratic` looked broadly safe. Real
 image checks contradicted that: `linear_quadratic` degraded output quality,
@@ -340,16 +343,6 @@ frontier.
 
 ## Validation Notes
 
-This proposal is based on static review of:
+This proposal was written from static review of the live Spectrum stack (`docs/methods/spectrum.md`, `networks/spectrum.py`, `library/inference/generation.py`, `library/inference/sampling.py`, `inference.py`) together with the historical `_archive/bench/spectrum/` drift scripts/results (since cleaned from the repository).
 
-- `_archive/bench/spectrum/README.md`
-- `_archive/bench/spectrum/analyze_drift.py`
-- `_archive/bench/spectrum/replay_forecaster.py`
-- `_archive/bench/spectrum/results/20260524-2031-faithful-samplers/`
-- `docs/methods/spectrum.md`
-- `networks/spectrum.py`
-- `library/inference/generation.py`
-- `library/inference/sampling.py`
-- `inference.py`
-
-No new runtime benchmark was executed while writing this proposal.
+No new runtime benchmark was executed while writing this proposal; see [README.md](README.md) for the currently implemented Phase-0 probe scripts.

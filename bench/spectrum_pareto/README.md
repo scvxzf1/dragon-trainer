@@ -1,8 +1,9 @@
 # bench/spectrum_pareto
 
-Live successor to the retired `_archive/bench/spectrum/` drift bench. Motivation
-and full design: `proposal.md` ("Spectrum Benchmark Redesign Proposal") at the
-repo root.
+状态：实验 / 历史设计记录
+
+Live successor to the retired Spectrum drift bench (formerly under `_archive/bench/spectrum/`, since cleaned from the repo). Motivation
+and full design live in **[proposal.md](proposal.md)** ("Spectrum Benchmark Redesign Proposal") in this same directory (`bench/spectrum_pareto/proposal.md`).
 
 The old drift bench answered the wrong question — it ranked *robustness to
 injected forecast error* and blessed `dpmpp_sde + linear_quadratic`, which real
@@ -65,27 +66,27 @@ Both `mean_ratio` and a **paired** median ratio are reported; the paired figure
 guards against prompt-mix imbalance.
 
 > Caveat: lower forecast residual is a *shortlist* signal, not a quality oracle
-> on Anima (cf. project memory `fm_val_loss_uninformative` / `cmmd_val_signal`).
+> on Anima (paired perceptual / CMMD evaluation is still required, just as raw flow-matching validation loss does not rank visual quality).
 > This probe gates **effort**, not production defaults.
 
-## Not yet built (the expand path, if the probe PASSes)
+## Not yet built (proposed expand path in [proposal.md](proposal.md); scripts below do not exist in-tree yet)
 
-Tracks from `proposal.md`, deferred until the probe validates the target sampler:
+Tracks from [proposal.md](proposal.md), deferred until the probe validates the target sampler:
 
-1. **Base sampler gate** (`base_gate.py`) — all-actual quality vs production
+1. **Base sampler gate** (`base_gate.py`, not yet created) — all-actual quality vs production
    default; reject bad base paths before Spectrum tuning.
-2. **Shadow-forward bench** (`shadow_forward.py`) — true forecast error on the
+2. **Shadow-forward bench** (`shadow_forward.py`, not yet created) — true forecast error on the
    *off-trajectory* latents Spectrum actually creates (record-only shadow
    actuals; never fed back).
 3. **Step-sensitivity calibration** — per-step `final_damage_per_unit_error`,
    cached by (model sha, size, steps, sampler, scheduler, cfg).
-4. **Pareto selection** (`analyze_pareto.py`) — nondominated set over effective
+4. **Pareto selection** (`analyze_pareto.py`, not yet created) — nondominated set over effective
    NFE, wall time, weighted forecast error, and paired image metrics.
 5. **Adaptive cache policy** prototype — confidence-gated caching
    (`expected_damage = predicted_error × sensitivity[i]`). The hard part is
    predicting error on cached steps without ground truth; the shadow-forward
-   bench is the tool to *falsify* an EMA gate before building it. Project memory
-   on DCW (`dcw_v4_g_obs_load_bearing`, `dcw_seed_variance_dominates`) argues for
+   bench is the tool to *falsify* an EMA gate before building it. Prior DCW
+   calibrator findings (online trajectory prefix observation outperforms static prompt-only predictors because seed-to-seed variance dominates) argue for
    an online/observed estimator over a learned prompt-feature predictor.
 
 Production `networks/spectrum.py` is intentionally **untouched** in this phase

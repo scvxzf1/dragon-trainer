@@ -1,9 +1,9 @@
 # examples/
 
-Runnable scripts showing the Anima programmatic API for library embedders —
-the Python you write when you `import anima_lora` into your own code instead of
-going through `make` targets. Each script is self-contained and runs from the
-repo root (`anima_lora/`).
+Runnable scripts showing the Dragon Trainer programmatic Python API (`anima_lora`
+package facade) for library embedders — the Python you write when you
+`import anima_lora` into your own code instead of invoking `python tasks.py <cmd>`
+(or `make <target>`). Each script is self-contained and runs from the repository root.
 
 After `uv sync` (which installs this repo editable), the front-door package is
 importable from anywhere — the curated entry points live on `anima_lora`:
@@ -21,7 +21,7 @@ image = anima_lora.decode_to_pil(vae, latent, device)
 resolve against the repo home, not the CWD — so `import anima_lora` works from
 any directory; set `ANIMA_HOME` to point at a relocated checkout. The high-level flows
 (`01`–`04`) import the curated entry points from `anima_lora`; the building-block
-scripts (`05`/`06`) reach into the `library.*` homes directly, since their point
+scripts (`05`–`07`) reach into the `library.*` homes directly, since their point
 is to show the raw primitives. Either way each script keeps a `sys.path` shim so
 `python examples/<script>.py` runs straight from the repo without an install.
 
@@ -47,9 +47,9 @@ is to show the raw primitives. Either way each script keeps a `sys.path` shim so
 ```bash
 uv sync
 hf auth login
-make download-models      # DiT, text encoder, VAE, …
-# 04 also needs the training cache:
-make preprocess
+python tasks.py download-models      # DiT, text encoder, VAE, … (alias: make download-models)
+# 04 and 06 (part B) also need the training cache:
+python tasks.py preprocess           # alias: make preprocess
 ```
 
 Model paths default to the `configs/base.toml` locations. Override per-run with
@@ -70,9 +70,9 @@ python examples/07_frozen_dit_training_build.py             # build a trainable 
 
 ## Notes for embedders
 
-- **`anima_lora` is the stable API; `library.*` / `networks.* `/ `scripts.*` are internal.**
+- **`anima_lora` is the stable API; `library.*` / `networks.*` / `scripts.*` are internal.**
   The curated `anima_lora` façade is the surface we keep stable across releases.
-  The underlying trees are installed and importable for advanced use (`05`/`06`
+  The underlying trees are installed and importable for advanced use (`05`–`07`
   reach into `library.*` on purpose), but they may move or change signature
   without a deprecation cycle — pin a tag (`ANIMA_VERSION`) if you depend on them.
 - **Inference is request-driven.** `01`/`02` build a typed
@@ -90,7 +90,7 @@ python examples/07_frozen_dit_training_build.py             # build a trainable 
   shows the explicit one-liner. Encoding also needs the DiT — the encoder hidden
   states are projected by `Anima._preprocess_text_embeds`.
 - **Multi-GPU training** must go through `accelerate launch train.py …`
-  (`make lora`). `04` is the single-process equivalent.
+  (`python tasks.py lora`, compatibility alias `make lora`). `04` is the single-process equivalent.
 - The text-encoder padding and constant-token bucketing invariants in
-  `../CLAUDE.md` apply — they're handled inside the called functions, but worth
+  [../AGENTS.md](../AGENTS.md) apply — they're handled inside the called functions, but worth
   reading before you deviate from these flows.

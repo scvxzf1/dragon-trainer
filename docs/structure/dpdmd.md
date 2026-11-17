@@ -1,5 +1,8 @@
 # DP-DMD: diversity-preserved few-step distillation
 
+状态：实验
+适用版本：当前 main；可运行边界以 `tasks.py --help` 和实时源码为准
+
 A few-step distillation that compresses the 28-step, CFG=4 Anima teacher into an
 **N-step student LoRA** (`student_steps=2` ships). Both the student *and* the
 auxiliary "fake" score model are plain LoRAs on **one frozen DiT** — the base
@@ -8,13 +11,13 @@ only the rank-$r$ adapters train.
 
 This is a port of Wu, Li, Zhang, Ma — *"Diversity-Preserved Distribution Matching
 Distillation"* (arXiv:2602.03139). The output is a normal LoRA file: no
-inference-side code, you just run it at `--infer_steps 2 --cfg 1.0`.
+inference-side code, you just run it at `--infer_steps 2 --guidance_scale 1.0`.
 
 > This doc is the **structural walkthrough** — the diversity-anchor / DMD gradient
 > split, the velocity↔x0 conversion that makes it work on a flow-matching DiT, the
 > per-step schedule, and the co-LoRA capacity argument. For the **usage / ops /
-> decision-log** reference (config knobs, `make` targets, metrics to watch,
-> current status), see **`docs/experimental/dpdmd.md`**.
+> decision-log** reference (config knobs, `python tasks.py exp-turbo` / `exp-test-turbo` entry points, metrics to watch,
+> current status), see **[../experimental/dpdmd.md](../experimental/dpdmd.md)**.
 >
 > **History.** This replaced the CA-decoupled DMD2 objective ("CFG-as-Spear,
 > Distribution-Matching-as-Shield", Liu et al. arXiv:2511.22677) on **2026-05-30**.
@@ -23,7 +26,7 @@ inference-side code, you just run it at `--infer_steps 2 --cfg 1.0`.
 > harmful. DP-DMD removes the CA branch entirely and recovers diversity with an
 > explicit anchor instead. The CA-era decision log is summarized in
 > `docs/experimental/dpdmd.md`; the migration proposal is archived at
-> `_archive/proposals/dpdmd.md`.
+> [../../_archive/docs/proposal/dpdmd.md](../../_archive/docs/proposal/dpdmd.md).
 
 ---
 
@@ -198,7 +201,7 @@ loss_dmd.backward()                                   # walks x_θ → steps 2..
 > **The sign of this term is load-bearing and was once inverted.** Before the
 > 2026-05-27 fix the student gradient pointed the wrong way (anti-distill). The tell
 > is subtle: inverted-sign runs look like *"base few-step blur / never trained,"*
-> **not** a blow-up. See [[project_turbo_dmd_sign_fix]].
+> **not** a blow-up.
 
 ---
 
@@ -252,7 +255,7 @@ Two reasons this is correctness work, not just memory hygiene:
 2. **Peak activations stay at one forward.** The two losses share no graph, so a
    single combined backward would pay 2× activation memory for nothing. Severing lets
    grad-ckpt stay *optional* at small $N$ — the unroll it tames is the $N{-}1$-step DMD
-   chain, not the freed step-0 graph (see [[project_custom_down_autograd_distill_lever]]).
+   chain, not the freed step-0 graph.
 
 With the detach **off** (A/B only) the graphs are entangled and the diversity term
 must ride the single combined backward at assembly time.
@@ -348,7 +351,7 @@ as the diversity fix; under DP-DMD the **diversity-collapse story has moved to t
 anchor (§1, §5)** — the first-step supervision is what now carries pose/composition
 spread, and `dm_x0_norm` is a *scale-invariance* lever on the quality term, not the
 diversity lever it was once over-credited as. It still ships true: scale-invariant
-DM grads keep the tails and detail sharp. See [[project_turbo_dmd_x0_norm_wins]].
+DM grads keep the tails and detail sharp.
 
 ---
 
@@ -373,7 +376,7 @@ clamp). Normalization stays `/numel` (no renorm by mask area, matching
 `TurboDMDNetwork.save_student` serializes **only the student** in the standard
 plain-LoRA layout (`save_variant="standard"`); the fake is training scaffolding and
 never shipped. The student is an ordinary rank-$r$ LoRA with **CFG=4 baked in** — load
-it through the normal inference path and run `--infer_steps 2 --cfg 1.0`. No turbo
+it through the normal inference path and run `--infer_steps 2 --guidance_scale 1.0` (or `python tasks.py exp-test-turbo`). No turbo
 code runs at inference.
 
 Step count: the student is trained at `student_steps=2`, so 2 steps is the matched
@@ -381,17 +384,15 @@ schedule. But an under-trained student behaves like a continuous velocity field 
 DMD quality loss is trained at *random* $\tau$; only step 0 is grid-anchored), so it
 can integrate **better** at more Euler steps. If a checkpoint looks better at 4 steps
 than 2, that's the tell that distillation hasn't reached a true 2-step map yet — train
-longer or raise `student_steps`. Always keep `--cfg 1.0` (CFG is baked; don't
-double-guide). See [[project_sigma_signal_resolves_by_045]] for why the σ≈0.5 band is
-where the extra evaluation matters.
+longer or raise `student_steps`. Always keep `--guidance_scale 1.0` (CFG is baked; don't
+double-guide). Because the base DiT resolves coarse $x_0$ structure around $\sigma \approx 0.45$, the $\sigma \approx 0.5$ midpoint is where an extra evaluation step helps most.
 
 Consequences of the plain-LoRA bake (the load-bearing constraint):
 
 - **Composes** with concept LoRAs linearly (ranks add), same model surgery as
   LCM-LoRA + style LoRA.
 - **Cannot carry** anything needing a step-size/per-t input at inference (Shortcut /
-  MeanFlow Δt-conditioning; timestep-conditioned T-LoRA whose mask is training-only,
-  [[project_tlora_inference_full_rank]]). A plain LoRA must average antagonistic
+  MeanFlow Δt-conditioning; timestep-conditioned T-LoRA whose mask is training-only and runs full-rank at inference). A plain LoRA must average antagonistic
   per-$t$ corrections — true multi-stride robustness is out of scope.
 - **Incompatible with Spectrum** (Chebyshev cache assumes ≥16 steps).
 

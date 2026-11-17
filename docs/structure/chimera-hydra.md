@@ -1,19 +1,22 @@
 # ChimeraHydra: dual-pool additive MoE on the OrthoHydra basis
 
+状态：实验
+适用版本：当前 main；可运行边界以 `tasks.py --help` 和实时源码为准
+
 A re-parameterization of HydraLoRA's expert pool. Each adapted `Linear` keeps the **shared `lora_down` + stacked `lora_up`** layout from `hydralora.md`, but the $E$ experts are split into two **disjoint pools** routed by two **structurally different routers**:
 
 | Pool          | Size      | Router          | Router input            | What it sees       |
 | ------------- | --------- | --------------- | ----------------------- | ------------------ |
 | **Content**   | $K_c$     | per-Linear      | RMS-pooled rank-$r$ `lx` | sample/content axis |
-| **Frequency** | $K_f$     | network-level   | FEI of $z_t$ (+σ-features, currently off) | noise-level axis |
+| **Frequency** | $K_f$     | network-level   | FEI of $z_t$ (+σ-features, optional) | noise-level axis |
 
 The two pools' outputs are **added**. No multiplicative gate, no σ-band overlap mask, no curriculum. Specialization is enforced by **router-input separation**: the content router cannot see noise level, the freq router cannot see pooled text features, so each pool's experts can only differentiate along its own axis.
 
 Recap from `hydralora.md`: a HydraLoRA module replaces a single $B$ with $E$ stacked heads + a layer-local router that emits a per-sample softmax over them. ChimeraHydra keeps the exact same einsum kernel but constructs the gate from **two disjoint sources** stitched together: `gate = cat([π_c, π_f], dim=-1)`. The forward pass is mathematically identical to single-pool routing with a partitioned $E = K_c + K_f$ gate vector.
 
-> Currently experimental — see `docs/experimental/chimera-hydra.md` for the
-> user-facing entry points (`make exp-chimera`,
-> `make lora-gui GUI_PRESETS=chimera_hydra`). The earlier proposal trail is
+> Currently experimental — see **[../experimental/chimera-hydra.md](../experimental/chimera-hydra.md)** for the
+> user-facing entry points (`python tasks.py exp-chimera`,
+> `python tasks.py lora-gui chimera_hydra`; compatibility aliases `make exp-chimera`, `make lora-gui GUI_PRESETS=chimera_hydra`). The earlier proposal trail is
 > archived or missing; this structural walkthrough is the current technical
 > reference.
 
@@ -134,7 +137,7 @@ $$
 \mathcal{L}_\text{balance}\ =\ w_c \cdot K_c \cdot \sum_{i=1}^{K_c} f_i^{(c)}\, \bar{g}_i^{(c)}\ +\ w_f \cdot K_f \cdot \sum_{j=1}^{K_f} f_j^{(f)}\, \bar{g}_j^{(f)}
 $$
 
-Each pool gets its own Switch-Transformer-style coefficient. The accumulator (`networks/lora_anima/network.py:_get_chimera_balance_loss`) splits each module's cached `_last_gate` at index $K_c$ and runs the two halves through independent balance terms. Defaults: `balance_w_content = 2e-5` (matches the `[[project_hydra_balance_weight_ceiling]]` safe range), `balance_w_freq = 2e-5`. The outer `balance_loss_weight` multiplier stays at `1.0` so the per-pool weights are the only effective scalars.
+Each pool gets its own Switch-Transformer-style coefficient. The accumulator (`networks/lora_anima/router_stats.py`) splits each module's cached `_last_gate` at index $K_c$ and runs the two halves through independent balance terms. Canonical reference defaults: `balance_w_content = 2e-7` (within the OrthoHydra safe ceiling below router saturation), `balance_w_freq = 0` (at $K_f = 2$ the binary freq gate has minimal symmetry to break; raise toward `1e-6` if $K_f \ge 3$ or freq gates stay uniform). The outer `balance_loss_weight` multiplier stays at `1.0` so the per-pool weights are the only effective scalars.
 
 A single combined balance term would not work: the optimizer could trivially satisfy it by flattening one pool to uniform (which makes that pool's contribution to the term vanish) while the other concentrates. Two independent terms force pressure on both axes simultaneously.
 
@@ -172,7 +175,7 @@ This dual-pool runtime form is detected purely by the metadata stamp: nothing in
 
 Two einsum folds + a single `bmm` per Linear. T-LoRA's mask is folded into `P_combined_c` rather than masking `lx`, so both pools share the same `(B, L, r) @ (B, r, d_out)` `bmm` regardless of mask state. The freq routing buffer is shape-`(B, K_f)`, slot-assigned per step (not in-place copied) — the pointer identity changes but the shape doesn't, so dynamo doesn't recompile. Standard chimera training runs at the same compile budget as OrthoHydra at `num_experts = E`.
 
-`set_fei` fires the FreqRouter **with grad** (not inside `torch.no_grad`) so the autograd path `L_denoise → out_f → π_f → FreqRouter.params` reaches the router parameters through the slot-assigned `_freq_routing_weights` buffer. This matches the FeRA `GlobalRouter` contract (`[[project_fera_router_gradient_path]]`).
+`set_fei` fires the FreqRouter **with grad** (not inside `torch.no_grad`) so the autograd path `L_denoise → out_f → π_f → FreqRouter.params` reaches the router parameters through the slot-assigned `_freq_routing_weights` buffer. This matches the FeRA `GlobalRouter` gradient-flow contract.
 
 ---
 
@@ -193,7 +196,7 @@ Two einsum folds + a single `bmm` per Linear. T-LoRA's mask is folded into `P_co
 
 ## 10. Configuration
 
-`configs/methods/chimera.toml` (canonical bench, `make exp-chimera`):
+Reference baseline (`python tasks.py exp-chimera`, compatibility alias `make exp-chimera`; see [../experimental/chimera-hydra.md](../experimental/chimera-hydra.md) and live `configs/methods/chimera.toml` / `configs/gui-methods/chimera_hydra.toml` for active sweep overrides):
 
 ```toml
 use_chimera_hydra = true
@@ -205,12 +208,12 @@ balance_loss_weight = 1.0
 balance_w_content = 2e-7
 balance_w_freq = 0
 
-# FreqRouter input. σ slice is currently off — FreqRouter sees FEI(2) only.
+# FreqRouter input.
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
-sigma_feature_dim = 0          # ← wired but disabled in the bench config
+sigma_feature_dim = 0          # set >0 (e.g. 16) to append sinusoidal σ features
 
-freq_router_init_std = 0.1     # non-zero is load-bearing (§3.2)
+freq_router_init_std = 0.1     # non-zero is load-bearing when centered-gate is off (§3.2)
 
 # Cayley on the unrouted leg; T-LoRA on the content branch.
 use_ortho = true
@@ -218,7 +221,7 @@ use_timestep_mask = true
 min_rank = 8
 ```
 
-`configs/gui-methods/chimera_hydra.toml` is the GUI-friendly variant — same activation flag, but `K_c = K_f = 3`, `balance_w_freq = 2e-5`, and `sigma_feature_dim = 16` (the σ slice is on in the GUI variant). Pick whichever matches your run.
+`configs/gui-methods/chimera_hydra.toml` (`python tasks.py lora-gui chimera_hydra`) provides the self-contained GUI variant (`K_c = K_f = 3`, `sigma_feature_dim = 16`, with small non-zero `balance_w_content` / `balance_w_freq` for $K_f = 3$). Pick whichever matches your run.
 
 The three-axis fields (`use_moe_style` / `route_per_layer` / `router_source`) are **auto-pinned** to `("shared_A", true, "input")` by `LoRANetworkCfg.from_kwargs` whenever `use_chimera_hydra = true`. Passing any other value for those fields raises — the chimera flag is the only routing knob you set.
 
