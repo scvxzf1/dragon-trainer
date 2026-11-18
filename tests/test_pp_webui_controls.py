@@ -270,3 +270,26 @@ console.log(JSON.stringify({{
         "krea2Pp": True,
         "animaPp": True,
     }
+
+
+def test_distributed_diagnosis_overrides_accept_full_pp_admission_scalars() -> None:
+    from web.services.training.distributed_inputs import apply_diagnosis_overrides
+
+    merged = apply_diagnosis_overrides(
+        {"model_family": "anima", "gradient_accumulation_steps": 1, "loss_type": "l2"},
+        {
+            "gradient_accumulation_steps": 2,
+            "sample_at_first": True,
+            "loss_type": "huber",
+            "router_source": "fei",
+            "use_vae_cache": False,
+        },
+    )
+    assert merged["gradient_accumulation_steps"] == 2
+    assert merged["sample_at_first"] is True
+    assert merged["loss_type"] == "huber"
+    assert merged["router_source"] == "fei"
+    assert merged["use_vae_cache"] is False
+
+    with pytest.raises(ValueError, match="Unsupported diagnosis overrides"):
+        apply_diagnosis_overrides({}, {"output_dir": "/tmp/evil"})

@@ -33,6 +33,7 @@ import {
   reorderModel,
 } from "./modelLibrary";
 import "./settings.css";
+import { FALLBACK_MODEL_FAMILIES } from "../training-config/domain/model-family.js";
 import { TrainingModelPathControl } from "../training-config/TrainingModelPathControl";
 
 function formatModelSize(bytes: number | undefined) {
@@ -131,6 +132,9 @@ export function ModelConfigPage() {
   const [renameLabel, setRenameLabel] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
   const capabilities = useModelCapabilities();
+  const familyOptions = capabilities.data?.items?.length
+    ? capabilities.data.items
+    : FALLBACK_MODEL_FAMILIES;
   const modelCapability = (family: string) => findModelCapability(capabilities.data?.items, family);
   const [notice, setNotice] = useState("");
   const save = useMutation({
@@ -438,11 +442,14 @@ export function ModelConfigPage() {
                       value={item.model_family}
                       onChange={(e) => update({ model_family: e.target.value })}
                     >
-                      <option value="anima">Anima</option>
-                      <option value="krea2_raw">Krea-2 Raw</option>
-                      <option value="z_image">Z-Image</option>
-                      <option value="qwen_image_2_1">Qwen Image 2.1</option>
-                      <option value="moss_image">MOSS-Image</option>
+                      {familyOptions.map((family) => (
+                        <option key={family.name} value={family.name}>
+                          {family.display_name}
+                        </option>
+                      ))}
+                      {!familyOptions.some((family) => family.name === item.model_family) && (
+                        <option value={item.model_family}>{item.model_family}</option>
+                      )}
                     </select>
                   </label>
                   <label>

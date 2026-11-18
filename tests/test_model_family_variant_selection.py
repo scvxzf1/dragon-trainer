@@ -142,3 +142,34 @@ console.log(JSON.stringify({{
     assert [item["value"] for item in selected["attention"]] == ["torch", "sdpa", "flash"]
     assert selected["doraEdit"] is False
     assert selected["routeEdit"] is False
+
+
+def test_ui_constraints_gate_hard_compile_and_alias_options() -> None:
+    if not shutil.which("node"):
+        pytest.skip("node is required for frontend checks")
+    family_uri = (NEXT_DOMAIN / "model-family.js").as_uri()
+    availability_uri = (NEXT_DOMAIN / "config-field-availability.js").as_uri()
+    script = f"""
+const family = await import({json.dumps(family_uri + '?v=ui-constraints')});
+const availability = await import({json.dumps(availability_uri)});
+console.log(JSON.stringify({{
+    zCompileOff: availability.configFieldAvailability('torch_compile', {{ modelFamily: 'z_image', values: {{ torch_compile: false }} }}),
+    zCompileOnEditable: availability.configFieldAvailability('torch_compile', {{ modelFamily: 'z_image', values: {{ torch_compile: true }} }}),
+    zNativeAttn: family.modelFamilyOptionSupported('attn_mode', 'z_image', 'native'),
+    qwenNativeAttn: family.modelFamilyOptionSupported('attn_mode', 'qwen_image_2_1', 'native'),
+    kreaCudnnAttn: family.modelFamilyOptionSupported('attn_mode', 'krea2_raw', 'cudnn'),
+    qwenAutoSwapOff: availability.configFieldAvailability('auto_block_swap', {{ modelFamily: 'qwen_image_2_1', values: {{ auto_block_swap: false }} }}),
+}}));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=ROOT, check=True, capture_output=True, text=True, timeout=20,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["zCompileOff"]["enabled"] is False
+    assert payload["zCompileOff"]["code"] == "family-torch-compile-unsupported"
+    assert payload["zCompileOnEditable"]["enabled"] is True
+    assert payload["zNativeAttn"] is True
+    assert payload["qwenNativeAttn"] is True
+    assert payload["kreaCudnnAttn"] is True
+    assert payload["qwenAutoSwapOff"]["enabled"] is False

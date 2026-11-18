@@ -50,11 +50,23 @@ describe("distributed card values", () => {
     expect(effectiveDistributedSettings({}, {}, defaults).pipeline_parallel_blocks_to_swap).toBe(4);
   });
 
-  it("diagnoses draft family and PP edits without exposing paths", () => {
+  it("diagnoses draft family, PP, and admission scalar edits without exposing paths", () => {
     expect(distributedDiagnosisOverrides(
-      { model_family: "anima", pipeline_parallel_blocks_to_swap: 0, output_dir: "/private" },
+      {
+        model_family: "anima",
+        pipeline_parallel_blocks_to_swap: 0,
+        gradient_accumulation_steps: 2,
+        sample_at_first: true,
+        output_dir: "/private",
+        sample_prompts: "prompts.txt",
+      },
       { model_family: "krea2_raw", pipeline_parallel_blocks_to_swap: 4 },
-    )).toEqual({ model_family: "anima", pipeline_parallel_blocks_to_swap: 0 });
+    )).toEqual({
+      model_family: "anima",
+      pipeline_parallel_blocks_to_swap: 0,
+      gradient_accumulation_steps: 2,
+      sample_at_first: true,
+    });
   });
 
   it("allows Krea-2 aliases before a diagnosis and respects an explicit refusal", () => {

@@ -1,4 +1,4 @@
-const FALLBACK_MODEL_FAMILIES = Object.freeze([
+export const FALLBACK_MODEL_FAMILIES = Object.freeze([
     {
         name: 'moss_image',
         display_name: 'MOSS-Image',
@@ -8,6 +8,22 @@ const FALLBACK_MODEL_FAMILIES = Object.freeze([
         plain_lora_only: true,
         supported_tasks: ['t2i'],
         supported_attention_modes: ['torch', 'sdpa'],
+        ui_constraints: {
+            torch_compile: false,
+            compile_dynamic_seq: false,
+            compile_seq_bands: false,
+            compile_inductor_modes: [],
+            allows_cudagraphs: false,
+            runtime_base_compute: ['bf16'],
+            mixed_precisions: ['bf16', 'fp16', 'no'],
+            block_swap_transfer_dtypes: ['bf16', 'int8'],
+            selective_checkpoint_modes: ['off'],
+            supports_checkpoint_offload: false,
+            supports_v100_flash_stability: false,
+            supports_adaptive_swap_capacity: false,
+            accepted_attention_modes: ['sdpa', 'torch'],
+            supports_stage_block_swap: false,
+        },
         pipeline_parallel: {
             configurable: true,
             runtime_available: true,
@@ -31,6 +47,25 @@ const FALLBACK_MODEL_FAMILIES = Object.freeze([
         supports_method_adapters: true,
         plain_lora_only: false,
         supported_attention_modes: ['flash', 'torch', 'mem_efficient', 'sageattn', 'flex', 'xformers', 'sdpa'],
+        ui_constraints: {
+            torch_compile: true,
+            compile_dynamic_seq: true,
+            compile_seq_bands: true,
+            compile_inductor_modes: ['default', 'max-autotune', 'max-autotune-no-cudagraphs', 'reduce-overhead'],
+            allows_cudagraphs: true,
+            runtime_base_compute: ['bf16', 'w8a16_convrot', 'w8a8_convrot'],
+            mixed_precisions: ['bf16', 'fp16', 'no'],
+            block_swap_transfer_dtypes: ['bf16', 'fp8_e4m3', 'int8'],
+            selective_checkpoint_modes: [
+                'adapter_aware', 'every_other', 'mlp_layer1_only', 'mlp_only', 'off',
+                'peak_blocks_adapter_aware', 'peak_blocks_mlp', 'peak_blocks_mlp_layer1',
+            ],
+            supports_checkpoint_offload: true,
+            supports_v100_flash_stability: true,
+            supports_adaptive_swap_capacity: true,
+            accepted_attention_modes: ['flash', 'flex', 'mem_efficient', 'sageattn', 'sdpa', 'torch', 'xformers'],
+            supports_stage_block_swap: false,
+        },
         pipeline_parallel: {
             configurable: true,
             runtime_available: true,
@@ -54,6 +89,22 @@ const FALLBACK_MODEL_FAMILIES = Object.freeze([
         supports_method_adapters: false,
         plain_lora_only: false,
         supported_attention_modes: ['torch', 'flash', 'sdpa'],
+        ui_constraints: {
+            torch_compile: true,
+            compile_dynamic_seq: false,
+            compile_seq_bands: false,
+            compile_inductor_modes: ['default'],
+            allows_cudagraphs: false,
+            runtime_base_compute: ['bf16', 'nf4', 'w8a16_convrot', 'w8a8_convrot'],
+            mixed_precisions: ['bf16', 'fp16', 'no'],
+            block_swap_transfer_dtypes: ['bf16', 'fp8_e4m3', 'int8'],
+            selective_checkpoint_modes: ['every_other', 'off'],
+            supports_checkpoint_offload: false,
+            supports_v100_flash_stability: false,
+            supports_adaptive_swap_capacity: true,
+            accepted_attention_modes: ['cudnn', 'cudnn_sdpa', 'flash', 'sdpa', 'torch'],
+            supports_stage_block_swap: true,
+        },
         pipeline_parallel: {
             configurable: true,
             runtime_available: true,
@@ -77,6 +128,22 @@ const FALLBACK_MODEL_FAMILIES = Object.freeze([
         supports_method_adapters: false,
         plain_lora_only: false,
         supported_attention_modes: ['flash', 'torch', 'sdpa'],
+        ui_constraints: {
+            torch_compile: false,
+            compile_dynamic_seq: false,
+            compile_seq_bands: false,
+            compile_inductor_modes: [],
+            allows_cudagraphs: false,
+            runtime_base_compute: ['bf16'],
+            mixed_precisions: ['bf16', 'fp16', 'no'],
+            block_swap_transfer_dtypes: ['bf16', 'fp8_e4m3', 'int8'],
+            selective_checkpoint_modes: ['off'],
+            supports_checkpoint_offload: false,
+            supports_v100_flash_stability: false,
+            supports_adaptive_swap_capacity: true,
+            accepted_attention_modes: ['flash', 'native', 'sdpa', 'torch'],
+            supports_stage_block_swap: false,
+        },
         pipeline_parallel: {
             configurable: true,
             runtime_available: false,
@@ -101,6 +168,22 @@ const FALLBACK_MODEL_FAMILIES = Object.freeze([
         plain_lora_only: true,
         supported_tasks: ['t2i', 'edit'],
         supported_attention_modes: ['torch', 'sdpa', 'flash'],
+        ui_constraints: {
+            torch_compile: true,
+            compile_dynamic_seq: true,
+            compile_seq_bands: false,
+            compile_inductor_modes: ['default'],
+            allows_cudagraphs: false,
+            runtime_base_compute: ['bf16'],
+            mixed_precisions: ['bf16', 'fp16', 'no'],
+            block_swap_transfer_dtypes: ['bf16', 'fp8_e4m3', 'int8'],
+            selective_checkpoint_modes: ['off'],
+            supports_checkpoint_offload: false,
+            supports_v100_flash_stability: false,
+            supports_adaptive_swap_capacity: false,
+            accepted_attention_modes: ['flash', 'native', 'sdpa', 'torch'],
+            supports_stage_block_swap: false,
+        },
         pipeline_parallel: null,
     },
 ]);
@@ -199,28 +282,45 @@ export function modelFamilyOptionSupported(fieldKey, family, option, context) {
     const capability = modelFamilyCapability(family);
     if (!capability) return true;
     const value = String(option ?? '').trim();
+    const lower = value.toLowerCase();
+    const ui = capability.ui_constraints || null;
+    if (ui) {
+        if (fieldKey === 'attn_mode' && Array.isArray(ui.accepted_attention_modes)) {
+            return ui.accepted_attention_modes.includes(lower);
+        }
+        if (fieldKey === 'compile_inductor_mode' && Array.isArray(ui.compile_inductor_modes) && ui.compile_inductor_modes.length) {
+            return ui.compile_inductor_modes.includes(lower);
+        }
+        if (fieldKey === 'block_swap_transfer_dtype' && Array.isArray(ui.block_swap_transfer_dtypes)) {
+            return ui.block_swap_transfer_dtypes.includes(lower);
+        }
+        if ((capability.name === 'krea2_raw' || capability.name === 'moss_image')
+            && fieldKey === 'selective_checkpoint'
+            && Array.isArray(ui.selective_checkpoint_modes)) {
+            return ui.selective_checkpoint_modes.includes(lower);
+        }
+        if (capability.name === 'krea2_raw' && fieldKey === 'v100_flash_stability' && ui.supports_v100_flash_stability === false) {
+            return lower === 'off';
+        }
+        if (capability.name === 'moss_image' && fieldKey === 'base_compute' && Array.isArray(ui.runtime_base_compute)) {
+            return ui.runtime_base_compute.includes(lower);
+        }
+    }
     if (capability.name === 'moss_image') {
         const fixedOptions = {
             lora_adapter_kind: ['lora'], network_module: ['networks.lora_anima'],
-            base_compute: ['bf16'], mixed_precision: ['bf16', 'fp16', 'no'], precision_preference: ['bf16', 'fp16', 'fp32'],
-            moss_te_quantization: ['nf4', 'bf16'], selective_checkpoint: ['off'],
+            mixed_precision: ['bf16', 'fp16', 'no'], precision_preference: ['bf16', 'fp16', 'fp32'],
+            moss_te_quantization: ['nf4', 'bf16'],
             timestep_sampling: ['uniform'], weighting_scheme: ['none'], sample_sampler: ['euler'],
-            router_source: ['none'], block_swap_transfer_dtype: ['bf16', 'int8'],
+            router_source: ['none'],
         }[fieldKey];
-        if (fixedOptions) return fixedOptions.includes(value.toLowerCase());
+        if (fixedOptions) return fixedOptions.includes(lower);
         if (['use_moe_style', 'route_per_layer', 'dora_wd', 'use_ortho', 'use_loha', 'use_lokr'].includes(fieldKey)) {
-            return ['false', 'off', 'none', '0'].includes(value.toLowerCase());
+            return ['false', 'off', 'none', '0'].includes(lower);
         }
-    }
-    if (capability.name === 'krea2_raw') {
-        if (fieldKey === 'selective_checkpoint') {
-            return ['off', 'every_other'].includes(value.toLowerCase());
-        }
-        if (fieldKey === 'compile_inductor_mode') return value.toLowerCase() === 'default';
-        if (fieldKey === 'v100_flash_stability') return value.toLowerCase() === 'off';
     }
     if (fieldKey === 'attn_mode') {
-        return (capability.supported_attention_modes || []).includes(value.toLowerCase());
+        return (capability.supported_attention_modes || []).includes(lower);
     }
     if (fieldKey === 'qwen_image_2_1_task') {
         const supportedTasks = Array.isArray(capability.supported_tasks)

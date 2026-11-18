@@ -160,4 +160,5 @@ console.log(JSON.stringify(Object.fromEntries(names.map((name) => [
         assert actual["supports_method_adapters"] == expected["supports_method_adapters"]
         assert actual["plain_lora_only"] == expected["plain_lora_only"]
         assert sorted(actual["supported_attention_modes"]) == expected["supported_attention_modes"]
+        assert actual["ui_constraints"] == expected["ui_constraints"]
         assert actual["pipeline_parallel"] == expected["pipeline_parallel"]

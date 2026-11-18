@@ -232,6 +232,7 @@ const state = (key, values, extra = {{}}) => {{
 console.log(JSON.stringify({{
   pipelineOff: state('pipeline_parallel_stages', {{ pipeline_parallel: false }}),
   pipelineOn: state('pipeline_parallel_stages', {{ pipeline_parallel: true }}, {{ pipelineParallel: true }}),
+  pipelineUnwired: state('pipeline_parallel_stages', {{ pipeline_parallel: true }}, {{ modelFamily: 'z_image', pipelineParallel: true }}),
   convrotOff: state('convrot_scope', {{ base_compute: 'bf16' }}, {{ baseCompute: 'bf16' }}),
   convrotOn: state('convrot_scope', {{ base_compute: 'w8a16_convrot' }}, {{ baseCompute: 'w8a16_convrot' }}),
   compileOff: state('compile_block_scope', {{ torch_compile: false }}),
@@ -253,7 +254,8 @@ console.log(JSON.stringify({{
 """)
 
     expected_disabled_codes = {
-        "pipelineOff": "pipeline-parallel-runtime-unavailable",
+        "pipelineOff": "pipeline-parallel-disabled",
+        "pipelineUnwired": "pipeline-parallel-runtime-unavailable",
         "compileOff": "torch-compile-disabled",
         "bandsOff": "compile-dynamic-seq-disabled",
         "selectiveOff": "selective-checkpoint-disabled",
@@ -268,6 +270,7 @@ console.log(JSON.stringify({{
         assert payload[key]["availability"]["code"] == code
 
     for key in (
+        "pipelineOn",
         "compileOn",
         "bandsOn",
         "selectiveOn",
@@ -278,10 +281,6 @@ console.log(JSON.stringify({{
     ):
         assert payload[key]["presentation"]["visible"] is True
         assert payload[key]["availability"]["enabled"] is True
-
-    assert payload["pipelineOn"]["presentation"]["visible"] is True
-    assert payload["pipelineOn"]["availability"]["enabled"] is False
-    assert payload["pipelineOn"]["availability"]["code"] == "pipeline-parallel-runtime-unavailable"
 
     assert payload["convrotOff"]["presentation"]["visible"] is False
     assert payload["convrotOff"]["presentation"]["code"] == "feature-disabled"

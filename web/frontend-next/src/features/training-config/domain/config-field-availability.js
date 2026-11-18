@@ -150,7 +150,7 @@ export function configFieldAvailability(key, context = {}) {
         || toggleEnabled(context, 'pipeline_parallel');
 
     const pipelineCapability = modelFamilyPipelineCapability(modelFamily);
-    if (key === 'pipeline_parallel_blocks_to_swap' && modelFamily !== 'krea2_raw') {
+    if (key === 'pipeline_parallel_blocks_to_swap' && pipelineCapability?.supports_stage_block_swap !== true) {
         return unavailable('流水线交换块数仅适用于 Krea-2。', 'pipeline-swap-model-family');
     }
     if (PIPELINE_PARALLEL_FIELD_KEYS.has(key) && pipelineCapability?.configurable !== true) {
@@ -271,6 +271,45 @@ export function configFieldAvailability(key, context = {}) {
     }
     if (key === 'compile_seq_bands' && !toggleEnabled(context, 'compile_dynamic_seq')) {
         return unavailable('请先启用动态序列编译。', 'compile-dynamic-seq-disabled');
+    }
+
+    const ui = familyCapability?.ui_constraints || null;
+    if (ui) {
+        const displayName = familyCapability?.display_name || modelFamily;
+        const fixedByUi = {
+            torch_compile: ui.torch_compile === false
+                ? [false, `${displayName} 暂不支持 torch.compile。`, 'family-torch-compile-unsupported']
+                : null,
+            compile_dynamic_seq: ui.compile_dynamic_seq === false
+                ? [false, `${displayName} 不支持动态序列编译。`, 'family-compile-dynamic-seq-unsupported']
+                : null,
+            compile_seq_bands: ui.compile_seq_bands === false
+                ? [false, `${displayName} 不支持分带动态序列编译。`, 'family-compile-seq-bands-unsupported']
+                : null,
+            compile_inductor_mode: Array.isArray(ui.compile_inductor_modes)
+                && ui.compile_inductor_modes.length === 1
+                ? [ui.compile_inductor_modes[0], `${displayName} 仅支持 ${ui.compile_inductor_modes[0]} Inductor mode。`, 'family-compile-inductor-mode']
+                : null,
+            cpu_offload_checkpointing: ui.supports_checkpoint_offload === false
+                ? [false, `${displayName} 不支持激活检查点 CPU 卸载。`, 'family-checkpoint-offload-unsupported']
+                : null,
+            unsloth_offload_checkpointing: ui.supports_checkpoint_offload === false
+                ? [false, `${displayName} 不支持 Unsloth 检查点卸载。`, 'family-checkpoint-offload-unsupported']
+                : null,
+            auto_block_swap: ui.supports_adaptive_swap_capacity === false
+                ? [false, `${displayName} 尚未实现 AUTO 块交换。`, 'family-auto-block-swap-unsupported']
+                : null,
+        }[key];
+        if (fixedByUi) {
+            const [requiredValue, reason, code] = fixedByUi;
+            const currentValue = contextValue(context, key, requiredValue);
+            const isCurrentValueFixed = typeof requiredValue === 'boolean'
+                ? normalizeBooleanConfigValue(key, currentValue, false) === requiredValue
+                : String(currentValue ?? requiredValue).trim().toLowerCase() === requiredValue;
+            if (isCurrentValueFixed) {
+                return unavailable(reason, code);
+            }
+        }
     }
 
     if (key === 'selective_checkpoint_blocks'

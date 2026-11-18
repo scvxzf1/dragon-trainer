@@ -65,6 +65,11 @@ declare module "*domain/config-field-disclosure-rules.js" {
   ): { visible: boolean; reason: string; code: string | null };
 }
 declare module "*domain/model-family.js" {
+  export const FALLBACK_MODEL_FAMILIES: readonly {
+    name: string;
+    display_name: string;
+    aliases: string[];
+  }[];
   export function configureModelFamilyCapabilities(payload: unknown): unknown[];
   export function normalizeModelFamily(value: unknown): string;
   export function isKrea2ModelFamily(value: unknown): boolean;

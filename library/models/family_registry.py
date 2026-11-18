@@ -443,6 +443,44 @@ def get_model_family_spec(value, *, source: str = "model_family") -> ModelFamily
     return MODEL_FAMILY_REGISTRY[family]
 
 
+def _build_ui_constraints(spec: ModelFamilySpec) -> dict[str, object]:
+    """Build declarative hard-constraint metadata for WebUI form availability."""
+    return {
+        "torch_compile": spec.compile_spec.supported,
+        "compile_dynamic_seq": (
+            spec.compile_spec.supported and spec.compile_spec.supports_dynamic_seq
+        ),
+        "compile_seq_bands": (
+            spec.compile_spec.supported and spec.compile_spec.supports_seq_bands
+        ),
+        "compile_inductor_modes": (
+            sorted(spec.compile_spec.inductor_modes)
+            if spec.compile_spec.supported
+            else []
+        ),
+        "allows_cudagraphs": spec.compile_spec.allows_cudagraphs,
+        "runtime_base_compute": sorted(spec.quantization.runtime_base_compute),
+        "mixed_precisions": sorted(spec.quantization.mixed_precisions),
+        "block_swap_transfer_dtypes": sorted(
+            spec.quantization.block_swap_transfer_dtypes
+        ),
+        "selective_checkpoint_modes": sorted(
+            spec.quantization.selective_checkpoint_modes
+        ),
+        "supports_checkpoint_offload": spec.quantization.supports_checkpoint_offload,
+        "supports_v100_flash_stability": (
+            spec.quantization.supports_v100_flash_stability
+        ),
+        "supports_adaptive_swap_capacity": (
+            spec.topology.supports_adaptive_swap_capacity
+        ),
+        "accepted_attention_modes": sorted(spec.attention.accepted_modes),
+        "supports_stage_block_swap": bool(
+            spec.pipeline_parallel and spec.pipeline_parallel.supports_stage_block_swap
+        ),
+    }
+
+
 def model_family_capability_catalog() -> tuple[dict[str, object], ...]:
     """Return the JSON-safe public capability catalog used by both WebUIs."""
 
@@ -491,6 +529,7 @@ def model_family_capability_catalog() -> tuple[dict[str, object], ...]:
                 "max_preview_references": spec.max_preview_references,
                 "supported_attention_modes": sorted(spec.supported_attention_modes),
                 "supported_attention_aliases": dict(spec.attention.mode_aliases),
+                "ui_constraints": _build_ui_constraints(spec),
                 "pipeline_parallel": pipeline_payload,
             }
         )
