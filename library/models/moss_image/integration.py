@@ -20,7 +20,7 @@ def load_vae(args, weight_dtype):
 
 
 def load_dit(trainer, args, weight_dtype, accelerator, text_encoders):
-    from library.training.train_bootstrap import resolve_block_swap_profile_jsonl
+    from library.runtime.block_swap_controller import BlockSwapConfig
     from .block_swap import enable_moss_block_swap
     from .weights import load_moss_transformer
 
@@ -35,17 +35,10 @@ def load_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         model.enable_gradient_checkpointing()
     if swap:
         enable_moss_block_swap(
-            model, swap, accelerator.device,
-            profile_jsonl=resolve_block_swap_profile_jsonl(args),
-            transfer_dtype=getattr(args, "block_swap_transfer_dtype", None),
-            restore_mode=getattr(args, "block_swap_restore_mode", None),
-            int8_restore_mode=getattr(args, "block_swap_int8_restore_mode", None),
-            int8_scope=getattr(args, "block_swap_int8_scope", None),
-            int8_staging_ring=getattr(args, "block_swap_int8_staging_ring", None),
-            int8_dual_stream=getattr(args, "block_swap_int8_dual_stream", None),
-            int8_restore_chunk_rows=getattr(
-                args, "block_swap_int8_restore_chunk_rows", None
-            ),
+            model,
+            swap,
+            accelerator.device,
+            **BlockSwapConfig.from_args(args).to_offloader_kwargs(),
         )
     trainer._use_unsloth_offload_checkpointing = False
     return model, text_encoders

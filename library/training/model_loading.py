@@ -17,6 +17,7 @@ from library.env import resolve_model_family
 from library.models import qwen_vae as qwen_image_autoencoder_kl
 from library.models.family_registry import dispatch_model_family, get_model_family_spec
 from library.quantization.training import validate_mixed_nf4_training
+from library.runtime.block_swap_controller import BlockSwapConfig
 from library.training.probes import maybe_probe_components as _maybe_probe_components
 from library.training.train_bootstrap import resolve_block_swap_profile_jsonl
 from library.training.v100_flash import (
@@ -33,6 +34,25 @@ def _adaptive_islands_enabled(args) -> bool:
     from library.training.adaptive_runtime.training_config import islands_enabled
 
     return islands_enabled(args)
+
+
+def _build_block_swap_config(args) -> BlockSwapConfig:
+    return BlockSwapConfig.from_args(
+        args, profile_jsonl=resolve_block_swap_profile_jsonl(args)
+    )
+
+
+def _probe_block_swap_enabled(
+    trainer, model, device, blocks_to_swap: int, swap_cfg: BlockSwapConfig
+) -> None:
+    _maybe_probe_components(
+        trainer,
+        "block_swap_enabled",
+        unet=model,
+        device=device,
+        phase="setup",
+        **swap_cfg.probe_fields(blocks_to_swap),
+    )
 
 
 def _install_adaptive_precision(model, args, accelerator, family: str, *, trainer=None) -> None:
@@ -249,20 +269,12 @@ def _load_qwen_image_2_1_dit(trainer, args, weight_dtype, accelerator, text_enco
     if getattr(args, "gradient_checkpointing", False):
         model.enable_gradient_checkpointing()
     if trainer.is_swapping_blocks or preview_offloader:
+        swap_cfg = _build_block_swap_config(args)
         enable_qwen_image_2_1_block_swap(
             model,
             getattr(args, "blocks_to_swap", 0) or 0,
             accelerator.device,
-            profile_jsonl=resolve_block_swap_profile_jsonl(args),
-            transfer_dtype=getattr(args, "block_swap_transfer_dtype", None),
-            restore_mode=getattr(args, "block_swap_restore_mode", None),
-            int8_restore_mode=getattr(args, "block_swap_int8_restore_mode", None),
-            int8_scope=getattr(args, "block_swap_int8_scope", None),
-            int8_staging_ring=getattr(args, "block_swap_int8_staging_ring", None),
-            int8_dual_stream=getattr(args, "block_swap_int8_dual_stream", None),
-            int8_restore_chunk_rows=getattr(
-                args, "block_swap_int8_restore_chunk_rows", None
-            ),
+            **swap_cfg.to_offloader_kwargs(),
         )
     trainer._use_unsloth_offload_checkpointing = False
     return model, text_encoders
@@ -302,32 +314,15 @@ def _load_z_image_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         model.enable_gradient_checkpointing()
     trainer._use_unsloth_offload_checkpointing = False
     if trainer.is_swapping_blocks:
-        profile_jsonl = resolve_block_swap_profile_jsonl(args)
+        swap_cfg = _build_block_swap_config(args)
         enable_z_image_block_swap(
             model,
             args.blocks_to_swap,
             accelerator.device,
-            profile_jsonl=profile_jsonl,
-            transfer_dtype=args.block_swap_transfer_dtype,
-            restore_mode=args.block_swap_restore_mode,
-            int8_restore_mode=getattr(args, "block_swap_int8_restore_mode", None),
-            int8_scope=getattr(args, "block_swap_int8_scope", None),
-            int8_staging_ring=getattr(args, "block_swap_int8_staging_ring", None),
-            int8_dual_stream=getattr(args, "block_swap_int8_dual_stream", None),
-            int8_restore_chunk_rows=getattr(
-                args, "block_swap_int8_restore_chunk_rows", None
-            ),
+            **swap_cfg.to_offloader_kwargs(),
         )
-        _maybe_probe_components(
-            trainer,
-            "block_swap_enabled",
-            unet=model,
-            device=accelerator.device,
-            phase="setup",
-            blocks_to_swap=args.blocks_to_swap,
-            block_swap_profile_jsonl=profile_jsonl or "off",
-            block_swap_transfer_dtype=args.block_swap_transfer_dtype,
-            block_swap_restore_mode=args.block_swap_restore_mode,
+        _probe_block_swap_enabled(
+            trainer, model, accelerator.device, args.blocks_to_swap, swap_cfg
         )
     _maybe_probe_components(
         trainer,
@@ -470,38 +465,21 @@ def _load_krea2_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         args.blocks_to_swap is not None and args.blocks_to_swap > 0
     )
     if trainer.is_swapping_blocks:
-        profile_jsonl = resolve_block_swap_profile_jsonl(args)
+        swap_cfg = _build_block_swap_config(args)
         logger.info(
             "enable block swap: "
             f"blocks_to_swap={args.blocks_to_swap}, "
-            f"transfer_dtype={args.block_swap_transfer_dtype}, "
-            f"restore_mode={args.block_swap_restore_mode}, "
-            f"profile_jsonl={profile_jsonl or 'off'}"
+            f"transfer_dtype={swap_cfg.transfer_dtype}, "
+            f"restore_mode={swap_cfg.restore_mode}, "
+            f"profile_jsonl={swap_cfg.profile_jsonl or 'off'}"
         )
         model.enable_block_swap(
             args.blocks_to_swap,
             accelerator.device,
-            profile_jsonl=profile_jsonl,
-            transfer_dtype=args.block_swap_transfer_dtype,
-            restore_mode=args.block_swap_restore_mode,
-            int8_restore_mode=getattr(args, "block_swap_int8_restore_mode", None),
-            int8_scope=getattr(args, "block_swap_int8_scope", None),
-            int8_staging_ring=getattr(args, "block_swap_int8_staging_ring", None),
-            int8_dual_stream=getattr(args, "block_swap_int8_dual_stream", None),
-            int8_restore_chunk_rows=getattr(
-                args, "block_swap_int8_restore_chunk_rows", None
-            ),
+            **swap_cfg.to_offloader_kwargs(),
         )
-        _maybe_probe_components(
-            trainer,
-            "block_swap_enabled",
-            unet=model,
-            device=accelerator.device,
-            phase="setup",
-            blocks_to_swap=args.blocks_to_swap,
-            block_swap_profile_jsonl=profile_jsonl or "off",
-            block_swap_transfer_dtype=args.block_swap_transfer_dtype,
-            block_swap_restore_mode=args.block_swap_restore_mode,
+        _probe_block_swap_enabled(
+            trainer, model, accelerator.device, args.blocks_to_swap, swap_cfg
         )
 
     if float(getattr(args, "vr_loss_weight", 0.0) or 0.0) > 0.0:
@@ -702,38 +680,21 @@ def _load_anima_dit(trainer, args, weight_dtype, accelerator, text_encoders):
         args.blocks_to_swap is not None and args.blocks_to_swap > 0
     )
     if trainer.is_swapping_blocks:
-        profile_jsonl = resolve_block_swap_profile_jsonl(args)
+        swap_cfg = _build_block_swap_config(args)
         logger.info(
             "enable block swap: "
             f"blocks_to_swap={args.blocks_to_swap}, "
-            f"transfer_dtype={args.block_swap_transfer_dtype}, "
-            f"restore_mode={args.block_swap_restore_mode}, "
-            f"profile_jsonl={profile_jsonl or 'off'}"
+            f"transfer_dtype={swap_cfg.transfer_dtype}, "
+            f"restore_mode={swap_cfg.restore_mode}, "
+            f"profile_jsonl={swap_cfg.profile_jsonl or 'off'}"
         )
         model.enable_block_swap(
             args.blocks_to_swap,
             accelerator.device,
-            profile_jsonl=profile_jsonl,
-            transfer_dtype=args.block_swap_transfer_dtype,
-            restore_mode=args.block_swap_restore_mode,
-            int8_restore_mode=getattr(args, "block_swap_int8_restore_mode", None),
-            int8_scope=getattr(args, "block_swap_int8_scope", None),
-            int8_staging_ring=getattr(args, "block_swap_int8_staging_ring", None),
-            int8_dual_stream=getattr(args, "block_swap_int8_dual_stream", None),
-            int8_restore_chunk_rows=getattr(
-                args, "block_swap_int8_restore_chunk_rows", None
-            ),
+            **swap_cfg.to_offloader_kwargs(),
         )
-        _maybe_probe_components(
-            trainer,
-            "block_swap_enabled",
-            unet=model,
-            device=accelerator.device,
-            phase="setup",
-            blocks_to_swap=args.blocks_to_swap,
-            block_swap_profile_jsonl=profile_jsonl or "off",
-            block_swap_transfer_dtype=args.block_swap_transfer_dtype,
-            block_swap_restore_mode=args.block_swap_restore_mode,
+        _probe_block_swap_enabled(
+            trainer, model, accelerator.device, args.blocks_to_swap, swap_cfg
         )
 
     # Variance-reduced FM loss: the "frozen reference" is the trainable

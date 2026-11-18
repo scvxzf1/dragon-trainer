@@ -46,6 +46,7 @@ def resolve_offloader_and_blocks(model: Any) -> Optional[tuple[Any, Any]]:
         return None
     candidates = [model]
     for attr in (
+        "_block_swap_controller",
         "_z_image_block_swap_adapter",
         "_qwen_image_2_1_block_swap_adapter",
         "offloader_holder",

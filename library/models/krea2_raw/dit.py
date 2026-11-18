@@ -46,6 +46,7 @@ from library.models.krea2_raw.attention_backend import (
     run_krea2_attention,
 )
 from library.runtime import offloading as custom_offloading_utils
+from library.runtime.block_swap_controller import ExplicitBlockSwapMixin
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -617,7 +618,7 @@ class SingleStreamBlock(nn.Module):
         return self._forward(x, vec, freqs, mask)
 
 
-class SingleStreamDiT(nn.Module):
+class SingleStreamDiT(ExplicitBlockSwapMixin, nn.Module):
     """Krea-2-Raw 单流 MMDiT。
 
     forward 签名与 anima DiT 对齐到「5D latent 输入」契约：
@@ -822,75 +823,19 @@ class SingleStreamDiT(nn.Module):
             block._forward = torch.compile(base_forward, **compile_kwargs)
             block._krea_dynamic_compiled_forward = block._forward
 
-    # === Block swap 接口 (移植自 anima models.py:2291-2387, 复用 ModelOffloader) ===
-    # ModelOffloader 只遍历 block.named_modules() 取 .weight + .to(device) +
-    # register_full_backward_hook, 对 block forward 签名零假设, SingleStreamBlock 满足.
-    # 训练/推理管线 (harness.place_dit_for_training 等) 鸭子类型调这些方法.
-
+    # === Block swap 接口 (共享 ExplicitBlockSwapMixin + ModelOffloader) ===
     def enable_block_swap(
         self,
         num_blocks: int,
         device: torch.device,
-        *,
-        profile_jsonl: str | None = None,
-        transfer_dtype: str | None = None,
-        restore_mode: str | None = None,
-        int8_restore_mode: str | None = None,
-        int8_staging_ring: int | None = None,
-        int8_dual_stream: bool | None = None,
-        int8_restore_chunk_rows: int | None = None,
-        int8_scope: str | None = None,
+        **offloader_kwargs,
     ):
-        self.blocks_to_swap = num_blocks
-        assert self.blocks_to_swap <= self.num_blocks - 2, (
-            f"Cannot swap more than {self.num_blocks - 2} blocks. "
-            f"Requested: {self.blocks_to_swap} blocks."
-        )
-        self.offloader = custom_offloading_utils.ModelOffloader(
-            self.blocks,
-            self.blocks_to_swap,
+        return self._init_explicit_block_swap(
+            num_blocks,
             device,
-            profile_jsonl=profile_jsonl,
-            transfer_dtype=transfer_dtype,
-            restore_mode=restore_mode,
-            int8_restore_mode=int8_restore_mode,
-            int8_staging_ring=int8_staging_ring,
-            int8_dual_stream=int8_dual_stream,
-            int8_restore_chunk_rows=int8_restore_chunk_rows,
-            int8_scope=int8_scope,
+            offloader_cls=custom_offloading_utils.ModelOffloader,
+            **offloader_kwargs,
         )
-
-    def move_to_device_except_swap_blocks(self, device: torch.device):
-        if self.blocks_to_swap:
-            save_blocks = self.blocks
-            self.blocks = None  # skip .to() on blocks (offloader 管理)
-        self.to(device)
-        if self.blocks_to_swap:
-            self.blocks = save_blocks
-
-    def switch_block_swap_for_inference(self):
-        if not self.blocks_to_swap:
-            return
-        self.offloader.set_forward_only(True)
-        self.prepare_block_swap_before_forward()
-
-    def switch_block_swap_for_training(self):
-        if not self.blocks_to_swap:
-            return
-        self.offloader.set_forward_only(False)
-        self.prepare_block_swap_before_forward()
-
-    def prepare_block_swap_before_forward(self, free_cache: bool = True):
-        if not self.blocks_to_swap:
-            return
-        self.offloader.prepare_block_devices_before_forward(
-            self.blocks, free_cache=free_cache
-        )
-
-    def flush_block_swap_profile(self, blocking: bool = False) -> None:
-        if not self.blocks_to_swap or self.offloader is None:
-            return
-        self.offloader.flush_profile_events(blocking=blocking)
 
     def _run_blocks(
         self,

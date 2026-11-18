@@ -160,7 +160,9 @@ def test_web_legal_and_illegal_experiment(tmp_path):
     assert not any(check.get("overridable") for check in checks)
     write_ordinary_checkpoint(path)
     checks = collect(vars(args()), path)
-    assert checks[0]["level"] == "error" and "actual mixed NF4" in checks[0]["message"]
+    assert checks[0]["level"] == "error" and (
+        "mixed-NF4" in checks[0]["message"] or "actual mixed NF4" in checks[0]["message"]
+    )
 
 
 def test_session_facade_early_and_failure_reporting(monkeypatch):

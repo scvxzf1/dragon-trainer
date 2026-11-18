@@ -19,6 +19,7 @@ from torch.utils.checkpoint import (
 )
 
 from library.runtime import offloading as custom_offloading_utils
+from library.runtime.block_swap_controller import ExplicitBlockSwapMixin
 from library.anima.finite_checks import (
     assert_finite_tensor as _assert_finite_tensor,
     finite_checks_enabled as _finite_checks_enabled,
@@ -1818,7 +1819,7 @@ class Block(nn.Module):
 
 
 # Main DiT Model: MiniTrainDIT (renamed to Anima)
-class Anima(nn.Module):
+class Anima(ExplicitBlockSwapMixin, nn.Module):
     """Cosmos-Predict2 DiT model for image/video generation.
 
     28 transformer blocks with AdaLN-LoRA modulation, 3D RoPE, and optional LLM Adapter.
@@ -1826,6 +1827,7 @@ class Anima(nn.Module):
 
     LATENT_CHANNELS = 16
     VAE_SPATIAL_COMPRESSION = ANIMA_VAE_SPATIAL_COMPRESSION
+    _block_swap_switch_banner = "Anima"
 
     def __init__(
         self,
@@ -2411,34 +2413,13 @@ class Anima(nn.Module):
         self,
         num_blocks: int,
         device: torch.device,
-        *,
-        profile_jsonl: Optional[str] = None,
-        transfer_dtype: Optional[str] = None,
-        restore_mode: Optional[str] = None,
-        int8_restore_mode: Optional[str] = None,
-        int8_staging_ring: Optional[int] = None,
-        int8_dual_stream: Optional[bool] = None,
-        int8_restore_chunk_rows: Optional[int] = None,
-        int8_scope: Optional[str] = None,
+        **offloader_kwargs,
     ):
-        self.blocks_to_swap = num_blocks
-
-        assert self.blocks_to_swap <= self.num_blocks - 2, (
-            f"Cannot swap more than {self.num_blocks - 2} blocks. Requested: {self.blocks_to_swap} blocks."
-        )
-
-        self.offloader = custom_offloading_utils.ModelOffloader(
-            self.blocks,
-            self.blocks_to_swap,
+        self._init_explicit_block_swap(
+            num_blocks,
             device,
-            profile_jsonl=profile_jsonl,
-            transfer_dtype=transfer_dtype,
-            restore_mode=restore_mode,
-            int8_restore_mode=int8_restore_mode,
-            int8_staging_ring=int8_staging_ring,
-            int8_dual_stream=int8_dual_stream,
-            int8_restore_chunk_rows=int8_restore_chunk_rows,
-            int8_scope=int8_scope,
+            offloader_cls=custom_offloading_utils.ModelOffloader,
+            **offloader_kwargs,
         )
         logger.info(
             "Anima: Block swap enabled. "
@@ -2446,74 +2427,6 @@ class Anima(nn.Module):
             f"device: {device}, transfer_dtype: {self.offloader.transfer_dtype}, "
             f"restore_mode: {self.offloader.restore_mode}."
         )
-
-    def move_to_device_except_swap_blocks(self, device: torch.device):
-        # Move all modules to device except blocks (which are managed by offloader)
-        if self.blocks_to_swap:
-            save_blocks = self.blocks
-            self.blocks = None  # Use None to skip .to() on blocks (consistent with flux_models.py)
-
-        self.to(device)
-
-        if self.blocks_to_swap:
-            self.blocks = save_blocks
-
-    def switch_block_swap_for_inference(self):
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        self.offloader.set_forward_only(True)
-        self.prepare_block_swap_before_forward()
-        print("Anima: Block swap set to forward only.")
-
-    def switch_block_swap_for_training(self):
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        self.offloader.set_forward_only(False)
-        self.prepare_block_swap_before_forward()
-        print("Anima: Block swap set to forward and backward.")
-
-    def pause_block_swap(self) -> bool:
-        # Drains the offloader, pulls every parked block's weights back onto the
-        # forward device, and zeroes blocks_to_swap so the per-block swap path
-        # in _run_blocks short-circuits. Intended for no_grad eval where the
-        # full DiT fits on the GPU and CPU↔GPU streaming is pure overhead.
-        # Returns True if pause actually took effect.
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return False
-        if self._paused_blocks_to_swap is not None:
-            return False  # already paused
-        for block_idx in list(self.offloader.futures.keys()):
-            self.offloader._wait_blocks_move(block_idx)
-        self.offloader.restore_blocks_to_device(self.blocks, self.offloader.device)
-        if self.offloader.cuda_available:
-            torch.cuda.synchronize()
-        self._paused_blocks_to_swap = self.blocks_to_swap
-        self.blocks_to_swap = 0
-        return True
-
-    def resume_block_swap(self) -> bool:
-        # Inverse of pause_block_swap: restores blocks_to_swap and re-parks the
-        # tail blocks' weights on CPU via prepare_block_devices_before_forward.
-        if self._paused_blocks_to_swap is None:
-            return False
-        self.blocks_to_swap = self._paused_blocks_to_swap
-        self._paused_blocks_to_swap = None
-        self.prepare_block_swap_before_forward()
-        return True
-
-    def prepare_block_swap_before_forward(self, free_cache: bool = True):
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        self.offloader.prepare_block_devices_before_forward(
-            self.blocks, free_cache=free_cache
-        )
-
-    def flush_block_swap_profile(self, blocking: bool = False) -> None:
-        if self.blocks_to_swap is None or self.blocks_to_swap == 0:
-            return
-        if self.offloader is None:
-            return
-        self.offloader.flush_profile_events(blocking=blocking)
 
     def _run_blocks(
         self,
