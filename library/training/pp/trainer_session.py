@@ -165,53 +165,93 @@ def run_identity(run_id: str, args) -> dict[str, str]:
     return {"run": run_id}
 
 
-def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens, dtype=None):
-    """Build this rank's stage-local runtime (real MOSS PP runtime only)."""
+def _build_family_trainer_runtime(
+    args,
+    accelerator,
+    network,
+    unet,
+    *,
+    latent_shape,
+    dtype,
+    runtime_builder,
+    stage_adapters_fn,
+    release_submodules_fn=None,
+    move_surviving_to_device: bool = True,
+    freeze_non_adapter_base: bool = False,
+    log_moved: bool = False,
+    **builder_extra,
+):
+    """Shared trainer-side PP runtime assembly across all wired model families."""
 
     import torch.distributed as dist
 
-    from library.models.moss_image.pipeline_parallel import (
-        moss_stage_adapter_modules,
-        release_moss_foreign_submodules,
-    )
     from library.training.pp.contract import PipelineRuntimeConfig
-    from library.training.pp.moss_runtime import build_moss_pipeline_runtime
 
-    # LoRA masters stay FP32; the network moves device-only before the stage
-    # module captures its parameter references (never a full-model dtype cast).
-    network.to(device=accelerator.device)
     config = PipelineRuntimeConfig.from_config(args)
     world_size = int(accelerator.num_processes)
     rank = dist.get_rank() if _distributed() else 0
     is_last = rank == int(config.stages) - 1
     device = accelerator.device
     scaler = _last_stage_scaler(device, is_last)
-    runtime = build_moss_pipeline_runtime(
+    network.to(device=device)
+    if freeze_non_adapter_base:
+        adapter_ids = {id(p) for p in network.parameters()}
+        for parameter in unet.parameters():
+            parameter.requires_grad_(id(parameter) in adapter_ids)
+    runtime = runtime_builder(
         unet,
         config=config,
         rank=rank,
         world_size=world_size,
         device=device,
         latent_shape=latent_shape,
-        max_text_tokens=max_text_tokens,
         dtype=dtype,
         network=network,
         scaler=scaler,
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
+        **builder_extra,
     )
-    keep = {id(module) for module in moss_stage_adapter_modules(network, runtime.layout)}
+    keep = {id(module) for module in stage_adapters_fn(network, runtime.layout)}
     for module in getattr(network, "unet_loras", []) or []:
         if id(module) not in keep:
             module.to("cpu")
-    release_moss_foreign_submodules(unet, is_first=runtime.layout.is_first)
+    if release_submodules_fn is not None:
+        release_submodules_fn(unet, is_first=runtime.layout.is_first)
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=device
     )
-    _move_surviving_stage_tensors_to_device(
-        unet, runtime, network, rank=rank, device=device
-    )
+    if move_surviving_to_device:
+        moved = _move_surviving_stage_tensors_to_device(
+            unet, runtime, network, rank=rank, device=device
+        )
+        if log_moved:
+            print(f"[pp] rank={rank} stage ready, moved {moved} tensors", flush=True)
     return runtime
+
+
+def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens, dtype=None):
+    """Build this rank's stage-local runtime (real MOSS PP runtime only)."""
+
+    from library.models.moss_image.pipeline_parallel import (
+        moss_stage_adapter_modules,
+        release_moss_foreign_submodules,
+    )
+    from library.training.pp.moss_runtime import build_moss_pipeline_runtime
+
+    return _build_family_trainer_runtime(
+        args,
+        accelerator,
+        network,
+        unet,
+        latent_shape=latent_shape,
+        dtype=dtype,
+        runtime_builder=build_moss_pipeline_runtime,
+        stage_adapters_fn=moss_stage_adapter_modules,
+        release_submodules_fn=release_moss_foreign_submodules,
+        move_surviving_to_device=True,
+        max_text_tokens=max_text_tokens,
+    )
 
 
 def _last_stage_scaler(device, is_last: bool):
@@ -330,77 +370,35 @@ def _move_surviving_stage_tensors_to_device(
 
 
 def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens=None, dtype=None):
-    """Build this rank's Anima stage-local runtime (library-level, wired).
+    """Build this rank's Anima stage-local runtime (library-level, wired)."""
 
-    The 5D ``(B, C, 1, H, W)`` latent shape, ``build_anima_schedule`` and the
-    shared fp16 transaction all come from the existing library runtime; this
-    wrapper only supplies the trainer-side pieces (per-stage optimizer from
-    ``get_optimizer``, last-stage GradScaler, fp32 LoRA masters).
-    """
-
-    import torch.distributed as dist
-
-    from library.training.pp.contract import PipelineRuntimeConfig
+    del max_text_tokens
     from library.training.pp.placement import (
         release_anima_foreign_submodules,
         stage_adapter_modules,
     )
     from library.training.pp.runtime import build_anima_pipeline_runtime
 
-    network.to(device=accelerator.device)
-    config = PipelineRuntimeConfig.from_config(args)
-    world_size = int(accelerator.num_processes)
-    rank = dist.get_rank() if _distributed() else 0
-    is_last = rank == int(config.stages) - 1
-    scaler = _last_stage_scaler(accelerator.device, is_last)
-    runtime = build_anima_pipeline_runtime(
+    return _build_family_trainer_runtime(
+        args,
+        accelerator,
+        network,
         unet,
-        config=config,
-        world_size=world_size,
-        rank=rank,
-        device=accelerator.device,
         latent_shape=latent_shape,
         dtype=dtype,
-        network=network,
-        scaler=scaler,
-        optimizer_factory=_stage_optimizer_factory(args),
-        max_grad_norm=getattr(args, "max_grad_norm", None),
+        runtime_builder=build_anima_pipeline_runtime,
+        stage_adapters_fn=stage_adapter_modules,
+        release_submodules_fn=release_anima_foreign_submodules,
+        move_surviving_to_device=True,
+        log_moved=True,
     )
-    # The base was loaded on CPU for the PP slice.  Release the foreign blocks /
-    # submodules FIRST, then move whatever survived: after the release the model
-    # only holds this rank's weights, so no name guessing is involved.
-    keep = {id(module) for module in stage_adapter_modules(network, runtime.layout)}
-    for module in getattr(network, "unet_loras", []) or []:
-        if id(module) not in keep:
-            module.to("cpu")
-    release_anima_foreign_submodules(unet, is_first=runtime.layout.is_first)
-    _release_foreign_stage_weights(
-        unet, runtime.layout, network=network, device=accelerator.device
-    )
-    moved = _move_surviving_stage_tensors_to_device(
-        unet, runtime, network, rank=rank, device=accelerator.device
-    )
-    print(f"[pp] rank={rank} stage ready, moved {moved} tensors", flush=True)
-    return runtime
 
 
 def build_krea2_trainer_runtime(
     args, accelerator, network, unet, *, latent_shape, max_text_tokens=None, dtype=None
 ):
-    """Build this rank's Krea-2 stage-local runtime (library-level, wired).
+    """Build this rank's Krea-2 stage-local runtime (library-level, wired)."""
 
-    Differs from the Anima wrapper in two ways that matter for 16 GB cards:
-
-    * ``max_text_tokens`` is required (the Krea-2 wire declares its text length);
-    * only **this rank's** adapter modules go to the card.  ``apply_to`` creates
-      the adapter for all 28 layers and keeps it off the module tree, so a plain
-      ``network.to(device)`` would park the peer's dead weights here (measured
-      at ~98 MiB on the 13/15 split).
-    """
-
-    import torch.distributed as dist
-
-    from library.training.pp.contract import PipelineRuntimeConfig
     from library.training.pp.krea2_runtime import (
         adapter_modules_for_stage,
         build_krea2_pipeline_runtime,
@@ -412,43 +410,20 @@ def build_krea2_trainer_runtime(
             "the Krea-2 PP runtime needs max_text_tokens from the first batch's "
             "cached text encoder output",
         )
-    config = PipelineRuntimeConfig.from_config(args)
-    world_size = int(accelerator.num_processes)
-    rank = dist.get_rank() if _distributed() else 0
-    is_last = rank == int(config.stages) - 1
-    scaler = _last_stage_scaler(accelerator.device, is_last)
-    network.to(device=accelerator.device)
-    # PP v0 trains the adapter only.  Krea-2's apply_to keeps the adapter off the
-    # module tree, so a generic "train unet network" freeze does not reach the
-    # base weights and autograd would still retain ~192 MiB of fc2.weight dW per
-    # layer (measured: 15.18 GiB allocated, OOM at 192 MiB on a 16 GB card).
-    adapter_ids = {id(p) for p in network.parameters()}
-    for parameter in unet.parameters():
-        parameter.requires_grad_(id(parameter) in adapter_ids)
-    runtime = build_krea2_pipeline_runtime(
+    return _build_family_trainer_runtime(
+        args,
+        accelerator,
+        network,
         unet,
-        config=config,
-        world_size=world_size,
-        rank=rank,
-        device=accelerator.device,
         latent_shape=latent_shape,
-        max_text_tokens=int(max_text_tokens),
         dtype=dtype,
-        network=network,
-        scaler=scaler,
-        optimizer_factory=_stage_optimizer_factory(args),
-        max_grad_norm=getattr(args, "max_grad_norm", None),
+        runtime_builder=build_krea2_pipeline_runtime,
+        stage_adapters_fn=adapter_modules_for_stage,
+        move_surviving_to_device=False,
+        freeze_non_adapter_base=True,
+        max_text_tokens=int(max_text_tokens),
         release_foreign=True,
     )
-    # Send the peer's adapter modules back to CPU now that we know our range.
-    keep = {id(module) for module in adapter_modules_for_stage(network, runtime.layout)}
-    for module in getattr(network, "unet_loras", []) or []:
-        if id(module) not in keep:
-            module.to("cpu")
-    _release_foreign_stage_weights(
-        unet, runtime.layout, network=network, device=accelerator.device
-    )
-    return runtime
 
 
 def _loss_collective_device(runtime):
