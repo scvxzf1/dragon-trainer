@@ -76,6 +76,56 @@ def _get_noise_pred_and_target(trainer, ctx, latents, batch, text_encoder_conds,
     )
 
 
+def _scrub_latents_nonfinite(
+    latents: torch.Tensor,
+    *,
+    source: str,
+    accelerator,
+) -> torch.Tensor:
+    counts = _nonfinite_counts(latents)
+    if counts["nan"]:
+        accelerator.print(f"NaN found in {source}, replacing with zeros")
+        numerical_observation.record(
+            numerical_observation.SITE_LATENTS,
+            numerical_observation.KIND_SOURCE_NAN,
+            nonfinite=counts["nan"],
+            elements=counts["elements"],
+            before_dtype=latents.dtype,
+            after_dtype=latents.dtype,
+            shape=tuple(latents.shape),
+            detail=f"source={source}",
+        )
+        if counts["inf"]:
+            numerical_observation.record(
+                numerical_observation.SITE_LATENTS,
+                numerical_observation.KIND_SOURCE_INF,
+                nonfinite=counts["inf"],
+                elements=counts["elements"],
+                before_dtype=latents.dtype,
+                after_dtype=latents.dtype,
+                shape=tuple(latents.shape),
+                detail=f"source={source}",
+            )
+        # Out of place: a cached ``batch["latents"]`` tensor already on device
+        # would otherwise be rewritten through the dataloader's own storage.
+        return torch.nan_to_num(latents, 0)
+    if counts["inf"]:
+        # Observation only: the established scrub triggers on NaN, so ±Inf is
+        # counted and left in the tensor exactly as before (changing that
+        # predicate is a separate user policy decision).
+        numerical_observation.record(
+            numerical_observation.SITE_LATENTS,
+            numerical_observation.KIND_SOURCE_INF,
+            nonfinite=counts["inf"],
+            elements=counts["elements"],
+            before_dtype=latents.dtype,
+            after_dtype=latents.dtype,
+            shape=tuple(latents.shape),
+            detail=f"source={source} (Inf-only: NaN-gated scrub does not touch it)",
+        )
+    return latents
+
+
 def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch.FloatTensor:
     """Load cached latents or encode images, then scrub non-finite values.
 
@@ -85,10 +135,26 @@ def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch
     """
     with torch.no_grad():
         if "latents" in batch and batch["latents"] is not None:
-            latents = typing.cast(
-                torch.FloatTensor, batch["latents"].to(accelerator.device)
-            )
+            raw_latents = batch["latents"]
             source = "cached latents"
+            if raw_latents.device.type == "cpu":
+                # Scrub on CPU before async H2D so steady-state cached training
+                # incurs zero GPU->CPU stream synchronization per batch.
+                if not bool(torch.isfinite(raw_latents).all()):
+                    raw_latents = _scrub_latents_nonfinite(
+                        raw_latents, source=source, accelerator=accelerator
+                    )
+                latents = typing.cast(
+                    torch.FloatTensor,
+                    raw_latents.to(accelerator.device, non_blocking=True),
+                )
+                return typing.cast(
+                    torch.FloatTensor, trainer.shift_scale_latents(args, latents)
+                )
+            latents = typing.cast(
+                torch.FloatTensor,
+                raw_latents.to(accelerator.device, non_blocking=True),
+            )
         else:
             source = "VAE latents"
             if (
@@ -98,7 +164,9 @@ def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch
                 latents = trainer.encode_images_to_latents(
                     args,
                     vae,
-                    batch["images"].to(accelerator.device, dtype=vae_dtype),
+                    batch["images"].to(
+                        accelerator.device, dtype=vae_dtype, non_blocking=True
+                    ),
                 )
             else:
                 chunks = [
@@ -109,59 +177,23 @@ def _prepare_latents(args, trainer, vae, batch, accelerator, vae_dtype) -> torch
                 for chunk in chunks:
                     with torch.no_grad():
                         chunk = trainer.encode_images_to_latents(
-                            args, vae, chunk.to(accelerator.device, dtype=vae_dtype)
+                            args,
+                            vae,
+                            chunk.to(
+                                accelerator.device,
+                                dtype=vae_dtype,
+                                non_blocking=True,
+                            ),
                         )
                         list_latents.append(chunk)
                 latents = torch.cat(list_latents, dim=0)
 
-        # The cleaning policy itself is unchanged (user ruling: keep
-        # ``nan_to_num``/the NaN-gated scrub). What was missing is identity, a
-        # kind split and counters: with only "NaN found in <source>" a corrupt cache
-        # sidecar cannot be told apart from a cast overflow, and a ±Inf-only tensor
-        # produced no message at all. The user-visible line below stays identical;
-        # the structured counts go to ``nonfinite_observation`` (once per kind).
-        counts = _nonfinite_counts(latents)
-        if counts["nan"]:
-            accelerator.print(f"NaN found in {source}, replacing with zeros")
-            numerical_observation.record(
-                numerical_observation.SITE_LATENTS,
-                numerical_observation.KIND_SOURCE_NAN,
-                nonfinite=counts["nan"],
-                elements=counts["elements"],
-                before_dtype=latents.dtype,
-                after_dtype=latents.dtype,
-                shape=tuple(latents.shape),
-                detail=f"source={source}",
-            )
-            if counts["inf"]:
-                numerical_observation.record(
-                    numerical_observation.SITE_LATENTS,
-                    numerical_observation.KIND_SOURCE_INF,
-                    nonfinite=counts["inf"],
-                    elements=counts["elements"],
-                    before_dtype=latents.dtype,
-                    after_dtype=latents.dtype,
-                    shape=tuple(latents.shape),
-                    detail=f"source={source}",
-                )
-            # Out of place: a cached ``batch["latents"]`` tensor already on device
-            # would otherwise be rewritten through the dataloader's own storage.
-            latents = typing.cast(torch.FloatTensor, torch.nan_to_num(latents, 0))
-        elif counts["inf"]:
-            # Observation only: the established scrub triggers on NaN, so ±Inf is
-            # counted and left in the tensor exactly as before (changing that
-            # predicate is a separate user policy decision).
-            numerical_observation.record(
-                numerical_observation.SITE_LATENTS,
-                numerical_observation.KIND_SOURCE_INF,
-                nonfinite=counts["inf"],
-                elements=counts["elements"],
-                before_dtype=latents.dtype,
-                after_dtype=latents.dtype,
-                shape=tuple(latents.shape),
-                detail=f"source={source} (Inf-only: NaN-gated scrub does not touch it)",
-            )
-
+        latents = typing.cast(
+            torch.FloatTensor,
+            _scrub_latents_nonfinite(
+                latents, source=source, accelerator=accelerator
+            ),
+        )
         return typing.cast(torch.FloatTensor, trainer.shift_scale_latents(args, latents))
 
 
@@ -220,7 +252,8 @@ def process_batch_inner(
                 )
             else:
                 input_ids = [
-                    ids.to(accelerator.device) for ids in batch["input_ids_list"]
+                    ids.to(accelerator.device, non_blocking=True)
+                    for ids in batch["input_ids_list"]
                 ]
                 encoded_text_encoder_conds = text_encoding_strategy.encode_tokens(
                     tokenize_strategy,

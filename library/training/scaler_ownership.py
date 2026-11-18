@@ -44,6 +44,7 @@ class GradFiniteness:
 
     offenders: tuple[str, ...] = ()
     scaler_owned: bool = False
+    precomputed_total_norm: torch.Tensor | None = None
 
     @property
     def bad(self) -> bool:
@@ -102,16 +103,17 @@ def _describe(name: str, grad: torch.Tensor) -> str:
     return f"{name}: dtype={grad.dtype} shape={tuple(grad.shape)}"
 
 
-def _scan_norms_bulk(named_grads, limit: int) -> tuple[str, ...] | None:
+def _scan_norms_bulk_with_total(
+    named_grads, limit: int
+) -> tuple[tuple[str, ...], torch.Tensor | None] | None:
     """One dispatcher call for the whole gradient set; ``None`` means unavailable.
 
     A per-tensor ``isfinite().all()`` costs one device sync per tensor, which
     dominated the step for LoRA-sized parameter counts (measured 42 ms/step at
     400 tensors). ``_foreach_norm`` reduces the set to one small tensor, so the
-    scan costs two syncs regardless of how many parameters exist. Overflow (inf)
-    and NaN both survive into a norm accumulated in fp32, so a finite stack proves
-    every gradient is finite — accumulating in the gradient dtype would not, since
-    large finite fp16 sets overflow the norm itself.
+    scan costs one sync regardless of how many parameters exist. Overflow (inf)
+    and NaN both survive into a norm accumulated in fp32, so a finite total norm
+    proves every gradient is finite and can be reused directly by gradient clipping.
     """
     if not named_grads or not hasattr(torch, "_foreach_norm"):
         return None
@@ -126,26 +128,36 @@ def _scan_norms_bulk(named_grads, limit: int) -> tuple[str, ...] | None:
         )
     except Exception:  # sparse/odd dtypes, older torch: fall back to the exact loop
         return None
+    total_norm = torch.linalg.vector_norm(norms, 2.0)
+    if bool(torch.isfinite(total_norm)):
+        return (), total_norm
     finite = torch.isfinite(norms)
-    if bool(finite.all()):
-        return ()
     bad_indices = (~finite).nonzero(as_tuple=False).flatten().tolist()
-    return tuple(
-        _describe(named_grads[index][0], named_grads[index][1])
-        for index in bad_indices[:limit]
+    return (
+        tuple(
+            _describe(named_grads[index][0], named_grads[index][1])
+            for index in bad_indices[:limit]
+        ),
+        None,
     )
 
 
-def inspect_trainable_grads(
+def _scan_norms_bulk(named_grads, limit: int) -> tuple[str, ...] | None:
+    result = _scan_norms_bulk_with_total(named_grads, limit)
+    return None if result is None else result[0]
+
+
+def _inspect_trainable_grads_with_norm(
     network, *, limit: int = MAX_REPORTED_OFFENDERS
-) -> tuple[str, ...]:
-    """Return ``name: dtype=... shape=...`` for non-finite trainable gradients."""
+) -> tuple[tuple[str, ...], torch.Tensor | None]:
     named_grads = [
         (name, parameter.grad)
         for name, parameter in network.named_parameters()
         if parameter.grad is not None
     ]
-    bulk = _scan_norms_bulk(named_grads, limit)
+    if not named_grads:
+        return (), None
+    bulk = _scan_norms_bulk_with_total(named_grads, limit)
     if bulk is not None:
         return bulk
     offenders: list[str] = []
@@ -155,7 +167,14 @@ def inspect_trainable_grads(
         offenders.append(_describe(name, grad))
         if len(offenders) >= limit:
             break
-    return tuple(offenders)
+    return tuple(offenders), None
+
+
+def inspect_trainable_grads(
+    network, *, limit: int = MAX_REPORTED_OFFENDERS
+) -> tuple[str, ...]:
+    """Return ``name: dtype=... shape=...`` for non-finite trainable gradients."""
+    return _inspect_trainable_grads_with_norm(network, limit=limit)[0]
 
 
 def _any_rank_bad(accelerator, bad: bool) -> bool:
@@ -191,7 +210,7 @@ def inspect_grad_ownership(accelerator, network) -> GradFiniteness:
     the information needed to decide ownership.
     """
     scaler_owned = scaler_present(accelerator)
-    offenders = inspect_trainable_grads(network)
+    offenders, total_norm = _inspect_trainable_grads_with_norm(network)
     if scaler_owned:
         # The scaler already all-reduces ``found_inf`` across ranks, so every rank
         # reaches the same skip decision without help from this module.
@@ -199,12 +218,20 @@ def inspect_grad_ownership(accelerator, network) -> GradFiniteness:
 
     processes = int(getattr(accelerator, "num_processes", 1) or 1)
     if processes <= 1:
-        return GradFiniteness(offenders=offenders, scaler_owned=False)
+        return GradFiniteness(
+            offenders=offenders,
+            scaler_owned=False,
+            precomputed_total_norm=total_norm,
+        )
 
     # Without a scaler the skip decision must be identical on every rank, so the
     # flag is agreed even when this rank's own gradients are clean.
     if not _any_rank_bad(accelerator, bool(offenders)):
-        return GradFiniteness(offenders=(), scaler_owned=False)
+        return GradFiniteness(
+            offenders=(),
+            scaler_owned=False,
+            precomputed_total_norm=total_norm,
+        )
     if not offenders:  # pragma: no cover - another rank owns the observation
         offenders = ("<non-finite gradients reported by another rank>",)
     return GradFiniteness(offenders=offenders, scaler_owned=False)

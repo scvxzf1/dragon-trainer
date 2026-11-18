@@ -211,20 +211,68 @@ def _flash_varlen_attention(query, key, value, *, mask):
 
     batch, query_length, heads, head_dim = query.shape
     key_length = key.shape[1]
-    valid = _normalize_key_valid_mask(
-        mask, batch=batch, key_length=key_length, device=query.device
+    cached_meta = (
+        getattr(mask, "_qwen_varlen_meta", None) if torch.is_tensor(mask) else None
     )
-    lengths = valid.sum(dim=1, dtype=torch.int32)
-    if bool((lengths == 0).any()):
-        raise ValueError("Qwen Image 2.1 FlashAttention does not accept empty key sequences")
+    if (
+        cached_meta is not None
+        and cached_meta[0] == mask._version
+        and cached_meta[1] == batch
+        and cached_meta[2] == key_length
+        and cached_meta[3] == query.device
+    ):
+        valid_indices, cu_k, max_key_length = (
+            cached_meta[4],
+            cached_meta[5],
+            cached_meta[6],
+        )
+    elif mask is None:
+        valid_indices = None
+        cu_k = torch.arange(batch + 1, device=query.device, dtype=torch.int32) * key_length
+        max_key_length = key_length
+    else:
+        valid = _normalize_key_valid_mask(
+            mask, batch=batch, key_length=key_length, device=query.device
+        )
+        lengths = valid.sum(dim=1, dtype=torch.int32)
+        min_len, max_len = torch.stack([lengths.min(), lengths.max()]).tolist()
+        if int(min_len) == 0:
+            raise ValueError(
+                "Qwen Image 2.1 FlashAttention does not accept empty key sequences"
+            )
+        cu_k = torch.zeros(batch + 1, device=query.device, dtype=torch.int32)
+        cu_k[1:] = lengths.cumsum(dim=0)
+        max_key_length = int(max_len)
+        if int(min_len) == key_length and int(max_len) == key_length:
+            valid_indices = None
+        else:
+            valid_indices = valid.reshape(-1).nonzero(as_tuple=False).flatten()
+        if torch.is_tensor(mask):
+            try:
+                mask._qwen_varlen_meta = (
+                    mask._version,
+                    batch,
+                    key_length,
+                    query.device,
+                    valid_indices,
+                    cu_k,
+                    max_key_length,
+                )
+            except Exception:
+                pass
 
     cu_q = torch.arange(batch + 1, device=query.device, dtype=torch.int32) * query_length
-    cu_k = torch.zeros(batch + 1, device=query.device, dtype=torch.int32)
-    cu_k[1:] = lengths.cumsum(dim=0)
     q_packed = query.reshape(batch * query_length, heads, head_dim).contiguous()
-    k_packed = key[valid].contiguous()
-    v_packed = value[valid].contiguous()
-    max_key_length = int(lengths.max().item())
+    if valid_indices is None:
+        k_packed = key.reshape(batch * key_length, heads, head_dim).contiguous()
+        v_packed = value.reshape(batch * key_length, heads, head_dim).contiguous()
+    else:
+        k_packed = key.reshape(batch * key_length, heads, head_dim).index_select(
+            0, valid_indices
+        )
+        v_packed = value.reshape(batch * key_length, heads, head_dim).index_select(
+            0, valid_indices
+        )
     output = attention_dispatch.flash_attn_varlen_func(
         q_packed,
         k_packed,

@@ -85,9 +85,18 @@ def divide_gradients(gradients: Iterable[Tensor | None], scale: float) -> None:
             CODE_GRAD_SCALER_MISSING,
             f"fp16 scale must be positive, got {scale!r}",
         )
-    for grad in gradients:
-        if grad is not None:
-            grad.div_(scale)
+    present = [grad for grad in gradients if grad is not None]
+    if not present:
+        return
+    foreach_mul = getattr(torch, "_foreach_mul_", None)
+    if foreach_mul is not None:
+        try:
+            foreach_mul(present, 1.0 / float(scale))
+            return
+        except (RuntimeError, TypeError):
+            pass
+    for grad in present:
+        grad.div_(scale)
 
 
 def agree_overflow(local_overflow: bool, *, group: Any = None) -> bool:
@@ -460,8 +469,7 @@ class PpFp16Transaction:
             scale=scale,
             next_scale=next_scale,
         )
-        self._assert_next_scale_agreement(next_scale)
-        verify_skip_unanimity(skipped, group=self._group, where=self._where)
+        self._assert_step_symmetry(next_scale, skipped)
         self._stepped = True
         self._last_skip = bool(skipped)
         return outcome
@@ -489,6 +497,36 @@ class PpFp16Transaction:
                 f"GradScaler scale {actual} diverged from the pipeline-wide scale "
                 f"{self._scale} at {self._where}; every stage must unscale by the "
                 "same factor the loss was scaled with",
+            )
+
+    def _assert_step_symmetry(self, next_scale: float, skipped: bool) -> None:
+        """Verify both ``next_scale`` agreement and ``skipped`` unanimity in one collective."""
+        if not _distributed():
+            return
+        world = dist.get_world_size(self._group)
+        mine = torch.tensor(
+            [float(next_scale), 1.0 if skipped else 0.0], dtype=torch.float64
+        )
+        gathered = [torch.empty_like(mine) for _ in range(world)]
+        dist.all_gather(gathered, mine, group=self._group)
+        values = [float(item[0].item()) for item in gathered]
+        if any(value != values[0] for value in values):
+            raise PipelineParallelError(
+                CODE_SCALER_DECISION_ASYMMETRY,
+                f"pipeline-wide fp16 scale diverged at {self._where}: {values}. "
+                "Every stage must advance the scale from the same policy and the "
+                "same agreed skip decision; a per-rank divergence silently "
+                "rescales the boundary gradients by the scale ratio.",
+            )
+        skip_total = sum(int(round(float(item[1].item()))) for item in gathered)
+        if skip_total not in (0, world):
+            raise PipelineParallelError(
+                CODE_SCALER_DECISION_ASYMMETRY,
+                f"GradScaler skip decision diverged at {self._where}: "
+                f"{skip_total}/{world} rank(s) skipped this step. Under "
+                "pipeline_parallel the skip decision is derived from an "
+                "all-reduced overflow flag, so a mismatch means the protocol "
+                "was bypassed; refusing to continue with one half of the model stepped.",
             )
 
     def _assert_next_scale_agreement(self, next_scale: float) -> None:

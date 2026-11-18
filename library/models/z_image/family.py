@@ -36,6 +36,25 @@ def prepare_prompt_embeds(hiddens: Tensor, mask: Tensor) -> list[Tensor]:
             "Z-Image prompt cache expects hiddens [B,L,D] and mask [B,L]; "
             f"got {tuple(hiddens.shape)} and {tuple(mask.shape)}"
         )
+    if mask.device.type != "cpu":
+        # Copy the tiny [B, L] bool mask to CPU once instead of triggering B
+        # separate GPU->CPU aten.nonzero syncs via per-row GPU boolean indexing.
+        mask_cpu = mask.detach().to(device="cpu", dtype=torch.bool)
+        prompts: list[Tensor] = []
+        for hidden, row_mask in zip(hiddens, mask_cpu):
+            valid_count = int(row_mask.sum().item())
+            if valid_count == 0:
+                raise ValueError(
+                    "Z-Image received an empty prompt embedding. Rebuild text caches and "
+                    "keep caption_dropout_rate=0."
+                )
+            if bool(row_mask[:valid_count].all().item()):
+                prompts.append(hidden[:valid_count])
+            else:
+                idx = row_mask.nonzero(as_tuple=False).flatten().to(device=hidden.device)
+                prompts.append(hidden.index_select(0, idx))
+        return prompts
+
     prompts = [hidden[row_mask.bool()] for hidden, row_mask in zip(hiddens, mask)]
     if any(prompt.shape[0] == 0 for prompt in prompts):
         raise ValueError(
@@ -73,7 +92,10 @@ def forward_for_loss(
 def _prepare_text_conditions(trainer, ctx, batch, text_encoder_conds, *, is_train):
     accelerator = ctx.accelerator
     if not text_encoder_conds or text_encoder_conds[0] is None:
-        tokens = [value.to(accelerator.device) for value in batch["input_ids_list"]]
+        tokens = [
+            value.to(accelerator.device, non_blocking=True)
+            for value in batch["input_ids_list"]
+        ]
         with torch.no_grad(), accelerator.autocast():
             text_encoder_conds = ctx.text_encoding_strategy.encode_tokens(
                 ctx.tokenize_strategy,
@@ -83,15 +105,28 @@ def _prepare_text_conditions(trainer, ctx, batch, text_encoder_conds, *, is_trai
                 tokens,
             )
 
-    hiddens = text_encoder_conds[0].to(
-        device=accelerator.device, dtype=ctx.weight_dtype
-    )
-    mask = text_encoder_conds[1].to(device=accelerator.device, dtype=torch.bool)
     dropout_rates = (
         batch.get("caption_dropout_rates") if isinstance(batch, dict) else None
     )
     if dropout_rates is not None and torch.as_tensor(dropout_rates).gt(0).any():
         raise ValueError("Z-Image training requires caption_dropout_rate=0")
+    raw_hiddens, raw_mask = text_encoder_conds[0], text_encoder_conds[1]
+    if raw_hiddens.device.type == "cpu" and raw_mask.device.type == "cpu":
+        # Slice valid tokens on CPU before H2D: zero GPU stream syncs and only
+        # unpadded prompt tokens cross PCIe.
+        cpu_prompts = prepare_prompt_embeds(raw_hiddens, raw_mask.to(dtype=torch.bool))
+        return [
+            prompt.to(
+                device=accelerator.device,
+                dtype=ctx.weight_dtype,
+                non_blocking=True,
+            )
+            for prompt in cpu_prompts
+        ]
+    hiddens = raw_hiddens.to(
+        device=accelerator.device, dtype=ctx.weight_dtype, non_blocking=True
+    )
+    mask = raw_mask.to(device=accelerator.device, dtype=torch.bool, non_blocking=True)
     return prepare_prompt_embeds(hiddens, mask)
 
 

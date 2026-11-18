@@ -144,19 +144,33 @@ def _negotiate_prep(error: tuple[str, str] | None, *, group, where: str) -> None
         )
 
 
-def _refuse_mismatched_ranks(digest: str, *, group) -> None:
-    """Every rank compares its digest against rank 0's and refuses identically."""
-
+def _negotiate_prep_and_digest(
+    error: tuple[str, str] | None,
+    digest: str,
+    *,
+    group,
+    where: str,
+) -> None:
+    """Negotiate per-rank prep errors and batch SHA-256 identity in a single collective."""
     if not _distributed(group):
+        if error is not None:
+            raise PipelineParallelError(*error)
         return
     gathered: list = [None] * dist.get_world_size(group)
-    dist.all_gather_object(gathered, digest, group=group)
-    reference = gathered[0]
-    if any(item != reference for item in gathered):
+    dist.all_gather_object(gathered, (error, digest), group=group)
+    failures = [item[0] for item in gathered if item and item[0]]
+    if failures:
+        code, detail = failures[0]
+        raise PipelineParallelError(
+            code, f"negotiated batch-prep refusal ({where}): {detail}"
+        )
+    digests = [item[1] for item in gathered]
+    reference = digests[0]
+    if any(item != reference for item in digests):
         raise PipelineParallelError(
             CODE_STAGE_CONTRACT,
             "pp_data_sync: the pipeline stages hold different logical batches "
-            f"(latent SHA-256 digests {sorted(set(gathered))[:2]}...). Under PP "
+            f"(latent SHA-256 digests {sorted(set(digests))[:2]}...). Under PP "
             "both stages must see the same unsharded batch; a DDP-style loader "
             "split would silently train each half of the model on different data",
         )
@@ -195,12 +209,36 @@ def build_family_step_inputs(
     conditions: dict | None = None
     digest = ""
     try:
-        raw = prepare_clean_latents(
-            trainer, args, batch,
-            accelerator=accelerator, vae=vae, vae_dtype=vae_dtype,
-        ).to(dtype=weight_dtype)
-        latents = adapter.wire_latents(raw)
-        digest = tensor_digest(latents)
+        cpu_latents = (
+            batch.get("latents")
+            if isinstance(batch, dict) and batch.get("latents") is not None
+            else None
+        )
+        if cpu_latents is not None and cpu_latents.device.type == "cpu":
+            from library.training.batch_step import _scrub_latents_nonfinite
+
+            scrubbed_cpu = (
+                cpu_latents
+                if bool(torch.isfinite(cpu_latents).all())
+                else _scrub_latents_nonfinite(
+                    cpu_latents, source="cached latents", accelerator=accelerator
+                )
+            )
+            shifted_cpu = trainer.shift_scale_latents(args, scrubbed_cpu).to(
+                dtype=weight_dtype
+            )
+            wired_cpu = adapter.wire_latents(shifted_cpu)
+            # Hash on CPU before async H2D so PP never round-trips the full
+            # latent tensor GPU -> CPU every step just to compute SHA-256.
+            digest = tensor_digest(wired_cpu)
+            latents = wired_cpu.to(accelerator.device, non_blocking=True)
+        else:
+            raw = prepare_clean_latents(
+                trainer, args, batch,
+                accelerator=accelerator, vae=vae, vae_dtype=vae_dtype,
+            ).to(dtype=weight_dtype)
+            latents = adapter.wire_latents(raw)
+            digest = tensor_digest(latents)
         if is_first or getattr(adapter, "conditions_on_every_rank", False):
             conditions = adapter.prepare_conditions(
                 trainer, args, batch,
@@ -211,8 +249,7 @@ def build_family_step_inputs(
         error = (exc.code, exc.detail)
     except Exception as exc:  # noqa: BLE001 - negotiated below, never rank-local
         error = ("pp_stage_contract_violation", f"{type(exc).__name__}: {exc}")
-    _negotiate_prep(error, group=group, where="pp_trainer_inputs")
-    _refuse_mismatched_ranks(digest, group=group)
+    _negotiate_prep_and_digest(error, digest, group=group, where="pp_trainer_inputs")
 
     if is_first:
         flow = adapter.sample_flow(

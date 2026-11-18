@@ -554,7 +554,13 @@ def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) 
     # Per-step wall time: the only number that says whether 1F1B + block swap is
     # worth its PCIe traffic.  Runs after every collective so it measures the
     # whole step, and is printed every step (a mean hides the first-step cost).
-    if on_cuda:
+    # Gate explicit stream synchronization behind step 1 or opt-in wall-clock
+    # profiling so steady-state PP steps overlap tail optimizer kernels with
+    # next-step H2D prep without emitting per-step cudaStreamSynchronize stalls.
+    if on_cuda and (
+        counters.global_step == 1
+        or bool(int(os.environ.get("ANIMA_PP_SYNC_WALL", "0") or 0))
+    ):
         torch.cuda.synchronize(stage_dev)
     elapsed = time.perf_counter() - started
     print(

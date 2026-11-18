@@ -911,10 +911,15 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                 # An earlier micro-batch of this window already poisoned the
                 # accumulators: keep this attempt from touching the weights.
                 force_skip=not window_accounting.losses_are_finite(window.losses),
+                window=window,
             )
             _profiler_step_end(state)
             state.batches_consumed += 1
-            window.add(batch, loss, epoch=epoch, step=step)
+            cached_scalar = getattr(state, "_last_microbatch_loss_scalar", None)
+            if accelerator.sync_gradients or cached_scalar is not None:
+                window.add(batch, loss, epoch=epoch, step=step, scalar=cached_scalar)
+            else:
+                window.add_deferred(batch, loss, epoch=epoch, step=step)
 
             keys_scaled, mean_norm, maximum_norm, max_mean_logs = _maybe_scale_norm(state)
 
@@ -1150,6 +1155,7 @@ def _run_microbatch(
     force_skip: bool = False,
     manage_accumulate: bool = True,
     route: str = window_coordination.ROUTE_WINDOW,
+    window: Optional[window_accounting.WindowBuffer] = None,
 ) -> torch.Tensor:
     """The accumulate-scope body: on_step_start hooks, cudagraph mark, forward,
     backward gating, manual adapter sync, grad capture/clip, optimizer step +
@@ -1238,9 +1244,6 @@ def _run_microbatch(
                 loss,
                 mixed_precision=getattr(accelerator, "mixed_precision", None),
             )
-        # E3: unconditional (not debug-gated) — a non-finite micro-batch loss makes
-        # the whole accumulation window invalid, so this attempt must not update.
-        loss_is_finite = math.isfinite(window_accounting.loss_value(loss))
         _probe_step(
             memory_probe,
             state,
@@ -1273,6 +1276,22 @@ def _run_microbatch(
         except Exception as exc:
             _probe_step(memory_probe, state, "after_backward_hook_exception", **_probe_exception_fields(exc))
             raise
+
+        # Defer scalar loss extraction until AFTER backward enqueue so CPU never
+        # stalls on GPU forward completion before launching backward kernels;
+        # mid-window micro-batches defer D2H until the optimizer boundary.
+        state._last_microbatch_loss_scalar = None
+        if accelerator.sync_gradients or debug_finite_enabled(args) or window is None:
+            if window is not None:
+                loss_scalar = window.materialize_losses(tail_loss=loss)
+                if not window_accounting.losses_are_finite(window.losses):
+                    force_skip = True
+            else:
+                loss_scalar = window_accounting.loss_value(loss)
+            state._last_microbatch_loss_scalar = loss_scalar
+            loss_is_finite = math.isfinite(float(loss_scalar))
+        else:
+            loss_is_finite = True
 
         if accelerator.sync_gradients:
             try:
@@ -1413,7 +1432,31 @@ def _run_microbatch(
                 params_to_clip = accelerator.unwrap_model(
                     network
                 ).get_trainable_params()
-                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                precomputed_norm = (
+                    grad_finiteness.precomputed_total_norm
+                    if grad_finiteness is not None
+                    else None
+                )
+                dist_type = str(getattr(accelerator, "distributed_type", "NO") or "NO")
+                if (
+                    precomputed_norm is not None
+                    and not scaler_present(accelerator)
+                    and type(accelerator).__module__.startswith("accelerate.")
+                    and "FSDP" not in dist_type
+                    and "DEEPSPEED" not in dist_type
+                    and hasattr(torch, "_foreach_mul_")
+                ):
+                    grads_to_clip = [
+                        p.grad for p in params_to_clip if p.grad is not None
+                    ]
+                    if grads_to_clip:
+                        clip_coef = torch.clamp(
+                            float(args.max_grad_norm) / (precomputed_norm + 1e-6),
+                            max=1.0,
+                        )
+                        torch._foreach_mul_(grads_to_clip, clip_coef)
+                else:
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
             if drop_update:
                 state.update_skipped = True
                 # Nothing applied: clear the (possibly poisoned) gradients here so a
@@ -1700,7 +1743,6 @@ def _log_step(
         )
     )
 
-    current_loss = loss.detach().item()
     # E3: the training ``LossRecorder`` is written by
     # ``window_accounting.commit_window()`` once the whole window is known to be
     # committed — the committed window publishes all of its micro-batch losses, a
@@ -1752,6 +1794,12 @@ def _log_step(
         progress_sink.log(logs, global_step=state.global_step, epoch=epoch + 1)
 
     if state.is_tracking and should_log_step:
+        cached_scalar = getattr(state, "_last_microbatch_loss_scalar", None)
+        current_loss = (
+            float(cached_scalar)
+            if cached_scalar is not None
+            else float(loss.detach().item())
+        )
         logs = trainer.generate_step_logs(
             args,
             current_loss,

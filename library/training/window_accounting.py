@@ -101,16 +101,73 @@ class WindowBuffer:
     slots: list[tuple[int, int]] = field(default_factory=list)
     attempts: int = 0
     replays: int = 0
+    _deferred_losses: list[tuple[int, Any]] = field(default_factory=list, repr=False)
 
-    def add(self, batch: Any, loss: Any, *, epoch: int = 0, step: int = 0) -> float:
-        value = loss_value(loss)
+    def add(
+        self,
+        batch: Any,
+        loss: Any,
+        *,
+        epoch: int = 0,
+        step: int = 0,
+        scalar: Optional[float] = None,
+    ) -> float:
+        value = float(scalar) if scalar is not None else loss_value(loss)
         self.batches.append(batch)
         self.losses.append(value)
         self.slots.append((int(epoch), int(step)))
         return value
 
+    def add_deferred(
+        self,
+        batch: Any,
+        loss: Any,
+        *,
+        epoch: int = 0,
+        step: int = 0,
+    ) -> None:
+        """Record a mid-window micro-batch without forcing a GPU->CPU ``.item()`` sync."""
+        detached = loss.detach() if hasattr(loss, "detach") else loss
+        if not hasattr(detached, "device") or getattr(detached.device, "type", "cpu") == "cpu":
+            self.add(batch, detached, epoch=epoch, step=step)
+            return
+        idx = len(self.losses)
+        self.batches.append(batch)
+        self.losses.append(0.0)
+        self.slots.append((int(epoch), int(step)))
+        self._deferred_losses.append((idx, detached))
+
+    def materialize_losses(self, tail_loss: Any = None) -> Optional[float]:
+        """Resolve all deferred GPU scalar losses (plus optional ``tail_loss``) in one D2H copy."""
+        import torch
+
+        tail_is_gpu = (
+            tail_loss is not None
+            and hasattr(tail_loss, "device")
+            and getattr(tail_loss.device, "type", "cpu") != "cpu"
+        )
+        if not self._deferred_losses:
+            return None if tail_loss is None else loss_value(tail_loss)
+        tensors = [item.reshape(()) for _, item in self._deferred_losses]
+        if tail_is_gpu:
+            tail_detached = tail_loss.detach() if hasattr(tail_loss, "detach") else tail_loss
+            tensors.append(tail_detached.reshape(()))
+        try:
+            values = torch.stack(tensors).float().cpu().tolist()
+        except Exception:
+            values = [loss_value(t) for t in tensors]
+        for (idx, _), val in zip(self._deferred_losses, values[: len(self._deferred_losses)]):
+            self.losses[idx] = float(val)
+        self._deferred_losses.clear()
+        if tail_loss is None:
+            return None
+        if tail_is_gpu:
+            return float(values[-1])
+        return loss_value(tail_loss)
+
     def record_attempt(self, losses: Optional[list[float]] = None) -> None:
         """Count this attempt; a replay also replaces the recorded loss trace."""
+        self.materialize_losses()
         self.attempts += 1
         if losses is None:
             return
@@ -119,6 +176,7 @@ class WindowBuffer:
 
     def failure_reason(self, *, update_skipped: bool) -> Optional[str]:
         """Why this window may not be committed, or ``None`` when it is clean."""
+        self.materialize_losses()
         if not losses_are_finite(self.losses):
             return REASON_NONFINITE_LOSS
         if update_skipped:
@@ -131,6 +189,7 @@ class WindowBuffer:
         self.slots = []
         self.attempts = 0
         self.replays = 0
+        self._deferred_losses = []
 
 
 _COUNTER_FIELDS = (
