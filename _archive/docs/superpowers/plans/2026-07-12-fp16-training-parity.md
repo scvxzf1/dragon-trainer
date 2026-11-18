@@ -1,5 +1,7 @@
 # FP16 训练防护链对齐 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 MonadForge 的训练侧 fp16 完整防护链合进 `anima_lora`：pre-Ampere 自动 `bf16→fp16`、VAE 半精度保护、DiT residual 防溢出，并保留现有推理 `runtime_dtype` 与 V100 `lora_fp32_compute`。

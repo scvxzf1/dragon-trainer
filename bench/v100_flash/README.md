@@ -72,15 +72,19 @@ are under `output/v100-flash-validation/`.
 
 ## Python 3.13 local landing
 
-anima_lora pins the V100 source landing to the reviewed upstream main commit
+`dragon-trainer` pins the V100 source landing to the reviewed upstream main commit
 `c91cad40c0539805754819e6ea96c75184d816a6`; the upstream kernel source is not
 patched. Build it for the existing Python 3.13 / Torch 2.10 V100 environment.
 The CUDA toolkit path is explicit so the installer never depends on an
 untracked local artifact:
 
 ```bash
-make v100-flash-install ARGS="--cuda-home /usr/local/cuda-12.9"
-make v100-flash-validate ARGS="--capture /path/to/first_failure.pt --dit /path/to/anima-base-v1.0.safetensors --performance-baseline /path/to/tail-matrix.json"
+python tasks.py v100-flash-install --cuda-home /usr/local/cuda-12.9
+python tasks.py v100-flash-validate \
+  --capture /path/to/first_failure.pt \
+  --dit /path/to/anima-base-v1.0.safetensors \
+  --performance-baseline /path/to/tail-matrix.json
+# Compatibility aliases: make v100-flash-install ARGS="..." / make v100-flash-validate ARGS="..."
 ```
 
 The capture and DiT must match the SHA-256 pins in
@@ -163,12 +167,12 @@ was outside the compiled dynamic-sequence range.
 | Torch SDPA | `20260731-001142-85ff73` | 165 s | 0.4850 s |
 | Memory-efficient SDPA | `20260731-001509-e84e33` | 147 s | 0.4850 s |
 
-Each directory contains the submitted `job.json`, `progress.jsonl`, and
+Each local run directory (untracked runtime output, not checked into Git) contains the submitted `job.json`, `progress.jsonl`, and
 `stdout.log` files:
 
-- [`flash` logs](../../output/daemon/jobs/20260731-000709-c946d5/)
-- [`torch` logs](../../output/daemon/jobs/20260731-001142-85ff73/)
-- [`mem_efficient` logs](../../output/daemon/jobs/20260731-001509-e84e33/)
+- `flash` logs: `output/daemon/jobs/20260731-000709-c946d5/`
+- `torch` logs: `output/daemon/jobs/20260731-001142-85ff73/`
+- `mem_efficient` logs: `output/daemon/jobs/20260731-001509-e84e33/`
 
 The progress stream records every two optimizer steps, so its event intervals
 must not be read as single-step timings. These runs show that Flash is about
@@ -201,10 +205,11 @@ Keep the hardware profile in the user-owned (and git-ignored)
 `configs/custom/presets/V100.toml`, then run:
 
 ```bash
-PRESET=V100 make lora
+python tasks.py lora PRESET=V100
+# Compatibility alias: PRESET=V100 make lora
 ```
 
-PowerShell / cross-platform task runner:
+PowerShell:
 
 ```powershell
 $env:PRESET = "V100"
@@ -224,7 +229,7 @@ blocks_to_swap = 8
 ```
 
 Leave PyTorch's SDPA backend selection intact. Do not set CUDA SDPA backend
-flags globally: other components need the math fallback, and current anima_lora
+flags globally: other components need the math fallback, and current `dragon-trainer`
 does not disable memory-efficient SDPA.
 
 Operational notes from the verified V100 environment:
@@ -260,13 +265,14 @@ python -m bench.v100_flash.run_probe --attn_mode flash --stability safe --debug_
 
 Results are written under `bench/v100_flash/results/<timestamp>/result.json`.
 
-If the V100 venv is minimal, install full project deps first (the tiny Anima
+If the V100 venv is minimal, sync the project dependencies first (the tiny Anima
 fixture still needs normal runtime deps such as `einops`):
 
 ```bash
-# Example only — use the same venv that contains the V100-compatible torch build.
-pip install -r requirements.txt
-# or install the project with its normal dependency workflow, without replacing torch.
+# Provision a V100-compatible Linux venv from scratch:
+./setup-v100-linux.sh
+# Or sync project deps into an existing venv via uv (re-verify your V100 torch wheel afterwards):
+uv sync
 ```
 
 ## Stability modes
@@ -304,7 +310,7 @@ loss, or in gradients.
 
 Some releases do **not** expose official FlashAttention internal helpers such as
 `_flash_attn_forward`, `_wrapped_flash_attn_forward`, or
-`_wrapped_flash_attn_backward`. anima_lora should treat those internal wrappers as
+`_wrapped_flash_attn_backward`. `dragon-trainer` treats those internal wrappers as
 optional: their absence should not block public `flash_attn_func` import, but
 features that need the wrapped internals must fall back or report that the V100
 fork lacks them.

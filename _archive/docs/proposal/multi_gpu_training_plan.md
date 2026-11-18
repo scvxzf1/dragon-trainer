@@ -9,15 +9,15 @@
 `library/training/compat_matrix.py`、`scripts/experiments/anima_parallel/`
 
 > 本文件保留 2026-11-07 的原始研究计划与取舍结论，**不改写原文**。逐参考点的实现、分层证据、
-> 命令退出码与裁定统一登记在[多卡参考点集成验收](../findings/multigpu_reference_validation_20261107.md)，
-> 冻结判据在[验收契约](multigpu_reference_validation_contract.md)（`80dfdb02…`）。
+> 命令退出码与裁定统一登记在[多卡参考点集成验收](../../../docs/findings/multigpu_reference_validation_20261107.md)，
+> 冻结判据在[验收契约](../../../docs/proposal/multigpu_reference_validation_contract.md)（`80dfdb02…`）。
 
 ## 阶段现状（2026-11-08 集成阶段登记，不改原文结论）
 
 | 阶段 | 现状 | 依据 |
 | --- | --- | --- |
-| S0 基线与复现 | 已完成首轮 | [2×V100 NVLink 基线](../findings/multigpu_v100_nvlink_baseline_20261107.md) |
-| S1 DDP 等价与验收 | **部分完成，未放行**：P0-0/P0-1/P0-2/P0-3/P0-4/P1-1/P1-3 已在 V-CPU + V-GLOO（+ 小模型 CUDA）验收；真实 Anima 双卡短训 50 次有效更新已执行，但 single-vs-dual 与 10+10 续训的数值门超阈 ⇒ 等价性**未成立** | [集成验收](../findings/multigpu_reference_validation_20261107.md) §3–§6 |
+| S0 基线与复现 | 已完成首轮 | [2×V100 NVLink 基线](../../../docs/findings/multigpu_v100_nvlink_baseline_20261107.md) |
+| S1 DDP 等价与验收 | **部分完成，未放行**：P0-0/P0-1/P0-2/P0-3/P0-4/P1-1/P1-3 已在 V-CPU + V-GLOO（+ 小模型 CUDA）验收；真实 Anima 双卡短训 50 次有效更新已执行，但 single-vs-dual 与 10+10 续训的数值门超阈 ⇒ 等价性**未成立** | [集成验收](../../../docs/findings/multigpu_reference_validation_20261107.md) §3–§6 |
 | S2 DDP 工程缺口收口 | 进行中：选中卡↔进程数双向 fail-closed、启动期探针、运行身份清单、checkpoint 三阶段发布、版本化 resume bundle 均有实现与分层证据；`world_size` 变化语义已显式化（拒绝/降级），但“同 world 精确恢复”待裁定 | 同上 §3 |
 | S3 PP 生产 runtime | 未启动（保持 `pipeline_parallel_runtime_unavailable` 拒绝，回归通过） | 同上 §3.3 |
 | S4 TP 可行性 | 只到隔离实验：TP1 逐位一致、单层通信次数可测，**不可采用**（仅单层、buffer/掩码协议未覆盖） | 同上 §3.3 |
@@ -42,9 +42,9 @@
 
 历史证据：
 
-- [公开训练器 DDP/TP/PP 调研](../findings/multigpu_trainers_ddp_tp_pp_survey_20261004.md)：sd-scripts/Musubi 与本项目同路线（Accelerate + adapter 显式梯度平均）；diffusion-pipe 是真正接入训练循环的 DP+PP 参考；TP 参考 TorchTitan/Megatron。
-- [Anima 异构双卡 PP2/TP2 探针](../findings/anima_dual_gpu_parallel_probe_20260904.md)：170HX+3080 无 peer access 时 PP2 1.806 s/步、TP2 3.057 s/步；该结论不能外推到本机 NVLink 同构对。
-- [本机 2×V100 NVLink 基线](../findings/multigpu_v100_nvlink_baseline_20261107.md)：all_reduce 36 MiB 0.678 ms（payload/中位时间口径 55.7 GB/s）、0.0625 MiB 小消息探针中位约 0.181 ms（**不是延迟下限**）、H2D 约 5 GB/s、BF16 只有 FP16 的约 9.2% 算力。带宽与延迟口径以[对照报告](../findings/lulynx_multigpu_comparison_20261107.md) §6 为准。
+- [公开训练器 DDP/TP/PP 调研](../../../docs/findings/multigpu_trainers_ddp_tp_pp_survey_20261004.md)：sd-scripts/Musubi 与本项目同路线（Accelerate + adapter 显式梯度平均）；diffusion-pipe 是真正接入训练循环的 DP+PP 参考；TP 参考 TorchTitan/Megatron。
+- [Anima 异构双卡 PP2/TP2 探针](../../../docs/findings/anima_dual_gpu_parallel_probe_20260904.md)：170HX+3080 无 peer access 时 PP2 1.806 s/步、TP2 3.057 s/步；该结论不能外推到本机 NVLink 同构对。
+- [本机 2×V100 NVLink 基线](../../../docs/findings/multigpu_v100_nvlink_baseline_20261107.md)：all_reduce 36 MiB 0.678 ms（payload/中位时间口径 55.7 GB/s）、0.0625 MiB 小消息探针中位约 0.181 ms（**不是延迟下限**）、H2D 约 5 GB/s、BF16 只有 FP16 的约 9.2% 算力。带宽与延迟口径以[对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md) §6 为准。
 
 ### 本机硬件约束（直接决定研究取舍）
 
@@ -54,21 +54,21 @@
   侧提示（`library/runtime/launch.py:37-46`），训练侧 `Accelerator` 用显式 `--mixed_precision`
   （CLI 默认 `no`），且 `library/training/precision_policy.py:43-52` 在 SM 主版本 <8 时会把
   bf16 自动改写为 fp16。风险是“启动参数与实际精度不一致导致日志/清单误导”，不是“静默按
-  bf16 训练”。依据见 [对照报告](../findings/lulynx_multigpu_comparison_20261107.md) §6.1。
+  bf16 训练”。依据见 [对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md) §6.1。
 - 单卡 15.8 GiB：数据并行不降低基座显存，因此 V100 上 PP/TP 的价值首先是“装得下”。
 
 ## 阶段计划
 
 ### S0 基线与复现（已完成首轮）
 
-- 产出：[multigpu_v100_nvlink_baseline_20261107.md](../findings/multigpu_v100_nvlink_baseline_20261107.md)。
+- 产出：[multigpu_v100_nvlink_baseline_20261107.md](../../../docs/findings/multigpu_v100_nvlink_baseline_20261107.md)。
 - 复现命令见该文；探针复用 `scripts/experiments/anima_parallel/transport_bench.py`，不新增重复实现。
 - 待补：多 bucket 并发 all_reduce、Gloo 对照、长窗口稳定性。
 
 ### S1 DDP 在 V100×2 上的等价与验收
 
 - 前置（P0-0，必须先于任何真实短训，且不是“一行小修”）：窗口健康判定 / 跳过决策 /
-  `GradScaler` 状态的跨 rank 一致性。见[对照报告](../findings/lulynx_multigpu_comparison_20261107.md)
+  `GradScaler` 状态的跨 rank 一致性。见[对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md)
   §8.5、§10：无法进入 `optimizer.step()` 的 rank 不会推进 scale 与 growth tracker，因此
   “跳过决策一致”目前是**待验证项而不是既有保证**；修复需要状态协议，失败时应统一终止或保持拒绝。
 - 目标：证明“2 卡 DDP = 单卡 global batch”的等价性与可恢复性，并把 SM70 精度档口径写清。
@@ -102,7 +102,7 @@
   payload 37,748,736 B，可折算 `S/t_rt` ≈ 35.9 GB/s 与 `2S/t_rt` ≈ 71.8 GB/s 两种字节口径
   （单向时间 = `t_rt/2` 需两方向对称假设）。microbatch 与 payload 可按此估算通信占比，但
   该比值不等于链路峰值，也不构成 PP 可行性保证。带宽口径说明见
-  [对照报告](../findings/lulynx_multigpu_comparison_20261107.md) §6.2。
+  [对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md) §6.2。
 - 出口条件：真实训练循环接入并有 stage-local optimizer/ckpt 证据；否则只保留 fail-closed 拒绝。
 
 ### S4 TP 可行性研究
@@ -128,7 +128,7 @@
   `GradScaler` 跳过决策必然一致**：无法进入 `optimizer.step()` 的 rank 不会调用
   `scaler.step()/update()`，其 scale 与 growth tracker 不会推进；窗口健康判定、跳过决策与
   scaler 状态需要按对照报告 §10 的状态协议统一，不能用 rank-local 判定兜底
-  （见 [对照报告](../findings/lulynx_multigpu_comparison_20261107.md) §8.5 / §10）。
+  （见 [对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md) §8.5 / §10）。
 - 非有限 loss 的处理、router/FEI 统计、梯度裁剪必须发生在同步之后（现有顺序不可破坏）；
   该顺序只覆盖"梯度本身非有限"这一支，**不覆盖"loss 非有限但梯度有限"与各 rank 窗口长度不等**。
 - 主进程专属副作用（保存、预览、日志、tracker）不得被多进程重复触发。
@@ -137,7 +137,7 @@
   `library/training/precision_policy.py` 自动改写为 fp16。因此要做的是**在运行清单里记录
   实际生效精度与改写原因**，而不是沿用旧的"必须显式设置 fp16"要求；任务配置/TOML 的
   实际默认需按入口分别确认。
-- 通信/精度证据口径以 [对照报告](../findings/lulynx_multigpu_comparison_20261107.md) §6 为准：
+- 通信/精度证据口径以 [对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md) §6 为准：
   传输 artifact 只支持 `S/t_rt` 与 `2S/t_rt` 两种字节口径的比值，不构成单向峰值或 PP 安全保证；
   小消息延迟是该探针统计值而非物理下限；历史 TP 计数是"1 warmup + 8 step"窗口平均。
 
@@ -157,7 +157,7 @@
 3. 真实短训授权：**允许在 V100×2 上跑 20–50 step 短训作为 S1 验收证据**；但本批次是源码比较
    研究，不自动使用该授权，执行前仍需确认没有占用用户正在训练的 GPU。
 
-推荐实施顺序（来自 [Lulynx 多卡对照报告](../findings/lulynx_multigpu_comparison_20261107.md) §4）：
+推荐实施顺序（来自 [Lulynx 多卡对照报告](../../../docs/findings/lulynx_multigpu_comparison_20261107.md) §4）：
 **P0-0 窗口/跳过/scaler 一致性（先于任何真实短训）** → P0-1 选卡/进程数对齐 → P0-4 原因码表 +
 训练进程内传入真实 `world_size` → P0-2 启动期 reduce 探针（会引入运行期 collective，默认关、失败即中止）
 → P0-3/P0-5 清单字段与恢复语义声明 → 再回到 S1 等价性验收。P0-0 与 S1 的第一项都是该报告 §10 的

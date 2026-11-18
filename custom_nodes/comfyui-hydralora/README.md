@@ -16,20 +16,32 @@ Drop `custom_nodes/comfyui-hydralora/` (this directory) into your ComfyUI `custo
 
 | Input | Purpose |
 |-------|---------|
-| `adapter` | safetensors file holding any mix of LoRA / HydraLoRA / ReFT keys |
-| `strength_lora` | scales LoRA + HydraLoRA delta (set 0 to disable both while keeping ReFT) |
+| `model` | `MODEL` — base Anima DiT to clone and patch |
+| `adapter` | safetensors file holding any mix of LoRA / HydraLoRA / ChimeraHydra / ReFT keys |
+| `strength_lora` | scales LoRA + HydraLoRA / ChimeraHydra delta (set 0 to disable while keeping ReFT) |
 | `strength_reft` | scales ReFT residual edit (set 0 to disable ReFT while keeping LoRA) |
 
-Sniffs the safetensors header and routes each component independently — you get correct behavior whether the file contains plain LoRA, a `*_moe.safetensors` hydra checkpoint (σ-conditional or FeRA-style FEI-conditional), a ReFT-only file, or any combination. The two strength sliders are useful for ablation ("is it the LoRA or the ReFT doing the anatomy fix?") and for dialing back either branch when one overshoots.
+Outputs a patched `MODEL`. Sniffs the safetensors header and routes each component independently — you get correct behavior whether the file contains plain LoRA, a `*_moe.safetensors` hydra checkpoint (σ-conditional or FeRA-style FEI-conditional), a `*_chimera.safetensors` dual-pool checkpoint, a ReFT-only file, or any combination. The two strength sliders are useful for ablation ("is it the LoRA or the ReFT doing the anatomy fix?") and for dialing back either branch when one overshoots.
+
+### Anima FeRA Loader
+
+| Input | Purpose |
+|-------|---------|
+| `model` | `MODEL` — base Anima DiT to clone and patch |
+| `adapter` | FeRA safetensors file — either author-faithful (`networks.methods.fera`: `router.net.*` + stacked `lora_down`/`lora_up`) or three-axis `stacked_experts_global_fei` (`global_router.net.*` + `lora_downs.{i}.weight` / `lora_ups.{i}.weight`, typically `*_moe.safetensors`) |
+| `strength` | `FLOAT` (default `1.0`, range `-2.0`..`2.0`) — scales the gated independent-expert correction (`0.0` short-circuits to frozen base) |
+
+Outputs a patched `MODEL`. Loads independent-A stacked-expert FeRA checkpoints (Yin et al., arXiv:2511.17979) routed by a single network-level FEI router. Mutually exclusive with `AnimaAdapterLoader`'s Hydra live-routing — for shared-A FEI-on-Hydra checkpoints (`use_moe_style="shared_A"` + `router_source="fei"`), use **Anima Adapter Loader** instead.
 
 ### Anima Soft Tokens Loader
 
 | Input | Purpose |
 |-------|---------|
-| `soft_tokens` | safetensors file with `tokens` + `t_offsets.weight` keys (`make exp-soft-tokens`) |
+| `model` | `MODEL` — base Anima DiT to clone and patch |
+| `soft_tokens` | safetensors file with `tokens` + `t_offsets.weight` keys (`python tasks.py exp-soft-tokens`) |
 | `strength` | scales the spliced soft tokens (0 = no-op) |
 
-SoftREPA-parameterization soft tokens (Lee et al., arXiv:2503.08250): a bank of per-layer, per-timestep-bucket learned vectors is spliced into the crossattn embedding *inside* the first `n_layers` DiT blocks. Each block gets its own splice via a `forward_pre_hook` that rewrites the block's `crossattn_emb` argument — soft tokens use a *different* per-layer vector at each block; a `diffusion_model` pre-hook records the per-step sigma and precomputes the bank. Applies to the whole batch (both CFG branches) — soft tokens are part of the conditioning the trainer always saw. `n_layers` / `K` / `n_t_buckets` / splice position are read from the checkpoint (tensor shapes + `ss_splice_position`). Chain after the adapter loader when a workflow needs more than one.
+Outputs a patched `MODEL`. SoftREPA-parameterization soft tokens (Lee et al., arXiv:2503.08250): a bank of per-layer, per-timestep-bucket learned vectors is spliced into the crossattn embedding *inside* the first `n_layers` DiT blocks. Each block gets its own splice via a `forward_pre_hook` that rewrites the block's `crossattn_emb` argument — soft tokens use a *different* per-layer vector at each block; a `diffusion_model` pre-hook records the per-step sigma and precomputes the bank. Applies to the whole batch (both CFG branches) — soft tokens are part of the conditioning the trainer always saw. `n_layers` / `K` / `n_t_buckets` / splice position are read from the checkpoint (tensor shapes + `ss_splice_position`). Chain after the adapter loader when a workflow needs more than one.
 
 ## How each component applies
 
@@ -39,9 +51,9 @@ SoftREPA-parameterization soft tokens (Lee et al., arXiv:2503.08250): a bank of 
 
 σ-conditional routing: a forward pre-hook on `diffusion_model` records the current `timesteps` into shared state on each denoising call; every hydra hook reads it to build the sinusoidal σ features. Detected automatically from `router.weight.shape[1] > rank` (minus any FEI dim, when applicable — see below).
 
-FeRA-style FEI routing (`make exp-fera` checkpoints): when the checkpoint's safetensors metadata declares `ss_use_fei_router=true`, the same pre-hook also computes the per-step 2-band Laplacian energy (`e_low, e_high`) of the current latent and stashes it as `(B, 2)` simplex features. The hook concatenates them onto the pooled router input *after* any σ features, matching the training-time `_compute_gate` order `[pooled, sinusoidal(σ), FEI]`. The σ-band partition path and FEI router compose freely — they touch different parts of the router-input layout — though shipped FeRA configs leave σ-band off. FEI compute is one separable Gaussian per denoising step on the (B, C, H, W) latent, negligible vs the DiT forward.
+FeRA-style FEI routing (three-axis `router_source = "fei"` checkpoints from `configs/methods/lora.toml`): when the checkpoint's safetensors metadata declares `ss_use_fei_router=true` (or `ss_router_source="fei"` on `shared_A`), the same pre-hook also computes the per-step 2-band Laplacian energy (`e_low, e_high`) of the current latent and stashes it as `(B, 2)` simplex features. The hook concatenates them onto the pooled router input *after* any σ features, matching the training-time `_compute_gate` order `[pooled, sinusoidal(σ), FEI]`. The σ-band partition path and FEI router compose freely — they touch different parts of the router-input layout — though FEI configs typically leave σ-band off. FEI compute is one separable Gaussian per denoising step on the (B, C, H, W) latent, negligible vs the DiT forward.
 
-**ChimeraHydra dual-pool routing** (`make chimera` checkpoints, files named `*_chimera.safetensors`): the per-Linear router is narrowed to `K_c` outputs and reads pooled rank-R `lx` only (no σ/FEI columns). A network-level FreqRouter MLP (`Linear → SiLU → Linear → softmax/τ`, weights under `freq_router.net.*`) runs once per denoising step on `concat(FEI(z_t), sinusoidal(σ))` and broadcasts `π_f ∈ (B, K_f)` to every chimera Linear via shared state. Each per-Linear hook concatenates `[π_c, π_f]` over the full `E = K_c + K_f` experts and dispatches the standard Hydra einsum/bmm. Detected from `ss_use_chimera_hydra=true` plus the chimera-specific `ss_num_experts_content` / `ss_num_experts_freq` / `ss_chimera_*` metadata.
+**ChimeraHydra dual-pool routing** (`python tasks.py exp-chimera` checkpoints, files named `*_chimera.safetensors`): the per-Linear router is narrowed to `K_c` outputs and reads pooled rank-R `lx` only (no σ/FEI columns). A network-level FreqRouter MLP (`Linear → SiLU → Linear → softmax/τ`, weights under `freq_router.net.*`) runs once per denoising step on `concat(FEI(z_t), sinusoidal(σ))` and broadcasts `π_f ∈ (B, K_f)` to every chimera Linear via shared state. Each per-Linear hook concatenates `[π_c, π_f]` over the full `E = K_c + K_f` experts and dispatches the standard Hydra einsum/bmm. Detected from `ss_use_chimera_hydra=true` plus the chimera-specific `ss_num_experts_content` / `ss_num_experts_freq` / `ss_chimera_*` metadata.
 
 When chimera was trained with `content_router_source = "crossattn"` (`ss_chimera_content_router_source="crossattn"` in metadata), the per-Linear content router is replaced by a single network-level `ContentRouter` MLP fed pooled post-LLM-adapter `crossattn_emb`. A second `forward_hook` is installed on `diffusion_model.llm_adapter._forward_hooks` that pools its output to `(B, D)`, runs the MLP, and writes `π_c` into the same shared state as `π_f`. Per-Linear chimera hooks then broadcast that `π_c` instead of running their own pooled-`lx` softmax. The per-Linear `router.weight`/`router.bias` keys are absent from the file in this mode. See changelog 3.5.0.
 
@@ -58,13 +70,14 @@ For both HydraLoRA and ReFT we install a `forward_hook` rather than overriding `
 | File | Role |
 |------|------|
 | `adapter.py` | LoRA / Hydra / ReFT loading, parsing, hook install |
-| `fera.py` | Author-faithful + plan2 stacked-experts FeRA loading |
+| `chimera.py` | ChimeraHydra (single-A / dual-A, per-Linear or global ContentRouter + FreqRouter) loading and hook install |
+| `fera.py` | Author-faithful + plan2 `stacked_experts_global_fei` FeRA loading |
 | `soft_tokens.py` | SoftREPA soft-token bank loading + per-block splice pre-hooks |
 | `nodes.py` | `AnimaAdapterLoader` / `AnimaFeraLoader` / `AnimaSoftTokensLoader` |
 | `__init__.py` | Re-exports `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS` |
-| `_vendor/` | Generated by `scripts/sync_vendor.py` — bundled copy of the router-compute kernels so the node works when not sitting inside the anima_lora repo |
+| `_vendor/` | Generated by `python tasks.py vendor-sync` (`scripts/sync_vendor.py`) — bundled copy of the router-compute kernels so the node works when not sitting inside the `dragon-trainer` repo |
 
-The pure-compute router math (FEI 2-band / FEI n-band high-to-low, σ sinusoidal features, σ-band partition mask) lives in `library/inference/router_compute.py` in the main repo. `adapter.py` resolves it live when the node is inside anima_lora, falls back to `_vendor/library/inference/router_compute.py` when standalone. Trained router weights are bit-sensitive to these kernels, so the vendored copy must stay in lockstep with the live tree — re-run `make vendor-sync` (or `python scripts/sync_vendor.py`) before publishing a new node version.
+The pure-compute router math (FEI 2-band / FEI n-band high-to-low, σ sinusoidal features, σ-band partition mask) lives in `library/inference/router_compute.py` in the main repo. `adapter.py` resolves it live when the node is inside `dragon-trainer`, and falls back to `_vendor/library/inference/router_compute.py` when standalone. Trained router weights are bit-sensitive to these kernels, so the vendored copy must stay in lockstep with the live tree — re-run `python tasks.py vendor-sync` (compatibility alias: `make vendor-sync` or `python scripts/sync_vendor.py`) before publishing a new node version.
 
 ## Changelog
 
@@ -74,14 +87,14 @@ The postfix training method was archived (soft tokens superseded it — see the 
 
 ### 3.6.1 — 2026-05-20 — Postfix `cond+ortho` (v4) support + drop the `forward` override
 
-`AnimaPostfixLoader` now loads the current `mode=cond` checkpoints (`make exp-postfix`, output `anima_postfix_ortho_v4`). Two parts:
+*(Historical; retired in 3.7.0.)* `AnimaPostfixLoader` loaded `mode=cond` checkpoints (`anima_postfix_ortho_v4`). Two parts:
 
 - **cond+ortho format.** The trainer's cond head was rewritten (commit `e989d64`) to `LayerNorm → Linear → GELU → Linear` emitting `K(K-1)/2 + 1` scalars — a Cayley rotation seed `S(c)` + magnitude `λ(c)` — over a frozen `ortho_basis`, with maxabs-pooling of the content tokens. The node reconstructed the *old* 2-layer `K×D` format and crashed on `cond_mlp.2.weight` (now a GELU). It now mirrors `networks/methods/postfix.py::append_postfix` exactly: maxabs-pool → `postfix(c) = Cayley(S(c) − S(c)ᵀ) @ ortho_basis · λ(c)` (verified bit-for-bit against the trainer). Legacy 2-layer non-ortho cond checkpoints are no longer loadable (they're already unloadable on the trainer side). `postfix` (free-param) and `prefix` paths are unchanged.
 - **No more `diffusion_model.forward` override.** Postfix previously replaced the model forward to run `preprocess_text_embeds` itself — which stranded the DiT's own `x_embedder.proj` on CPU under ComfyUI's dynamic-VRAM / cast-weights staging walk (`mat2 is on cpu`), the same failure mode that retired the hydra σ-capture `forward` wrapper in 2.1.1. The model already runs the LLM adapter inside `forward` and hands the same post-adapter `crossattn_emb` to every block, so the splice moved to a per-block `with_kwargs` `forward_pre_hook` on every block (reading `cond_or_uncond` from `transformer_options` to keep positive-only routing). `forward` is left intact — same hook-not-override invariant as Hydra/ReFT/soft-tokens. Outputs are unchanged on setups where the node already worked.
 
 ### 3.6.0 — 2026-05-20 — Soft-token inference (`AnimaSoftTokensLoader`)
 
-New node `AnimaSoftTokensLoader` runs SoftREPA-parameterization soft tokens (Lee et al., arXiv:2503.08250) at inference — the `networks/methods/soft_tokens.py` checkpoints from `make exp-soft-tokens` were previously training-only on the ComfyUI side.
+New node `AnimaSoftTokensLoader` runs SoftREPA-parameterization soft tokens (Lee et al., arXiv:2503.08250) at inference — the `networks/methods/soft_tokens.py` checkpoints from `python tasks.py exp-soft-tokens` were previously training-only on the ComfyUI side.
 
 - Detection: the file's `tokens` `(n_layers, K, D)` + `t_offsets.weight` `(n_t_buckets, n_layers·D)` tensors. `n_layers` / `K` / `n_t_buckets` are inferred from the shapes; splice position from `ss_splice_position` (`end_of_sequence` default, or `front_of_padding`).
 - Application: a per-block `forward_pre_hook` on the first `n_layers` `diffusion_model.blocks.<idx>._forward_pre_hooks` rewrites each block's `crossattn_emb` arg with that block's spliced bank; a `diffusion_model._forward_pre_hooks` pre-hook records the per-step sigma and precomputes the `(n_layers, B, K, D)` bank. `forward` is never overridden (Hydra/ReFT invariant).
@@ -155,7 +168,7 @@ Also lands FeRA-style FEI routing support (the second half of this release, belo
 
 #### FeRA-style FEI router support
 
-Catches the node up to the training-side FeRA-on-Hydra path (`make exp-fera`, `configs/methods/fera.toml`). Before this, loading an `anima_hydra_fei*_moe.safetensors` succeeded structurally but produced wrong gates: the node inferred `sigma_feature_dim = router_in - rank` and happily fed sinusoidal(σ) into router columns the trainer had reserved for FEI features, so the router routed on a completely different signal than it was trained on. There's no way to distinguish the two cases from `router.weight.shape` alone — needed safetensors metadata.
+Catches the node up to the training-side FEI-on-Hydra path (now configured via three-axis `router_source = "fei"` in `configs/methods/lora.toml`; the earlier standalone FeRA config/shortcut was subsequently removed). Before this, loading an `anima_hydra_fei*_moe.safetensors` succeeded structurally but produced wrong gates: the node inferred `sigma_feature_dim = router_in - rank` and happily fed sinusoidal(σ) into router columns the trainer had reserved for FEI features, so the router routed on a completely different signal than it was trained on. There's no way to distinguish the two cases from `router.weight.shape` alone — needed safetensors metadata.
 
 Applied in `adapter.py`:
 

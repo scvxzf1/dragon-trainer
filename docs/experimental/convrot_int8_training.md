@@ -54,7 +54,7 @@ python tasks.py lora ... --base_compute w8a16_convrot \
 - 非 ConvRot 对照：`library/runtime/int8_linear.py`、`block_swap_transfer_dtype=int8`
 
 相关 findings：[`../findings/anima_int8_base_linear_audit.md`](../findings/anima_int8_base_linear_audit.md)、[`../methods/channel_scaling.md`](../methods/channel_scaling.md)、`bench/channel_stats/`
-落地规格：[`../proposal/convrot_w8a_training_plan.md`](../proposal/convrot_w8a_training_plan.md)
+落地规格：[`../../_archive/docs/proposal/convrot_w8a_training_plan.md`](../../_archive/docs/proposal/convrot_w8a_training_plan.md)
 后续优化：[`../proposal/convrot_w8a_optimization_roadmap.md`](../proposal/convrot_w8a_optimization_roadmap.md)
 
 > **一句话：** ConvRot 训练路径已按战略 C 自建接入；默认 `base_compute=bf16`。

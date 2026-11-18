@@ -1,12 +1,13 @@
-"""Admission preflight for the wired MOSS trainer-level PP path.
+"""Admission preflight for the wired trainer-level PP path.
 
 The CLI/session entry asks two questions here:
 
 1. *May this PP config be served by the trainer path at all?* -- delegated to
    :func:`library.training.pp.gate.require_pipeline_runtime` (family contract,
    schedule/microbatch/world-size/quantization) plus the trainer-wiring
-   admission (only ``moss_image`` publishes a wired trainer runtime; every
-   other family keeps the historical ``pp_trainer_path_unavailable`` refusal).
+   admission (:data:`~library.training.pp.gate.TRAINER_PP_WIRED_FAMILIES`;
+   every unwired family keeps the historical ``pp_trainer_path_unavailable``
+   refusal).
 2. *Is every trainer-facing knob this session will encounter either wired or
    explicitly rejected?* -- PP v0's first wired release serves exactly one
    configuration shape (cached single bucket, plain LoRA, grad accum 1, fp16,

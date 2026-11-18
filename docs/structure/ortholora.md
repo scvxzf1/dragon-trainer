@@ -1,6 +1,11 @@
 # PSOFT-integrated OrthoLoRA
 
+状态：稳定
+适用版本：当前 main
+
 A re-parameterization of the LoRA delta that keeps the basis matrices **exactly orthogonal** at every training step, initializes them from the pretrained weight's SVD, and swaps the $O(rd)$ trainable bases for two tiny $r \times r$ skew-symmetric seeds. Inspired by PSOFT (Wu et al., *Efficient Orthogonal Fine-Tuning with Principal Subspace Adaptation*, ICLR 2026).
+
+> **Usage & configuration:** For TOML flags, CLI entry points, and NF4 / Krea-2 operational boundaries, see **[../methods/psoft-integrated-ortholora.md](../methods/psoft-integrated-ortholora.md)**. This document covers the mathematical and structural derivation.
 
 Recap from `lora.md`: plain LoRA replaces a frozen `Linear` $W_0$ with a residual $y = W_0 x + m\,s\,B A x$, $A \in \mathbb{R}^{r \times d_\text{in}}$ down, $B \in \mathbb{R}^{d_\text{out} \times r}$ up, both trainable. OrthoLoRA keeps the same insertion point — every adapted Linear still sees `org_forward(x) + delta` — but re-shapes what $A$ and $B$ actually are so that the delta stays inside an orthonormal subspace of the pretrained weight.
 
@@ -84,7 +89,7 @@ $\lambda = 0$ at init means $\Delta W = 0$, exactly — step 0 reproduces the pr
 
 ## 3. The forward
 
-The adapted Linear (`ortho.py:95–129`):
+The adapted Linear (`OrthoLoRAModule.forward` in `networks/lora_modules/ortho.py`):
 
 ```python
 def forward(self, x):
@@ -92,16 +97,19 @@ def forward(self, x):
     if self._skip_module():
         return org
 
-    R_q   = cayley(self.S_q)                  # (r, r)
-    Q_eff = R_q @ self.Q_basis                # (r, d_in)
+    R_q, R_p = cayley_batched(self.S_q, self.S_p)  # fp32 exact solve -> cast to work
+    Q_eff    = R_q @ self.Q_basis                  # (r, d_in)
 
-    lx = F.linear(x, Q_eff)                   # (..., r)
-    lx = lx * self.lambda_layer               # per-rank scale
-    if self._timestep_mask is not None:       # T-LoRA plugs in here
-        lx = lx * self._timestep_mask
+    if self.use_custom_down_autograd and self.training:
+        lx = lora_down_project(x, Q_eff, inv_scale).to(work)  # fp32 down matmul
+    else:
+        lx = F.linear(self._rebalance(x.to(work)), Q_eff)     # (..., r)
+
+    lx = lx * self.lambda_layer.to(work)      # per-rank scale
+    if self._timestep_mask is not None and self.training:     # T-LoRA (train-only)
+        lx = lx * self._timestep_mask.to(work)
     lx, scale = self._apply_rank_dropout(lx)
 
-    R_p   = cayley(self.S_p)                  # (r, r)
     P_eff = self.P_basis @ R_p                # (d_out, r)
     out   = F.linear(lx, P_eff)               # (..., d_out)
 
@@ -133,9 +141,9 @@ For a target Linear with $d_\text{in}$, $d_\text{out}$, rank $r$:
 | Frozen buffers    | —                              | $r\,(d_\text{in} + d_\text{out})$ (the SVD bases)    |
 | Optimizer state   | $\sim$ trainable               | $\sim$ trainable                                     |
 
-Concrete: $d = 3072$, $r = 64$ → trainable drops from ${\sim}394\text{K}$ to ${\sim}8.3\text{K}$ per module. Across ~280 adapted Linears that's ~110M → ~2.3M trainable params — a ~50× reduction in what the optimizer has to carry.
+Concrete: $d = 3072$, $r = 64$ → trainable drops from ${\sim}394\text{K}$ to ${\sim}8.3\text{K}$ per module. Across the **196** default-targeted Linears (7 per block × 28 blocks when `train_adaln = false`), that is ~77M → ~1.6M trainable params — nearly a 50× reduction in what the optimizer has to carry.
 
-The trade: frozen buffers now hold a per-module copy of the SVD bases (same size as plain LoRA's full trainable weight). `P_\text{eff}$ and `Q_\text{eff}` are *computed* tensors — not leaf parameters — so they sit in the autograd graph as activations. Net VRAM overhead vs. plain LoRA at matched rank: roughly **+150–200 MB** at $r=64$ across the whole DiT. Optimizer memory goes *down* by more than that, so the sum is a small net positive.
+The trade: frozen buffers now hold a per-module copy of the SVD bases (same size as plain LoRA's full trainable weight). $P_\text{eff}$ and $Q_\text{eff}$ are *computed* tensors — not leaf parameters — so they sit in the autograd graph as activations. Net VRAM overhead vs. plain LoRA at matched rank: roughly **+150–200 MB** at $r=64$ across the whole DiT. Optimizer memory goes *down* by more than that, so the sum is a small net positive.
 
 ---
 
@@ -153,7 +161,7 @@ Plain LoRA, by contrast, can set $\Delta W$ to point **anywhere** — $B$ and $A
 
 This is a well-motivated restriction for NLP fine-tuning, where the pretrained model already "knows" the task domain and you want to nudge it inside that domain. It is a more open question for **creative fine-tuning**: a new character or art style might need a $\Delta W$ component outside the top-$r$ singular directions of $W_0$. If that's the case, OrthoLoRA will plateau earlier than plain LoRA at the same rank. The Cayley guarantee is bought at the cost of basis freedom.
 
-The practical answer has been to stack it with T-LoRA and ReFT — T-LoRA gives the bottleneck rank room to specialize by noise level, ReFT provides an unconstrained residual-stream side-channel, and the OrthoLoRA weight delta handles what fits inside the principal subspace cleanly. `configs/methods/lora.toml` enables all three by default for exactly this reason.
+The practical answer is to stack OrthoLoRA with T-LoRA (so the bottleneck rank specializes by noise level) and optionally ReFT (an unconstrained residual-stream side-channel) or OrthoHydra (disjoint per-expert output subspaces). For exact method-config presets and CLI commands, see [../methods/psoft-integrated-ortholora.md](../methods/psoft-integrated-ortholora.md).
 
 ---
 

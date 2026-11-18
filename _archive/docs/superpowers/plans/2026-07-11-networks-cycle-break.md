@@ -1,5 +1,7 @@
 # Networks 环依赖拆除 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 拆除 sentrux 报出的唯一 CRITICAL 环依赖 `networks -> registry -> lora_modules -> networks`，且不改变任何 adapter 行为。

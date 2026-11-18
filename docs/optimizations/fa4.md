@@ -1,5 +1,7 @@
 # Flash Attention 4 — removed
 
+状态：历史 / 已移除能力说明
+
 This doc records why `attn_mode = "flash4"` and `trim_crossattn_kv` were removed from the training pipeline. The short version: **FA4 ran slower than FA2 on our targets**, and the cross-attention KV-trim trick that justified FA4's ergonomic complexity only worked under FA4, so it went with it.
 
 ## What was there
@@ -46,18 +48,18 @@ Keeping it as a flag that everyone sets to `true` in configs, with an opaque cod
 
 ## What's left
 
-- **Default attention is FA2** (`attn_mode = "flash"`), via the upstream `flash-attn` 2.x wheel. This is what every provided config now uses.
-- **Other backends still work:** `torch` (SDPA), `flex` (PyTorch flex attention), `sageattn`, `xformers`. None of them use trimming; all run the full 512-length cross-attention KV with attention-sink padding intact.
+- **Default attention on Anima / Krea-2 / Z-Image is FA2** (`attn_mode = "flash"` in `configs/base.toml`), via the upstream `flash-attn` 2.x wheel. Note that family method configs override this where needed: Qwen Image 2.1 defaults to `attn_mode = "torch"` (`flash` / `sdpa` also supported under BF16), and MOSS-Image supports only `torch` / `sdpa` (no `flash`).
+- **Other Anima backends still work:** `torch` (SDPA), `flex` (PyTorch flex attention), `sageattn`, `xformers`. None of them use trimming; Anima runs the full 512-length cross-attention KV with attention-sink padding intact.
 - **`trim_crossattn_kv` is gone.** The config flag, CLI arg, the caller plumbing (`max_crossattn_seqlen` / `crossattn_full_len` / `_KV_BUCKETS`), and the commented-out trim block in `library/anima/models.py` were all deleted (2026-05-20). `crossattn_seqlens` survives only as the per-sample text length consumed by the `attn_mode="flex"` BlockMask path — note that the flex mask *masks out* padding instead of treating it as a sink, which regresses quality, so it is not a substitute for the removed trim.
 
 ## If you want to bring FA4 back
 
-Everything is commented rather than deleted, so re-enabling is mechanical:
+The Anima dispatch stubs remain in tree, so re-enabling for local experiments follows these locations:
 
-1. **Dependency.** Uncomment the `flash-attn-4` line in `pyproject.toml`. On consumer Blackwell you still need the SM120 fork — the local `flash-attention-sm120/` source tree is kept for reference.
-2. **Attention dispatch.** Uncomment the FA4 import block and the `flash4` branch in `networks/attention_dispatch.py`. Both are bracketed with `# Flash Attention 4 ... is not supported yet` comments.
-3. **Train path.** In `train.py`, `load_unet_lazily` currently raises on `attn_mode == "flash4"`; replace that with the original check against `_flash_attn_4_func_raw is not None`. Also restore the `args.fp8_base_unet` call (if you want fp8 too).
-4. **KV trim (optional).** The trim plumbing was deleted in 2026-05, so it is no longer a matter of uncommenting a block — you'd reintroduce it from scratch: a `trim_crossattn_kv` flag + CLI arg, the per-sample `crossattn_seqlens` / `max_crossattn_seqlen` pass-through in `library/training/{text_conds,forward_kwargs}.py` and `train.py`, a `crossattn_full_len` field on `AttentionParams`, and the slice + LSE-sigmoid correction gated on `attn_mode == "flash4"` in `library/anima/models.py`. Given the measured win was tiny, reviving FA4 without the trim (full 512-length KV) is the saner default. See the pre-2026-05 git history for the original trim implementation.
+1. **Dependency.** Add an appropriate `flash-attn` v4 / SM120 wheel or fork dependency in `pyproject.toml`.
+2. **Attention dispatch.** Restore the FA4 import block and the `flash4` branch in `networks/attention_dispatch.py` (currently guarded by a disabled stub).
+3. **Train path.** In `library/training/model_loading.py`, the `attn_mode == "flash4"` guard currently raises `NotImplementedError`; replace that with a check against `_flash_attn_4_func_raw is not None` (and update `library/training/compat_matrix.py` if testing under non-BF16 modes).
+4. **KV trim (optional).** The trim plumbing was deleted in 2026-05, so it is no longer a matter of uncommenting a block — you'd reintroduce it from scratch: a `trim_crossattn_kv` flag + CLI arg, the per-sample `crossattn_seqlens` / `max_crossattn_seqlen` pass-through in `library/training/forward/{text_conds,forward_kwargs}.py`, a `crossattn_full_len` field on `AttentionParams`, and the slice + LSE-sigmoid correction gated on `attn_mode == "flash4"` in `library/anima/models.py`. Given the measured win was tiny, reviving FA4 without the trim (full 512-length KV) is the saner default. See the pre-2026-05 git history for the original trim implementation.
 5. **WebUI / configs.** Add `"flash4"` to the WebUI attention-mode catalog and the `--attn_mode` choices in `inference.py` and the training CLI surface. Any FA4 VRAM presets should live in the normal preset/config trees rather than a frontend-only registry.
 
 Before doing any of that, benchmark FA4 on your own hardware. If the kernel has matured upstream — or if SM120 TMA has landed in stock `flash-attn` — it may be worth reviving. On our targets in 2026-04 it wasn't.

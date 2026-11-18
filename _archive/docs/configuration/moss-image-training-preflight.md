@@ -1,7 +1,7 @@
 # MOSS-Image 训练前置清单（真实训练准备）
 
-状态：维护用清单 / 决策待定
-适用版本：当前 `dev` 工作树（`0d294920`，2026-10-19）
+状态：已归档（早期训练前置核对快照）
+适用版本：历史 `dev` 快照（`0d294920`，2026-10-19）
 相关代码：`library/training/moss_compat.py`、`library/models/moss_image/`、
 `scripts/moss_image/preprocess_te_cache.py`、`bench/moss_tier_hot/`
 相关配置：`configs/methods/moss_image_lora{,_t768,_t512,_tecap1024}.toml`
@@ -14,15 +14,15 @@
 
 | 文档 | 覆盖范围 | 状态 |
 | --- | --- | --- |
-| [moss-image.md](moss-image.md) | 组件路径、NF4/BF16 文本精度、缓存身份、训练/预览、预检拒绝项、分辨率档位、验收范围 | 首版基础实现（当前入口） |
-| [../findings/moss_image_bf16_baseline10_50hx_20261017.md](../findings/moss_image_bf16_baseline10_50hx_20261017.md) | 256×256 / 22 token / 10 步基准：11.3386 s/步、5.85 GiB | 真机短程实测 |
-| [../findings/moss_image_token_budget_tiers_20261017.md](../findings/moss_image_token_budget_tiers_20261017.md) | 1024/768/512 档定义、只改 resolution 的塌缩陷阱、数据短边契约、attention 成本模型、静态验收 | 协议 + 静态契约已验收 |
-| [../findings/moss_image_tier_hot_50hx_20261018.md](../findings/moss_image_tier_hot_50hx_20261018.md) | 12 行档位热测、OOM 边界、swap/int8 对照、作废首轮矩阵的尸体记录 | 实测（质量未测） |
-| [../findings/moss_image_int8_blockswap_diagnosis_20261018.md](../findings/moss_image_int8_blockswap_diagnosis_20261018.md) | int8 传输的 0.94 s / 3.5 GiB 归属、fused 还原、loss 偏移归因 | 诊断结论 |
-| [../findings/int8_encoding_floor_50hx_20261019.md](../findings/int8_encoding_floor_50hx_20261019.md) | 1 Byte/元素编码的误差上限（3A 否定、3B 依赖分布） | 实验 |
-| [../findings/block_swap_family_payload_50hx_20261019.md](../findings/block_swap_family_payload_50hx_20261019.md) | 各族块载荷与晋升算术（**表内没有 MOSS 行**） | 实验（跨族算术） |
-| [../multi_model_support.md](../multi_model_support.md) | MOSS 能力边界：plain LoRA、无通用推理 mode/sampler、缓存隔离 | 能力边界 |
-| [../optimization-configs-current.md](../optimization-configs-current.md) | `blocks_to_swap` / `block_swap_*` 键与 int8 实验性 WARNING | 配置事实清单 |
+| [moss-image.md](../../../docs/configuration/moss-image.md) | 组件路径、NF4/BF16 文本精度、缓存身份、训练/预览、预检拒绝项、分辨率档位、验收范围 | 首版基础实现（当前入口） |
+| [moss_image_bf16_baseline10_50hx_20261017.md](../../../docs/findings/moss_image_bf16_baseline10_50hx_20261017.md) | 256×256 / 22 token / 10 步基准：11.3386 s/步、5.85 GiB | 真机短程实测 |
+| [moss_image_token_budget_tiers_20261017.md](../../../docs/findings/moss_image_token_budget_tiers_20261017.md) | 1024/768/512 档定义、只改 resolution 的塌缩陷阱、数据短边契约、attention 成本模型、静态验收 | 协议 + 静态契约已验收 |
+| [moss_image_tier_hot_50hx_20261018.md](../../../docs/findings/moss_image_tier_hot_50hx_20261018.md) | 12 行档位热测、OOM 边界、swap/int8 对照、作废首轮矩阵的尸体记录 | 实测（质量未测） |
+| [moss_image_int8_blockswap_diagnosis_20261018.md](../../../docs/findings/moss_image_int8_blockswap_diagnosis_20261018.md) | int8 传输的 0.94 s / 3.5 GiB 归属、fused 还原、loss 偏移归因 | 诊断结论 |
+| [int8_encoding_floor_50hx_20261019.md](../../../docs/findings/int8_encoding_floor_50hx_20261019.md) | 1 Byte/元素编码的误差上限（3A 否定、3B 依赖分布） | 实验 |
+| [block_swap_family_payload_50hx_20261019.md](../../../docs/findings/block_swap_family_payload_50hx_20261019.md) | 各族块载荷与晋升算术（**表内没有 MOSS 行**） | 实验（跨族算术） |
+| [multi_model_support.md](../../../docs/multi_model_support.md) | MOSS 能力边界：plain LoRA、无通用推理 mode/sampler、缓存隔离 | 能力边界 |
+| [optimization-configs-current.md](../../../docs/optimization-configs-current.md) | `blocks_to_swap` / `block_swap_*` 键与 int8 实验性 WARNING | 配置事实清单 |
 
 代码与验证入口：
 
@@ -121,7 +121,7 @@ ls -la output/ckpt/moss_image_lora*
 - 中断续训依赖 `checkpointing_epochs=1` + `checkpointing_last_n_epochs=2` 的状态目录。
 - `pipeline_parallel=true`（实验）：只放行 MOSS PP=2/1F1B/FP16/plainLoRA/完整缓存的
   已接线形状，其余配置在入口具名拒绝；启动与恢复口径见
-  [moss_image_pp_trainer_wiring.md](../experimental/moss_image_pp_trainer_wiring.md)。
+  [moss_image_pp_trainer_wiring.md](../../../docs/experimental/moss_image_pp_trainer_wiring.md)。
   PP 续训用 `resume` 指向 `pp_runs/<run>-step<N>` 包根（旧库级 checkpoint 只能
   显式 weights-only 非精确续训）。
 

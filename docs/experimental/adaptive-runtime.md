@@ -29,7 +29,7 @@ scaler。`auto` 的 Anima FP16 候选进入此路径，安培继续优先 BF16�
 配置、支持范围和报告语义见[原生 FP16 使用说明](anima-native-fp16.md)。
 此入口基于[200步 A/B 观察](../findings/anima_fp16_bf16_ab200_90hx_20261002.md)，
 不改判旧严格矩阵；该入口首批当时未开放 native OOM 重试，新增启动期合同见上节。
-更新后自动恢复仍关闭。
+未显式开启 `adaptive_oom_retry_resume=true` 时，首次更新后的中途自动恢复默认保持关闭（受限显式中途恢复见上文 2026-10-04 节与 [中途恢复说明](adaptive-training-recovery.md)）。
 
 ## 2026-10-01 旧FP16集中验收
 
@@ -97,106 +97,18 @@ timeout 540 .venv/bin/python -m bench.adaptive_runtime.anima_precision_batch \
 [2026-09-30 数学补充](../findings/adaptive_oom_bounds_math_20260930.md)。
 
 2026-09-30 的 OOM 配置与 WebUI 契约批次只做 CPU/前端验证，不启动 GPU 或真实训练。
-另行授权的 Anima 精度探针热测见下段。首次 optimizer 更新开始后的 OOM 仍不自动续训。前后向误差传播、
+当时首次 optimizer 更新开始后的 OOM 尚未开放自动续训（后续显式开关 `adaptive_oom_retry_resume=true` 的单进程受限中途恢复见 [中途恢复说明](adaptive-training-recovery.md)）。前后向误差传播、
 FP32 LoRA 和 loss scaling 的数值边界见
 [混合精度数值论证](../structure/adaptive-precision-numerics.md)。CPU 反例不构成
 真实模型数值认证，也不代表恢复双卡热测授权。
 
-2026-09-30 Anima 首阶段精度探针已在 CMP 90HX 完成：FP16-islands 与 BF16 候选虽
-运行 3 次 finite update，仍因梯度对照误差 fail-closed；仅全 FP32 Linear 控制组通过，
-不等同于 FP16 通过。该 disposable capture/replay CLI 尚未桥接真实 production train，
-不改变默认精度、自动选择或 OOM 策略。设置、逐组结果及后续诊断范围见
-[Anima 90HX 精度探针报告](../findings/anima_adaptive_precision_90hx_20260930.md)。
+2026-09-30 至 2026-10-01 期间在 CMP 90HX 上完成了一组递进式 Anima FP16 梯度偏差归因诊断（全部仅作误差源定位，不放宽生产数值门槛或开放自动精度方案）：
 
-后续 Luna 完成分支与 scale 两批定位：仅 MLP / attention / conditioning 使用 FP16
-均未通过梯度门槛；提高 scale 有帮助，但不能修复全部偏差。独立诊断 CLI
-`bench.adaptive_runtime.diagnose_anima_precision` 保存逐步分组误差及资源遥测，
-exit 0 仅表示矩阵完成，不表示候选获准；命令和证据见
-[梯度定位报告](../findings/anima_adaptive_precision_diagnostics_90hx_20260930.md)。
+- **整网与分支级初筛**：首阶段探针中 FP16-islands / BF16 虽完成 3 步有限更新，但梯度对照超限，仅全 FP32 Linear 控制组通过（[Anima 90HX 精度探针报告](../findings/anima_adaptive_precision_90hx_20260930.md)）；后续按分支与 loss scale 定位确认单独切 FP16 或仅提高 scale 均不足以消除偏差（[梯度定位报告](../findings/anima_adaptive_precision_diagnostics_90hx_20260930.md)），局部 VJP、MLP2/GELU 拆分与同前向 FP32 base-dx 反事实同样未达整网门槛（[局部 VJP 报告](../findings/anima_local_vjp_90hx_20260930.md)、[MLP2/GELU 报告](../findings/anima_mlp_path_90hx_20260930.md)、[反事实报告](../findings/anima_backward_counterfactual_90hx_20260930.md)）。
+- **残差边界与单块 VJP 定位**：29 个残差边界采样定位到反向首次超 2% 出现在 boundary 14（[边界定位报告](../findings/anima_block_boundaries_90hx_20260930.md)）；block 14 完整 4200-token VJP 与上游 15/17/27 多块矩阵表明上游传入的 cotangent 差异占主导（[完整形状VJP报告](../findings/anima_block14_vjp_90hx_20260930.md)、[上游VJP报告](../findings/anima_upstream_vjp_90hx_20260930.md)），block 17 内部三分支拆查则显示 self-attention 差异（0.676%）显著高于 cross-attention（0.081%）与 MLP（0.164%）（[阶段VJP报告](../findings/anima_block17_paths_90hx_20261001.md)）。
+- **自注意力 QK-norm 与 K 尖峰 token 细化**：`bench.adaptive_runtime.diagnose_anima_self_attention` 将自注意力拆为归一化段与投影/注意力核，定位主要放大来自注意力反向传回 K 分量的梯度（[自注意力拆分报告](../findings/anima_attention_split_90hx_20261001.md)）；进一步隔离 QK-norm、post-RoPE Q/K/V 八格替换、K 方向五点插值及 token/head 分布分析表明，超过 98.6% 的 fused 梯度误差能量集中在 top 1%（42 个）高幅值 K token 上（[隔离QK-norm报告](../findings/anima_qknorm_90hx_20261001.md)、[八格报告](../findings/anima_qkv_matrix_90hx_20261001.md)、[K插值报告](../findings/anima_k_interpolation_90hx_20261001.md)、[分布报告](../findings/anima_k_distribution_90hx_20261001.md)、[激活与梯度重合报告](../findings/anima_k_activation_distribution_90hx_20261001.md)、[局部替换报告](../findings/anima_k_local_90hx_20261001.md)）。
 
-随后固定 sigma=0.5 / 初始 LoRA，增加 8 层 sampled base-output cotangent 与局部 VJP。
-MLP-only FP16 整网梯度仍不达标；捕获/分析身份校验、MLP eager 5D 布局及资源证据见
-[局部 VJP 报告](../findings/anima_local_vjp_90hx_20260930.md)。QKV-FP16 仅为局部反事实，
-不表示该候选实际使用 FP16 attention；局部 64 行结果不能作为整网数值上界。
-
-MLP-path profile 随后增加 MLP2 输入 cotangent 和 GELU 四组 VJP 对照；仅 MLP1 /
-仅 MLP2 使用 FP16 的单步干预仍不通过，误差非单调。命令、资源与证据范围见
-[MLP2/GELU 报告](../findings/anima_mlp_path_90hx_20260930.md)。原默认 case 不变，
-新增诊断不会写生产推荐，也不放宽数值门槛。
-
-三 worker 的同前向 FP32 base-dx 反事实已完成：两种 FP16 prediction 逐位一致，
-改反向计算后梯度仍不达标。实现边界、资源与验收见
-[反事实报告](../findings/anima_backward_counterfactual_90hx_20260930.md)，不作为训练精度模式。
-
-随后完成29个残差流边界的固定512-token梯度/激活捕获及FP32重放控制，
-反向顺序首次采样梯度超2%在boundary14；方法、view边界修正与热测证据见
-[边界定位报告](../findings/anima_block_boundaries_90hx_20260930.md)。相邻误差差值不能视为因果贡献。
-
-随后完成block14真实4200-token输入/cotangent/policy八组VJP，完整梯度落盘并由CPU独立复算。
-固定其他因素换cotangent约2.71%--2.88%，换policy约0.042%；合同、命令和资源见
-[完整形状VJP报告](../findings/anima_block14_vjp_90hx_20260930.md)，不据此开放生产精度方案。
-
-上游15/17/27三块完整矩阵已完成，支持一次训练多块捕获的聚合512MiB预算，
-整批24个gx矩阵另限1GiB。block17中换激活和换cotangent的对照影响接近，
-合同、入口和CPU复算见[上游VJP报告](../findings/anima_upstream_vjp_90hx_20260930.md)。
-
-2026-10-01 复用该捕获完成block17三个内部残差阶段的analysis-only热测。
-固定参考阶段cotangent的完整VJP差异：self-attention 0.676%、cross-attention 0.081%、
-MLP 0.164%；逐位前向、梯度fidelity与落盘CPU独立复算通过。
-下一步拆查自注意力内部及前置归一化，仍不构成生产精度认证；
-入口、资源与失败保留见[阶段VJP报告](../findings/anima_block17_paths_90hx_20261001.md)。
-
-后续自注意力两段拆分入口为 `bench.adaptive_runtime.diagnose_anima_self_attention`。
-以实际 `self_attn` 模块输入 z 为边界，把 gated branch 写成 `A(N(x))`：
-N 包含 LayerNorm/AdaLN modulation，A 包含 QKV、Q/K normalization、RoPE、attention
-与输出投影。两侧都用参考FP32 block，固定 `v = reference_stage_g * reference_gate`，
-分别捕获 `h_R = J_A(z_R)^T v`、`h_C = J_A(z_C)^T v`，随后保存四格
-`J_N(x_i)^T h_j`。`activation_fixed_cotangent` 只换 x，
-`cotangent_fixed_activation` 只换 h；不能将四格差异相加成因果贡献。
-
-此入口只复用已验证的upstream/stage captures，新增训练步数0。
-不裁剪token或padding、不落盘N² attention矩阵；各文件512MiB、整批1GiB硬预算。
-两个实际checkpoint trace加一次参考重放完成四格矩阵，避免同时保留两侧GPU图；
-hook只记录Python引用，重算不重复记录，异常时恢复原方法和hook。
-验证链式梯度、完整梯度、原stage branch梯度和逐位前向；父进程复核实际SHA/shape/
-dtype/finite、四格统计、来源输入/gate/terminal和diagonal chain fidelity。
-入口实现、CPU验收与两段拆分GPU热测已完成。归一化固定h换输入差异约0.022%--0.040%，
-固定输入换h约1.271%--1.296%。`--component projection-core`进一步观测实际fused-QKV
-和输出投影边界：固定du的core梯度差异1.130%，K分量1.923%；固定cotangent的两个
-投影VJP变化0。独立CPU复算、资源、失败保留及下一步边界见
-[自注意力拆分报告](../findings/anima_attention_split_90hx_20261001.md)，不是新训练精度模式。
-
-随后 `bench.adaptive_runtime.diagnose_anima_qknorm` 复用core证据隔离重放，原u逐位/
-dp fidelity通过。四格 `J_N(p_i)^T a_j` 由真实权重和独立NumPy RMSNorm解析式验收，
-固定a换p差异0.116%--0.374%，固定p换attention传回a约1.161%--1.319%；
-K分量后者约2.004%--2.365%。GPU峰值1500MiB，完整回归735 passed。
-命令、独立审计的必选weights、超时失败保留及下一步Q/K/V替换见
-[隔离QK-norm报告](../findings/anima_qknorm_90hx_20261001.md)。
-
-`bench.adaptive_runtime.diagnose_anima_qkv_matrix`随后完成post-RoPE真实Q/K/V八格替换。
-固定du/conditioning、单独换K输入时fused梯度差异0.737%--0.947%，V为0.297%--0.439%，
-Q为0.172%--0.181%；输入轴和返回梯度分量不能混淆。端点、重放与CPU统计审计通过，
-审计不独立重算混合backward。资源、命令和限制见
-[八格报告](../findings/anima_qkv_matrix_90hx_20261001.md)。
-
-随后 `bench.adaptive_runtime.diagnose_anima_k_interpolation` 固定Q_R/du，
-沿真实post-RoPE K差异方向取五点、对照两种V背景。采样响应随幅度递增，
-相邻区间响应减小；中点偏离端点梯度平均0.160%/0.126%。worker和父summary完成，
-外层timeout540退出124；CPU独立统计审计exit0，完整证据与限制见
-[K插值报告](../findings/anima_k_interpolation_90hx_20261001.md)。
-随后纯CPU `bench.adaptive_runtime.anima_k_distribution`完成已有梯度head/token分析：
-两V背景端点fused误差能量的98.68%--99.15%集中于top1% tokens，最高head13、
-最高token3343；独立NumPy复算通过。命令、来源校验与边界见
-[分布报告](../findings/anima_k_distribution_90hx_20261001.md)。
-`bench.adaptive_runtime.anima_k_activation_distribution`随后完成CPU真实norm/RoPE重建：
-K激活最大token同为3343，激活top42覆盖约93.1% fused梯度误差，集合交集13/42。
-独立NumPy重建/统计核验通过，尾部完整排序有FP32舍入敏感性，详见
-[激活与梯度重合报告](../findings/anima_k_activation_distribution_90hx_20261001.md)。
-随后 `bench.adaptive_runtime.diagnose_anima_k_local` 完成9条件×两V背景局部K替换。
-真实重复VJP和旧端点fidelity通过，top42距full响应残差约12%--15%，低误差42token
-对照仍约100%；无新c张量落盘，独立验收仅覆盖报告/来源/mask/统计约束，详见
-[局部替换报告](../findings/anima_k_local_90hx_20261001.md)。
-下一步检查候选K背景中的反向恢复，距离比不作贡献归因或精度认证。
+代表性复用分析命令（零新增训练步，硬限文件/批次字节预算）：
 
 ```bash
 timeout 360 .venv/bin/python -m bench.adaptive_runtime.diagnose_anima_self_attention \
@@ -210,7 +122,7 @@ timeout 360 .venv/bin/python -m bench.adaptive_runtime.diagnose_anima_self_atten
 开发已于 2026-09-22 恢复，阶段依赖、剩余缺口与验收标准见
 [阶段开发计划](../proposal/adaptive_training_roadmap.md)。T10 实际训练三步 smoke
 与数据游标原型的新进程对照见[最新报告](../findings/adaptive_training_20260922.md)；
-更新后真实训练 OOM 自动恢复仍未开放。
+默认配置下更新后 OOM 仍不自动续训，显式开启 `adaptive_oom_retry_resume=true` 的单进程受限中途恢复见 [中途恢复说明](adaptive-training-recovery.md)。
 
 ## 交付目标
 
@@ -323,11 +235,7 @@ scheduler、scaler、RNG、训练步数和精度契约。目录位于输出目�
 包含 `summary.json`、每次尝试的日志/结果及 `latest-state.json`。目录已存在则拒绝覆盖，
 需为新任务选择新输出目录。每步保存带来额外 IO 成本，不代表最终性能方案。
 
-**更新开始后 OOM 暂不自动续训。** 当前数据桶会原地 shuffle，Accelerate 存在预取；
-仅恢复 RNG 并跳过 batch 不能证明下一批相同。快照以 `saved_state` 展示，但
-`committed_checkpoint=null`、`data_cursor_resume_supported=false`，不会拿残缺快照或
-错误数据位置继续训练。原子目录发布不承诺断电持久性。该限制不影响独立实验 worker
-已有的固定输入恢复证据，两者不可混用。
+**默认（`adaptive_oom_retry_resume=false`）在首次更新开始后遇到 OOM 不自动续训。** 未开启中途恢复合同的情况下，数据桶原地 shuffle 且 Accelerate 存在预取，仅恢复 RNG 并跳过 batch 不能证明下一批相同；此时快照只以 `saved_state` 展示（`committed_checkpoint=null`、`data_cursor_resume_supported=false`），不会拿残缺快照或错误数据位置继续训练。若需单进程、`workers=0`、磁盘缓存条件下的中途 OOM 续训，须显式开启 `adaptive_oom_retry_resume=true`（完整协议、stateful 游标与快照成本见 [中途恢复说明](adaptive-training-recovery.md)）。原子目录发布不承诺断电持久性。该边界不影响下方独立实验 worker 已有的固定输入恢复证据，两者不可混用。
 
 ### 校准与固定输入实验
 
@@ -343,7 +251,7 @@ master 和 compile 建立之前安装；不接受量化或可训练参数。
 `library/training/adaptive_runtime/retry.py` 提供有界恢复策略。只接受结构化
 CUDA OOM，按阶段增加 swap、启用 checkpoint。改变 micro-batch 必须显式
 授权，并保持 micro-batch 与 accumulation 的乘积。optimizer 已开始后若没有
-完整检查点，拒绝自动重启。实际训练入口的受限接线见上文；完整数据游标恢复仍待实现。
+完整检查点，拒绝自动重启。实际训练入口的单进程显式中途恢复已通过 `adaptive_oom_retry_resume=true` 接线（见 [中途恢复说明](adaptive-training-recovery.md)）；多进程与多 worker 通用数据游标恢复仍未开放。
 
 `process.py` 实现独立子进程执行、结构化结果、超时和主机内存保护。
 非零退出码、超时、主机内存不足不会伪装成 CUDA OOM 继续重试。

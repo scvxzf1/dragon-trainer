@@ -1,5 +1,8 @@
 # SPD integration — staged plan & go/no-go gates
 
+状态：实验 / 历史设计记录
+现行入口：SPD（Case A 免训练与 Case B 轨迹微调 LoRA）均已实现，当前用户与运维说明见 [../../docs/experimental/spd.md](../../docs/experimental/spd.md)（`python tasks.py exp-spd` / `python tasks.py exp-test-spd`）；文中提及的旧提案草稿（`docs/proposal/spd_finetune_lora.md`、`docs/proposal/spd_spectrum_compose.md`）已随实现与阶段复盘清理归并，未入库的运行输出目录（`results/...`）与计划中未创建的脚本均在对应位置标明。
+
 Spectral Progressive Diffusion (Xiao et al., arXiv:2605.18736): grow spatial
 resolution along the denoising trajectory, running early noise-dominated steps
 at low resolution and injecting HF detail via spectral noise expansion only when
@@ -85,13 +88,13 @@ the fine-tune are aimed at.
    - If even a swept δ stays thin (~×1.2, the likely outcome given `t_ω`'s narrow 0.78→1.0
      range): the training-free δ-schedule's speedup is mostly theoretical on Anima. Ship
      the hand-tuned Phase-2/3 schedule as-is and **stop deriving it** — *or* pivot to the
-     fine-tune (`docs/proposal/spd_finetune_lora.md`), where a trained model can hold a
+     fine-tune (consolidated into [../../docs/experimental/spd.md](../../docs/experimental/spd.md); the earlier `docs/proposal/spd_finetune_lora.md` draft was retired after implementation), where a trained model can hold a
      more aggressive schedule than training-free tolerates. WEAK is exactly the regime
-     where Case B earns its keep (see link below).
+     where Case B earns its keep (see below).
    - **FAIL** (no clean frequency-ordered resolution): early-low-res is unjustified;
      drop SPD, lean on Spectrum/Turbo. (Smoke suggests this won't happen.)
 
-### Connection to the SPD fine-tuning LoRA (`docs/proposal/spd_finetune_lora.md`)
+### Connection to the SPD fine-tuning LoRA (Case B; see [../../docs/experimental/spd.md](../../docs/experimental/spd.md))
 
 Phase 1 is the missing input that proposal explicitly defers ("v0 hand-sets the
 schedule; the δ-optimal derived schedule requires the autoregression-dynamics probe,
@@ -126,9 +129,9 @@ training-free SPD is **dead** and only the fine-tuning recipe (Phase 4) survives
 loads the **bare** DiT (no LoRA) eager/dynamic-shape (no torch.compile), encodes
 one prompt, and runs from the same seed noise a full-res Euler baseline vs an
 SPD variant — DCT low-pass init → low-res steps → spectral-noise-expansion
-handoff (Eq. i–iii, σ-scaled HF noise) + timestep alignment (Eq. 5–6) → full-res
-finish. The SPD math mirrors the community `SamplerSPEED` node
-(`../comfy/custom_nodes/comfyui-speed/`), so `--community` reproduces the exact
+hand-off (Eq. i–iii, σ-scaled HF noise) + timestep alignment (Eq. 5–6) → full-res
+finish. The SPD math mirrors the external community `SamplerSPEED` node
+(`comfyui-speed`, external reference outside this repo), so `--community` reproduces the exact
 `GJ5Rt3Xz` workflow schedule. Verdict is visual (saves baseline/spd/montage
 PNGs); auto-metrics flag only hard divergence (NaN/Inf, latent-std blow-up,
 sharpness collapse/grain).
@@ -141,8 +144,8 @@ the spectral-expansion handoff with no instability across both schedules:
 - single-stage `0.5→1.0 @ 30% of steps`: std ×0.95, sharpness ×1.83, no NaN.
 - community `0.5→0.75→1.0 @ σ 0.8/0.6` (GJ5Rt3Xz): std ×0.95, sharpness ×1.71, no NaN.
 
-Visual: all 4 montages (`results/20260520-2302-single-stage-0p5/`,
-`results/20260520-2304-community-GJ5Rt3Xz/`) show coherent subjects, intact
+Visual: all 4 historical local montages (`bench/spd/results/20260520-2302-single-stage-0p5/`,
+`bench/spd/results/20260520-2304-community-GJ5Rt3Xz/`, untracked local outputs) show coherent subjects, intact
 anatomy, sky/clouds/trees, **no smear or double-image at the handoff**. SPD
 output is *sharper/higher-contrast* than baseline and diverges compositionally
 (expected — fresh HF noise injected at expansion). Note: the single-stage 2-stage
@@ -171,7 +174,7 @@ with mid-loop σ re-spacing), **mutually exclusive with `--spectrum`**, and **do
 not compose with DCW / SMC-CFG** (warn + ignore). Still TODO below: the
 speed/quality bench and the SPD∘Spectrum composition study.
 
-Tier-2 method (see `CONTRIBUTING.md`). Engineering notes:
+Tier-2 experimental method (see [../../docs/guidelines/authorization_tiers.md](../../docs/guidelines/authorization_tiers.md)). Engineering notes:
 - **Static-shape / compile conflict.** Each resolution stage = a distinct token
   count = a `torch.compile` graph. S=2–3 → 2–3 cached shapes (survivable, but
   breaks the single-static-shape guarantee). Per-block compile mode amortizes.
@@ -188,20 +191,16 @@ Tier-2 method (see `CONTRIBUTING.md`). Engineering notes:
   forecaster buffer can't cross the resolution handoff; re-warm lands in the expensive
   full-res phase) and likely lands *below* Spectrum alone. The principled version —
   forecast the feature's **LL DCT-coefficient band** (continuous across the handoff)
-  and actual-forward only the HF slots SPD adds — is written up as a gated proposal:
-  **`docs/proposal/spd_spectrum_compose.md`** (Phase 0 = naive-floor + feature-LL-DCT
-  continuity precondition; the two likely killers are R1 feature discontinuity and R2
-  "HF coefficients still cost a full block forward"). SPD-vs-Turbo at matched quality
+  and actual-forward only the HF slots SPD adds — was evaluated in
+  **[compose_report.md](compose_report.md)** (which superseded the retired `docs/proposal/spd_spectrum_compose.md` draft after Phase 0(b) falsified LL-DCT feature continuity). SPD-vs-Turbo at matched quality
   is a separate line. Don't bench SPD vs a naive 50-step baseline — bench it composed.
-- Bench: `bench/spd/bench_speed_quality.py` — speedup + ImageReward/CLIP-IQA/CMMD
+- Planned bench (not created): `bench/spd/bench_speed_quality.py` — speedup + ImageReward/CLIP-IQA/CMMD
   at S∈{2,3}, δ sweep, vs baseline / Spectrum / Spectrum∘SPD. Standard envelope.
 
-## Phase 4 — Spectral fine-tuning recipe  → promoted to `docs/proposal/spd_finetune_lora.md`
+## Phase 4 — Spectral fine-tuning recipe  → shipped (see [../../docs/experimental/spd.md](../../docs/experimental/spd.md))
 
 Paper §4.3 / Eq. (11)-(14): fine-tune `v_θ` (as a plain LoRA) on stage-specific
-straight-line targets so the model sees the multi-resolution trajectory. Now has
-its own gated proposal — see **`docs/proposal/spd_finetune_lora.md`** (the "Case B"
-trajectory adapter).
+straight-line targets so the model sees the multi-resolution trajectory (now implemented via `python tasks.py exp-spd` / `configs/methods/spd.toml`; the earlier `docs/proposal/spd_finetune_lora.md` draft was retired).
 
 **Reframed since Phase 2 PASSED.** The original "only if Phase 2 MUSH" gate is moot:
 the bare DiT does *not* mush at low res, so the fine-tune is no longer a rescue. Its

@@ -1,5 +1,7 @@
 # WebUI 设计系统控制台升级迭代日志
 
+状态：已归档
+
 ## Baseline
 - Date: 2026-07-12
 - Spec: docs/superpowers/specs/2026-07-12-webui-design-system-console-upgrade-design.md

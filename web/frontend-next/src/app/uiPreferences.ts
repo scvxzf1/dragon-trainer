@@ -9,6 +9,9 @@ const routeScales: Record<string, string> = {
   models: "model_config",
   settings: "settings",
   history: "history_overview",
+  "weight-analysis": "weight_analysis",
+  "image-test": "image_test",
+  environment: "environment",
 };
 
 export function validScale(value: unknown, fallback = 100): number {

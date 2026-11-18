@@ -1,9 +1,10 @@
 """Model-family-aware pipeline-parallel planning primitives.
 
-This module deliberately stops at validation, deterministic ownership plans,
-and borrowing probe wrappers. The production trainer must keep rejecting PP
-until a real stage-local 1F1B runtime owns placement, communication, optimizer
-state, and checkpoint recovery.
+This module provides topology validation, deterministic block ownership plans,
+and borrowing probe wrappers. Stage-local 1F1B execution, communication,
+optimizer state, and checkpoint recovery live in :mod:`library.training.pp`;
+families without a wired runtime stay fail-closed via ``family_registry`` and
+``library.training.pp.gate``.
 """
 
 from __future__ import annotations

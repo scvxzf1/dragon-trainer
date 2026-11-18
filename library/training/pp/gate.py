@@ -263,7 +263,7 @@ def require_trainer_topology(config: Mapping[str, Any] | object, *, where: str) 
         "with accelerator.prepare, runs one whole-model forward per micro-batch "
         "through trainer.process_batch, owns the gradient-accumulation scaling, and "
         "saves every rank with accelerator.save_state. None of that is true for a "
-        "pipeline. PP v0 runs through library.training.pp.build_anima_pipeline_runtime "
+        "pipeline. PP v0 runs through library.training.pp build_*_pipeline_runtime "
         "(stage-local optimizer, per-rank checkpoint, 1/microbatches applied in "
         f"{PP_GRAD_SCALE_OWNER}). Refusing to fall back to DDP.",
     )

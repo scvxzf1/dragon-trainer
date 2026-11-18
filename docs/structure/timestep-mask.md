@@ -1,6 +1,11 @@
 # Timestep rank masking (T-LoRA)
 
-A one-line change to the LoRA forward that turns the adapter's effective rank into a function of the denoising timestep — full rank at pure noise, rank 1 at clean. No architectural change, no extra parameters, no extra saved tensors.
+状态：稳定
+适用版本：当前 main
+
+A one-line change to the LoRA forward that turns the adapter's effective rank into a function of the denoising timestep — full rank at pure noise, reduced toward `min_rank` at clean. No architectural change, no extra parameters, no extra saved tensors.
+
+> **Usage & configuration:** For TOML parameters (`use_timestep_mask`, `min_rank`, `alpha_rank_scale`), GUI presets, and CLI entry points, see **[../methods/timestep_mask.md](../methods/timestep_mask.md)**. This document covers the mathematical and structural mechanism.
 
 For the scaffolding this builds on, see `lora.md`: every target `Linear` is wrapped by a `LoRAModule` whose forward is `org_forward(x) + m·s·BAx`, with `A ∈ ℝ^{r×d_\text{in}}` (down) and `B ∈ ℝ^{d_\text{out}×r}` (up). T-LoRA multiplies a binary mask into the `r`-dim bottleneck between `A` and `B`.
 
@@ -40,7 +45,7 @@ $$
 \text{mask}\ =\ [\,\underbrace{1,1,\dots,1}_{r(t)},\ \underbrace{0,0,\dots,0}_{R_\text{max}-r(t)}\,]
 $$
 
-One mask per step, **shared by reference** across all ~280 adapted LoRA modules. `networks/lora_anima/routing_state.py::set_timestep_mask` builds it on device each step and every module's `_timestep_mask` attribute points at the same tensor, so 280 module lookups cost one GPU-resident tensor — no CPU↔GPU transfers, no per-module allocations.
+One mask per step, **shared by reference** across all **196** default-adapted LoRA modules (7 attention + MLP Linears × 28 blocks when `train_adaln = false`). `networks/lora_anima/routing_state.py::set_timestep_mask` builds it on device each step and every module's `_timestep_mask` attribute points at the same tensor, so 196 module lookups cost one GPU-resident tensor — no CPU↔GPU transfers, no per-module allocations.
 
 The mask build itself stays on device:
 
@@ -115,22 +120,11 @@ T-LoRA touches only the `r`-dim bottleneck. Every adapter in the stack has one:
 | **HydraLoRA**          | After shared `lora_down`; per-expert heads unaffected    |
 | **ReFT**               | On `delta`, with its own `reft_dim` mask                 |
 
-So the default stack in `configs/methods/lora.toml` — classic LoRA + OrthoLoRA + T-LoRA + ReFT — is coherent: everyone's bottleneck gets masked by the same $t$, with adapter-appropriate dimensions.
+Every adapter's bottleneck gets masked by the same $t$, with adapter-appropriate dimensions. For TOML configuration, GUI variants (`tlora`, `tlora_ortho_reft`), and parameter defaults, see **[../methods/timestep_mask.md](../methods/timestep_mask.md)**.
 
 ---
 
-## 6. Parameters
-
-| Parameter           | Default | Role                                                            |
-| ------------------- | ------- | --------------------------------------------------------------- |
-| `use_timestep_mask` | `false` | Enable T-LoRA                                                   |
-| `min_rank`          | `1`     | Floor on active rank at $t = 1$                                 |
-| `alpha_rank_scale`  | `1.0`   | Power-law exponent (1 = linear, >1 = steeper, <1 = flatter)     |
-| `network_dim`       | method  | $R_\text{max}$                                                  |
-
----
-
-## 7. Minimal mental model
+## 6. Minimal mental model
 
 1. One binary row vector per step, shared by reference across every adapter.
 2. Applied in the $r$-dim bottleneck — after `lora_down`, before `lora_up`.

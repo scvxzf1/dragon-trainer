@@ -1,6 +1,6 @@
 # Krea-2-Raw plain LoRA — stage 6 first-day config (single-stream MMDiT).
 #
-# docs/proposal/krea2_raw_migration.md §3 ModelFamily 边界: Krea-2 首日只做最简
+# _archive/docs/proposal/krea2_raw_migration.md §3 ModelFamily 边界: Krea-2 首日只做最简
 # rectified-flow 训练路径, 不实现 anima-only 能力 (LLM adapter / T5 uncond /
 # crossattn_emb 路由 / VR loss). Caption variants 和 whole-caption dropout 已由
 # Krea hiddens/mask 缓存路径独立支持, 不依赖 T5 sidecar.

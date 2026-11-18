@@ -348,7 +348,7 @@ COMMANDS = {
     ),
     "exp-soft-tokens": (
         exp_training.cmd_soft_tokens,
-        "[experimental] SoftREPA-style per-layer × per-t soft tokens (training-only v1)",
+        "[experimental] SoftREPA-style per-layer × per-t soft tokens training (infer via exp-test-soft)",
     ),
     "exp-chimera": (
         exp_training.cmd_chimera,

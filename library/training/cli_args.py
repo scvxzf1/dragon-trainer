@@ -915,7 +915,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--preset",
         type=str,
         default="default",
-        help="hardware preset section name in configs/presets.toml (e.g. 'default', 'fast_16gb', 'low_vram').",
+        help="hardware preset section name in configs/presets.toml (e.g. 'default', 'balanced_16g', 'low_vram').",
     )
     parser.add_argument(
         "--methods_subdir",
@@ -1293,11 +1293,11 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         default=None,
         choices=["copy", "direct_bind", "reuse_storage", "fused"],
         help=(
-            "Restore path used only when block_swap_transfer_dtype=int8. copy "
-            "(default) dequantizes through fp32 temporaries; reuse_storage writes "
-            "chunked into the resident slot; direct_bind rebinds the slot; fused "
-            "uses one torch.mul(int8, fp32, out=half) kernel straight into the slot "
-            "with a small static staging ring (no dynamic allocation). On a PCIe "
+            "Restore path used only when block_swap_transfer_dtype=int8. fused "
+            "(default) uses one torch.mul(int8, fp32, out=half) kernel straight into "
+            "the slot with a small static staging ring (no dynamic allocation); copy "
+            "dequantizes through fp32 temporaries; reuse_storage writes chunked into "
+            "the resident slot; direct_bind rebinds the slot. On a PCIe "
             "Gen1 link fused measured 2.3986 -> 1.9740 s/step and reserved "
             "9.16 -> 7.21 GiB "
             "(docs/findings/moss_image_int8_blockswap_diagnosis_20261018.md)."
@@ -1396,10 +1396,11 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
             "How training-compat checks report audited unverified combinations. "
             "strict restores the historical hard errors; warn (default) only "
             "relaxes the audited C1 codes (implementation exists but lacks "
-            "real-machine acceptance); allow additionally relaxes audited "
-            "C2-ignored codes (no-op keys ignored by the family) and prints a "
-            "warning naming the ignored key. C2-raise, C3, input-validation, "
-            "and semantic-conflict codes stay errors under every policy."
+            "real-machine acceptance); allow additionally relaxes the audited "
+            "C2-ignored codes (flags unread in the target family, so relaxing "
+            "is a no-op) and prints a warning naming the ignored key. C2-raise, "
+            "C3, input-validation, and semantic-conflict codes stay errors under "
+            "every policy."
         ),
     )
 

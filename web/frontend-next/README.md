@@ -1,8 +1,7 @@
 # Dragon Next
 
 React 工作台使用 `/next` 入口，复用 aiohttp API；访问服务根路径 `/` 默认跳转到 Next。历史 `/?ui=dragon` 和 `/?ui=classic` 地址会兼容重定向到 Next，不再加载旧 UI。
-验收状态与已知边界见 [实施记录](../../docs/features/dragon-next-implementation.md)。
-后续审阅改进见 [UI/UX 实施进度](../../docs/features/dragon-next-uiux-progress.md)。
+历史验收与阶段实施记录已归档至 [实施记录](../../_archive/docs/features/dragon-next-implementation.md) 与 [UI/UX 实施进度](../../_archive/docs/features/dragon-next-uiux-progress.md)。
 
 ## 开发
 
@@ -48,7 +47,7 @@ E2E 使用独立的 5174 端口和系统 Chrome，所有 API 与训练 WebSocket
 生产默认不发布 source map。新构建不依赖外部字体/CDN。
 需要在发布前做隔离候选构建时，可设置 `DRAGON_NEXT_DESTINATION=/tmp/dragon-next-candidate`
 覆盖发布目标；未设置时仍使用 `web/static/dragon-next`，默认行为不变。
-候选包可用 `DRAGON_S5_CANDIDATE=/tmp/dragon-next-candidate node scripts/verify-release-candidate.mjs`
+候选包可用 `DRAGON_S5_CANDIDATE=/tmp/dragon-next-candidate node web/frontend-next/scripts/verify-release-candidate.mjs`
 核对入口引用的哈希资源、旧 chunk 保留、`previous-index.html`、原子替换和临时根回退。
 
 发布后访问 Python 服务的 `/next/training`，检查 `/next/history` 等深链刷新。
@@ -71,7 +70,7 @@ DRAGON_VERIFY_URL=http://127.0.0.1:20102 node web/frontend-next/scripts/verify-p
 
 - 共享表单控件默认样式位于 `src/styles/controlDefaults.css`，通过 `control-defaults` cascade layer 加载，优先级低于 Tailwind utilities 和 feature/component 样式。普通按钮以内容和 padding 确定高度；不要恢复全局 `button` 最小高度或悬停位移。开关、帮助图标、拖拽柄和图片按钮由组件控制几何，移动端普通按钮与通用图标按钮仍保留较大的点击区域。checkbox/radio/range 等原生控件不套用文本框装饰。
 
-- 训练字段帮助共 272 项，全部采用“简短说明 + 建议”及可选的选项、注意和折叠进阶。正文分成七册，旧七段说明、builder 和转换适配器已移除，完整帮助在打开弹窗时按需加载。编辑正文后，从仓库根目录运行 `node web/frontend-next/scripts/generate-field-help-summary.mjs` 生成轻量摘要，加 `--check` 检查同步。分册职责、事实来源和新增方式见 [帮助维护说明](src/features/training-config/domain/help/README.md)。恢复页面默认与相关参数点击导航属于后续阶段，当前相关参数仅显示名称和配置键，进度见 [帮助重构计划](../../docs/proposal/training_help_refactor_plan_20261005.md)。
+- 训练字段帮助共 283 项，全部采用“简短说明 + 建议”及可选的选项、注意和折叠进阶。正文分成七册，旧七段说明、builder 和转换适配器已移除，完整帮助在打开弹窗时按需加载。编辑正文后，从仓库根目录运行 `node web/frontend-next/scripts/generate-field-help-summary.mjs` 生成轻量摘要，加 `--check` 检查同步。分册职责、事实来源和新增方式见 [帮助维护说明](src/features/training-config/domain/help/README.md)。恢复页面默认与相关参数点击导航属于后续阶段，当前相关参数仅显示名称和配置键，进度见 [帮助重构计划](../../docs/proposal/training_help_refactor_plan_20261005.md)。
 
 - 历史任务的样张弹窗采用大尺寸布局：桌面左侧查看图片、右侧查看参数、下载与原始元数据；图片区支持滚轮和按钮缩放、拖动平移、适应窗口及重置为 100%。切换样张会重置视图，窄屏改为上下排列。
 

@@ -2,11 +2,11 @@
 
 状态：维护待办
 
-适用版本：当前 `main`；开始任务前必须用实时源码和 Issue 重新确认
+适用版本：当前 `dev` / `main`；开始任务前必须用实时源码和 Issue 重新确认
 
 PR 规范：[`../CONTRIBUTING.md`](../CONTRIBUTING.md)
 
-本页承接原先混在 `CONTRIBUTING.md` 开头的项目待办。它记录值得推进的方向、已有入口和验收设想，**不是当前实现的事实来源，也不会降低 PR 验收要求**。认领较大任务前，请先在 Issue 中确认范围和优先级。
+本页承接原先混在 `CONTRIBUTING.md` 开头的项目待办。它记录值得推进的方向、已有入口和验收设想，**不是当前实现的事实来源，也不会降低 PR 验收要求**。多模型族（Anima、Krea-2、Z-Image、Qwen Image 2.1、MOSS-Image）与流水线并行的当前实现边界以 [`multi_model_support.md`](multi_model_support.md) 为准。认领较大任务前，请先在 Issue 中确认范围和优先级。
 
 ## 当前概览
 
@@ -32,7 +32,7 @@ EasyControl 在 frozen DiT 的 self-attention 和 FFN 上训练条件 LoRA 与�
 
 ## 2. DP-DMD / Turbo 少步蒸馏
 
-目标是把 28-step、CFG=4 的 Anima teacher 蒸馏为 4–8 step generator，并验证 turbo adapter 与普通 concept LoRA 的组合能力。设计背景和阶段门槛见 [`proposal/turbo_anima_dmd_lora.md`](proposal/turbo_anima_dmd_lora.md)。
+目标是把 28-step、CFG=4 的 Anima teacher 蒸馏为 4–8 step generator，并验证 turbo adapter 与普通 concept LoRA 的组合能力。当前 DP-DMD 实现说明见 [`experimental/dpdmd.md`](experimental/dpdmd.md)，早期设计背景见归档 [`_archive/docs/proposal/turbo_anima_dmd_lora.md`](../_archive/docs/proposal/turbo_anima_dmd_lora.md) 与 [`_archive/docs/proposal/dpdmd.md`](../_archive/docs/proposal/dpdmd.md)。
 
 原待办写于实现前。当前仓库已经具有：
 

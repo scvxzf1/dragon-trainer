@@ -18,7 +18,7 @@ PP 训练会话（Anima 经 `build_anima_trainer_runtime` 复用本模块 runtim
 
 | 维度 | PP v0 支持 | 拒绝方式 |
 | --- | --- | --- |
-| 模型族 | 仅 `anima` | 其他族：`pipeline_parallel_runtime_unavailable` |
+| 模型族 | 本文聚焦 `anima`（跨族已开放 `anima` / `moss_image` / `krea2_raw`） | 未实现 runtime 的族（`z_image` / `qwen_image_2_1`）：`pipeline_parallel_runtime_unavailable` |
 | stages | 2 | `pipeline_parallel_config` |
 | schedule | `1f1b` | `pipeline_parallel_config`（见下） |
 | split | `balanced` | `pipeline_parallel_config` |
@@ -126,11 +126,11 @@ PP 的正确性分两轨验收，**两轨都要有证据，不能互相替代**�
 runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B  # "torch_pipelining_1f1b"
 ```
 
-- 其他模型族保持 `runtime_backend=None`，继续 fail-closed。
+- 当前 `anima`、`moss_image`、`krea2_raw` 三族均已设置 `runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B` 并列入 `TRAINER_PP_WIRED_FAMILIES`；`z_image` 与 `qwen_image_2_1` 保持未启用（`runtime_backend=None` 或 `pipeline_parallel=None`），继续 fail-closed。
 - `compat_matrix` 与 `library/training/pp/gate.py` 读**同一个常量**，所以「家族开关」
   和「兼容层放行条件」不会漂移；改开关时必须同时满足运行时契约（schedule、microbatches、
   world size、量化、`torch.distributed.pipelining` 可导入）。
-- `runtime_available` 只表示「有 stage-local 运行时」，**不表示主训练循环已接入 PP**。
+- `runtime_available` 只表示「有 stage-local 运行时」；主训练循环放行还须同时列在 `TRAINER_PP_WIRED_FAMILIES` 并通过 `require_family_trainer_admission`。
 
 ## 启动要求（CUDA 上跑 PP v0 的三条硬性前提）
 
@@ -194,8 +194,8 @@ prediction 是 `policy.prediction_dtype`（fp16）。二者不同，`boundary_me
 | --- | --- | --- |
 | `library/training/compat_matrix.py:368`（`pipeline_parallel_runtime_issue`） | 兼容层预检：家族无运行时 / 契约不成立 | `pipeline_parallel_*`（`key` 恒为 `pipeline_parallel`） |
 | `library/training/cli_entry.py:94` | CLI 预检：家族无运行时、microbatches < stages、world size 不匹配 | `pp_runtime_unavailable` / `pp_microbatches_below_stages` / `pp_world_size_mismatch` |
-| `library/training/cli_entry.py:100` | CLI 早拒：合法 PP 配置也不进主训练路径（在创建 trainer / 加载模型之前） | `pp_trainer_path_unavailable` |
-| `library/training/bootstrap.py:857`（`setup_optimizer_and_dataloader`） | 绕过 CLI 的入口（WebUI 队列 / daemon / 直接 `AnimaTrainer().train` / resume）进入 DDP 组装 | `pp_trainer_path_unavailable` |
+| `library/training/cli_entry.py:100`（`require_family_trainer_admission`） | CLI 准入：已接线三族（`anima` / `moss_image` / `krea2_raw`）通过专属参数校验后放行进入 `train_session` 专用 PP 会话；不支持的训练开关或未接线族在加载模型前具名拒绝 | `pp_config_invalid` / `pp_krea2_batch_not_divisible` / `pp_trainer_path_unavailable` |
+| `library/training/bootstrap.py:857`（`setup_optimizer_and_dataloader`） | 绕过分叉点进入 DDP 组装的任何 PP 运行 | `pp_trainer_path_unavailable` |
 | `library/training/bootstrap.py:1075`（`prepare_with_accelerator`） | `accelerator.prepare` 会把整模型包成 DDP | `pp_trainer_path_unavailable` |
 | `library/training/loop.py:626`（`run_training_loop`） | accelerate 训练循环启动 | `pp_trainer_path_unavailable` |
 | `library/training/loop.py:1175`（`_run_microbatch`） | `trainer.process_batch` 会做整模型单卡 forward | `pp_trainer_path_unavailable` |
@@ -339,5 +339,8 @@ M=32 只再快 1.6% 却多花 0.59 GB，边际性价比掉约 8 倍。
 - 真机数值与性能只来自一次 4 步有界短跑（见「真机验证结果」），不外推到持续训练、
   长窗口热降频或其它硬件；绝对时延在 M=4 时 1.788 s/sample 未达 1.60 目标，但 **M=16 起
   1.543 s/sample 已达标**，判定以加速比 ≥ 1.45× 为准。
-- 只做 Anima 族：Krea-2 / Z-Image / Qwen-Image 2.1 的运行时行为未变（MOSS-Image
-  由 [moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md) 单独接线）。
+- 本文档聚焦 Anima 族库级与会话细节；跨族层面，MOSS-Image（见
+  [moss_image_pp_trainer_wiring.md](moss_image_pp_trainer_wiring.md)）与 Krea-2（见
+  [distributed-training-card.md](distributed-training-card.md) 及
+  [krea2_pp_vram_gap_20261116.md](../findings/krea2_pp_vram_gap_20261116.md)）也已接入专用 PP 训练会话，
+  仅 Z-Image 与 Qwen-Image 2.1 未接入 PP。

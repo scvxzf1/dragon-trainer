@@ -127,7 +127,7 @@ export const FIELD_HELP_BASICS_ZH = {
                 title: '解码与兼容配置',
                 paragraphs: [
                     'latent 是模型生成的压缩图像表示，VAE 解码负责把它转换成可查看的图片。分块解码把这一阶段拆成较小区域，以控制内存占用。',
-                    '四个模型族共用这套预览解码策略。旧键 qwen_sample_vae_decode 仍作为兼容入口，可选配置值为 auto、tiled、cpu。',
+                    '全部五个注册模型族共用这套预览解码策略。旧键 qwen_sample_vae_decode 仍作为兼容入口，可选配置值为 auto、tiled、cpu。',
                 ],
             },
         ],

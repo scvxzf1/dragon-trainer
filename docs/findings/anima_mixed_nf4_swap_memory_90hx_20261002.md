@@ -40,15 +40,15 @@ CPU/CUDA回归覆盖swap12/20、多跳、foreach/slab、non-reentrant checkpoint
 
 - 最终CPU/CUDA定向回归152项通过（新增hash探针测试另行通过）；独立CPU验收55通过24跳过；目标typecheck无错误；新增文件Ruff通过。
 - 三个8步对照exit0，最终优化版采样后继续训练与保存成功；两个2步受控对照exit0且无诊断错误。
-- 保留中间迭代和失败诊断日志，不计入最终对照统计。
-- [metrics.json](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/metrics.json)
-- [memory-comparison.png](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/memory-comparison.png)
-- [optimized-status.json](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/optimized-status.json)
-- [controlled-verified-status.json](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-verified-status.json)
-- [numerical-verification.json](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/numerical-verification.json)
-- [offloading-before.py](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/offloading-before.py)
-- bf16：[配置](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/bf16.toml)、[phase](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/bf16.phase.jsonl)、[日志](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/bf16.log)。
-- mixed-before：[配置](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/mixed-before.toml)、[phase](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/mixed-before.phase.jsonl)、[日志](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/mixed-before.log)。
-- mixed-optimized：[配置](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/mixed-optimized.toml)、[phase](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/mixed-optimized.phase.jsonl)、[日志](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/mixed-optimized.log)。
-- controlled-before-verified：[配置](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-before-verified.toml)、[phase](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-before-verified.phase.jsonl)、[日志](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-before-verified.log)。
-- controlled-after-verified：[配置](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-after-verified.toml)、[phase](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-after-verified.phase.jsonl)、[日志](/home/scv/nvme0n1p1/训练器相关/krea2-webui/output/anima-mixed-swap-fix-20261002-163852/controlled-after-verified.log)。
+- 保留中间迭代和失败诊断日志，不计入最终对照统计（以下均为本地未入库运行产物）：
+- `output/anima-mixed-swap-fix-20261002-163852/metrics.json`
+- `output/anima-mixed-swap-fix-20261002-163852/memory-comparison.png`
+- `output/anima-mixed-swap-fix-20261002-163852/optimized-status.json`
+- `output/anima-mixed-swap-fix-20261002-163852/controlled-verified-status.json`
+- `output/anima-mixed-swap-fix-20261002-163852/numerical-verification.json`
+- `output/anima-mixed-swap-fix-20261002-163852/offloading-before.py`
+- bf16：`output/anima-mixed-swap-fix-20261002-163852/bf16.toml`、`output/anima-mixed-swap-fix-20261002-163852/bf16.phase.jsonl`、`output/anima-mixed-swap-fix-20261002-163852/bf16.log`。
+- mixed-before：`output/anima-mixed-swap-fix-20261002-163852/mixed-before.toml`、`output/anima-mixed-swap-fix-20261002-163852/mixed-before.phase.jsonl`、`output/anima-mixed-swap-fix-20261002-163852/mixed-before.log`。
+- mixed-optimized：`output/anima-mixed-swap-fix-20261002-163852/mixed-optimized.toml`、`output/anima-mixed-swap-fix-20261002-163852/mixed-optimized.phase.jsonl`、`output/anima-mixed-swap-fix-20261002-163852/mixed-optimized.log`。
+- controlled-before-verified：`output/anima-mixed-swap-fix-20261002-163852/controlled-before-verified.toml`、`output/anima-mixed-swap-fix-20261002-163852/controlled-before-verified.phase.jsonl`、`output/anima-mixed-swap-fix-20261002-163852/controlled-before-verified.log`。
+- controlled-after-verified：`output/anima-mixed-swap-fix-20261002-163852/controlled-after-verified.toml`、`output/anima-mixed-swap-fix-20261002-163852/controlled-after-verified.phase.jsonl`、`output/anima-mixed-swap-fix-20261002-163852/controlled-after-verified.log`。

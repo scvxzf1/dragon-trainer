@@ -1,7 +1,7 @@
-# 预览
+# 预览工作区
 
 状态：稳定
-适用版本：当前 WebUI 主界面
+适用版本：当前 WebUI Next 工作台 `/next/preview`
 入口命令：
 
 ```bash
@@ -9,79 +9,34 @@
 ```
 
 相关代码：
-
-- `web/frontend-next/src/features/preview-workspace/`
-- `web/frontend-next/src/features/training-history/HistoryAssets.tsx`（历史任务样张与权重）
-- `web/routes/preview.py`
-- `web/services/preview_service.py`
-- `web/services/preview/images.py`
-- `web/services/image_listing.py`
+- `web/frontend-next/src/features/preview-workspace/PreviewWorkspace.tsx`
+- `web/frontend-next/src/features/training-history/HistoryAssets.tsx`
+- `web/routes/preview.py`、`web/services/preview_service.py`、`web/services/image_listing.py`
 
 ---
 
-## 1. 这是干什么的
+## 1. 来源与筛选范围
 
-一句话：查看训练中采样图、推理测试图、自定义目录图片，以及对应权重文件。
+通过 Next 主导航的 **预览工作区**（`/next/preview`）集中浏览图片产物与训练权重，支持三种来源：
+1. **训练样张**：范围可选 **最新任务**、**指定任务** 或 **配置分组**，支持按最近 7 / 14 / 30 天筛选与分页载入更多；
+2. **推理输出**：默认读取 `output/tests`（可在路径设置中修改）；
+3. **自定义目录**：读取已保存的项目内或受控绝对图片目录。
 
-Next 界面通过主导航的 **预览工作区** 访问预览 API 和路径设置。Next 是当前唯一前端入口。
-
-三种来源：
-
-1. **训练中采样**
-2. **推理预览**
-3. **自定义路径**
-
----
-
-## 2. 入口
-
-1. 打开主导航的 **预览工作区**。
-2. 在侧边选择来源：
-   - 训练中采样
-   - 推理预览
-   - 自定义路径
-3. 训练来源下可选 **训练任务**。
-4. 点 **刷新预览图**。
-5. 需要时展开 **路径设置**，改目录后 **保存路径设置**。
-
-权重区：
-
-- **刷新权重**
-- **正序 / 倒序**
-- 查看某轮次、步数对应的权重文件
-
-历史详情（Dragon UI）的 **训练产物 → 样张与权重** 里，点击任意样张卡片会打开「生成参数」弹窗，展示该样张的提示词、负向提示词、原始提示词、分辨率、采样步数、引导系数、种子、采样器、生成时间与提示词文件，并可直接复制提示词、打开或下载原图。弹窗数据来自已加载的 `/api/preview/images` 返回，不发起额外请求。
+在 **训练样张** 与 `/next/history` 历史详情的 **产物** 子页中：
+- 点击样张打开左右分栏大图弹窗（左侧支持滚轮/按钮缩放、平移、适应窗口与 100% 重置；右侧显示正负提示词、分辨率、步数、CFG、Seed、采样器及原始元数据，支持复制与下载）；
+- 权重列表按轮次/步数展示 `.safetensors` 文件，支持下载或一键将该权重写入当前 `/next/training` 草稿作为热启动来源。
 
 ---
 
-## 3. 关键配置项
+## 2. 边界与安全规则
 
-| 项目 | 默认/常见值 | 说明 |
-| --- | --- | --- |
-| 训练任务选择 | 当前任务 / 最新运行目录 | 决定读哪次 run 的 sample 与权重 |
-| 兼容训练样张目录 | `output/ckpt/sample` | 旧布局兼容路径 |
-| 推理预览目录 | `output/tests` | 生图测试结果常放这里 |
-| 自定义目录 | 用户指定 | 支持项目内路径，也支持已保存的绝对目录 |
-| 全局输出根 | `output/runs` | 训练 run 与 sample 的主边界 |
-| 路径设置持久化 | `configs/web-ui-settings.toml` | 预览路径设置与全局设置分区共存 |
-| 单次图片列表 | 最多 500 张 | 返回最近图片；总数仍统计当前筛选下的有效候选 |
-
-图片通常按修改时间展示最新结果；大目录使用 bounded Top-K 扫描，只对最终显示的图片读取尺寸和 PNG metadata。扫描中消失或无法读取的文件会被跳过，损坏图片仍可列出但尺寸显示为空。权重列表可按轮次/步数排序。
+- **有界扫描**：单次列表采用 bounded Top-K 扫描（最多返回 500 张最近图片），仅对进入结果集的图片解析尺寸与 PNG metadata；所选历史任务无样张时明确展示空状态，不静默回退到其他任务的目录。
+- **永久删除边界**：删除预览图不可恢复，仅允许删除当前已选受控目录内的直接普通图片文件（单批最多 500 项，拦截子目录、软链、非图片文件与越界路径）。
+- **权重下载边界**：仅允许下载受控输出根目录内的权重文件。
 
 ---
 
-## 4. 危险项
-
-- **自定义目录填错**：`inference_dir` / `custom_dir` 可以保存绝对目录；读取仍只允许当前任务、全局输出根或已保存的预览目录。
-- **删除预览图是永久操作**：不会进入回收站。只允许删除当前所选来源目录的直接普通图片文件；嵌套路径、目录、非图片和 symlink 都会被拦截。
-- **批量删除上限**：单次最多 500 个去重后的目标。混合请求会分别返回已删除、已不存在和未删除项，不会因一个越界项掩盖其他结果。
-- **选中没有 sample 的历史任务**：不会偷偷回退到“最新 run”，避免看错图。
-- **下载权重**：只允许下载受控输出目录内的权重文件。
-- **把预览目录指到大盘根路径**：扫描内存已受限，但仍要遍历目录项；不要把磁盘根目录当作图库。
-
----
-
-## 5. 相关测试
+## 3. 相关测试
 
 ```bash
 timeout 60 .venv/bin/python -m pytest \
@@ -94,4 +49,4 @@ timeout 60 .venv/bin/python -m pytest \
   -q
 ```
 
-Next 预览界面测试位于 `web/frontend-next/src/features/preview-workspace/`；浏览器流程见 `web/frontend-next/e2e/legacy-retirement-p2.spec.ts` 和 `web/frontend-next/e2e/final-audit.spec.ts`。运行 `.venv/bin/python tasks.py web-next-check` 与 `.venv/bin/python tasks.py web-next-e2e`。
+前端单测与 E2E 位于 `web/frontend-next/src/features/preview-workspace/`，可通过 `.venv/bin/python tasks.py web-next-check` 运行。

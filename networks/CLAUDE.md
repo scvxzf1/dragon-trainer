@@ -6,8 +6,8 @@ This file adds network-specific constraints to the repository-wide [`AGENTS.md`]
 
 | Area | Primary entry |
 | --- | --- |
-| Registry and method resolution | [`__init__.py`](__init__.py), [`core_specs.py`](core_specs.py), plugin registration |
-| LoRA-family config and lifecycle | [`lora_anima/config.py`](lora_anima/config.py), [`lora_anima/network.py`](lora_anima/network.py) |
+| Registry and method resolution | [`__init__.py`](__init__.py), [`registry.py`](registry.py), [`registry_api.py`](registry_api.py), [`core_specs.py`](core_specs.py), plugin registration |
+| LoRA-family config and lifecycle | [`lora_anima/config.py`](lora_anima/config.py), [`lora_anima/factory.py`](lora_anima/factory.py), [`lora_anima/network.py`](lora_anima/network.py) |
 | Module construction | [`lora_anima/builders.py`](lora_anima/builders.py), [`lora_anima/module_builders.py`](lora_anima/module_builders.py) |
 | LoRA variants | [`lora_modules/`](lora_modules/) |
 | Non-LoRA methods | [`methods/`](methods/), [`plugins/`](plugins/) |

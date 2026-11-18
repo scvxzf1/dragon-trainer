@@ -1,10 +1,13 @@
 # CNS — Colored Noise Sampling
 
+状态：稳定
+适用版本：当前 main
+
 Training-free SDE sampler plug-in. Replaces the **white** noise that `ERSDESampler` injects each step with **frequency-colored**, RMS-normalized noise that dumps the fixed stochastic-energy budget into the radial frequency bands the network has *not yet resolved* at that step. A zero-sum reallocation of a fixed variance budget — not a global noise scale-up.
 
-Paper: [Colored Noise Diffusion Sampling](https://hadardavidson.github.io/CNS/) (Davidson, Issachar, Benaim — Hebrew U., arXiv [2605.30332](https://arxiv.org/abs/2605.30332)). Local PDF at repo root `2605.30332v1.pdf`.
+Paper: [Colored Noise Diffusion Sampling](https://hadardavidson.github.io/CNS/) (Davidson, Issachar, Benaim — Hebrew U., arXiv [2605.30332](https://arxiv.org/abs/2605.30332)).
 
-**Read first:** `bench/cns/plan.md` (precondition + Phase-0 staircase results + composition tensions). The γ premise is independently corroborated by `project_sigma_signal_resolves_by_045` (base resolves x0 by σ≈0.45; e_low triples in the σ<0.45 tail — that finding *is* the CNS γ-matrix viewed from the σ axis).
+**Read first:** `bench/cns/plan.md` (precondition + Phase-0 staircase results + composition tensions). The γ premise is independently corroborated by Anima's trajectory signal-resolution profile (the base model resolves coarse x₀ structure by σ ≈ 0.45, while low-frequency residual energy drops sharply in the σ < 0.45 tail — that empirical profile is the CNS γ-matrix viewed along the σ axis).
 
 ## The mechanism (Algorithm 1, paper p.7)
 
@@ -36,7 +39,7 @@ CNS feeds on **spectral bias** (low-freq structure resolves early, high-freq det
 | base portrait cfg4 | +0.521 | 0.394 | 0.144 |
 | LoRA portrait cfg4 | +0.521 | 0.398 | 0.142 |
 
-The staircase is sharp, the aggregate-γ crossing re-derives `project_sigma_signal` (≈0.45), and the γ heatmap reproduces paper Fig. 3 on Anima. Two operational takeaways: **γ is LoRA-transparent** (reusable with the adapter on or off), and **CFG×aspect sharpens** the staircase (so γ is calibrated at the deploy config, where the bias is *strongest*). The shipped γ at **cfg=4 with LoRA has been A/B-validated as well-working** at production aspects.
+The staircase is sharp, the aggregate-γ crossing aligns with the σ ≈ 0.45 coarse-resolution midpoint, and the γ heatmap reproduces paper Fig. 3 on Anima. Two operational takeaways: **γ is LoRA-transparent** (reusable with the adapter on or off), and **CFG×aspect sharpens** the staircase (so γ is calibrated at the deploy config, where the bias is *strongest*). The shipped γ at **cfg=4 with LoRA has been A/B-validated as well-working** at production aspects.
 
 ## The precondition that must be met: run er_sde
 
@@ -45,10 +48,11 @@ CNS only acts on the **stochastic** path. Anima's CLI default `--sampler euler` 
 ## Quick start
 
 ```bash
-python inference.py --sampler er_sde --cns auto   ...   # shipped γ, full strength
+python tasks.py test --sampler er_sde --cns auto     # latest LoRA + er_sde + shipped γ
+python inference.py --sampler er_sde --cns auto ...  # direct CLI invocation
 ```
 
-`--cns auto` resolves the shipped completion matrix at `networks/calibration/cns_gamma.npz`. Pass an explicit path to use a custom one. There is no dedicated `make` target — CNS rides on any `er_sde` inference invocation and composes with the existing `SPECTRUM=1` / `MOD=1` test flags.
+`--cns auto` resolves the shipped completion matrix at `networks/calibration/cns_gamma.npz`. Pass an explicit path to use a custom one. There is no separate CNS-only subcommand — CNS rides on any `er_sde` inference invocation (e.g. `python tasks.py test`, compatibility alias `make test`) and composes with the existing `SPECTRUM=1` / `MOD=1` test flags.
 
 ## CLI
 
@@ -69,7 +73,7 @@ python inference.py --sampler er_sde --cns auto   ...   # shipped γ, full stren
 | `radial_centers` | `(F,)` | radial-freq bin centers in [0, 1] |
 | `cfg`, `flow_shift`, `steps`, `source_aspects`, `averaged` | scalar/meta | calibration provenance |
 
-Cross-aspect variation is **cosmetic** (β MAD ~0.01, same conclusion as `project_dcw_bucket_prior_cosmetic`), so one averaged `(1, T, F)` γ ships and serves any resolution — the recolorer's nearest-aspect select degrades to index 0. Radial bins are normalized to [0, 1], so a γ calibrated at one grid maps onto any other shape by bin index. **Caveat:** all calibrated aspects are 4200-token, AR 0.6–1.34; extreme shapes are unmeasured extrapolation.
+Cross-aspect variation is **cosmetic** (β MAD ~0.01 across calibrated buckets), so one averaged `(1, T, F)` γ ships and serves any resolution — the recolorer's nearest-aspect select degrades to index 0. Radial bins are normalized to [0, 1], so a γ calibrated at one grid maps onto any other shape by bin index. **Caveat:** all calibrated aspects are 4200-token, AR 0.6–1.34; extreme shapes are unmeasured extrapolation.
 
 ## Calibration: `bench/cns/calibrate.py`
 
@@ -89,7 +93,7 @@ CNS lives at the per-step noise-injection seam (`ERSDESampler._sample_noise`, `l
 | Composes with | Interaction |
 |---|---|
 | `--sampler er_sde` | The only live surface. CNS swaps the white draw for a unit-variance colored draw; the surrounding `alpha_t · s_noise · noise_coeff` scaling is untouched, so total injected energy is conserved. |
-| `--spectrum` | Structurally clean (different seam) but a **real tension**: Spectrum forecasts a *smooth* feature trajectory, and CNS concentrates energy in high-freq *late* — exactly where the Chebyshev forecaster is weakest. CNS conserves total variance so expect ≤ the er_sde-white perturbation Spectrum already tolerates, but the cached-step error must be A/B-checked, not assumed (cf. `project_spectrum_er_sde_forecastability`: er_sde forecasts ~1.6× worse than euler). |
+| `--spectrum` | Structurally clean (different seam) but a **real tension**: Spectrum forecasts a *smooth* feature trajectory, and CNS concentrates energy in high-freq *late* — exactly where the Chebyshev forecaster is weakest. CNS conserves total variance so expect ≤ the er_sde-white perturbation Spectrum already tolerates, but the cached-step error must be A/B-checked, not assumed (`er_sde` trajectories already forecast ~1.6× worse than deterministic `euler`). |
 | **SMC-CFG** | Independent — SMC-CFG corrects the velocity/drift CFG combine (pre-`denoised`); CNS is the noise term. Different seams. |
 | **mod-guidance** | Orthogonal seam (AdaLN t-embedding), but it changes the v-trajectory → γ should be recalibrated with mod-guidance ON if co-deployed (2nd-order; the shipped γ was calibrated mod-guidance OFF). |
 | **DCW** | Watch, don't block. CNS already injects *less* energy into the resolved LL band; DCW then bias-corrects LL post-step. Possible partial double-count — no conflict observed, but worth an explicit ablation if stacked. |
@@ -125,7 +129,7 @@ One implementation divergence worth noting: Alg. 1 renormalizes by a single **gl
 | `library/inference/sampling.py` | `ERSDESampler._sample_noise` — the recolor seam (white draw → `cns.recolor(white, σ_s)`); injection at `step()`. |
 | `library/inference/generation.py` | `_build_cns_recolorer` — builds from `--cns` / `--cns_strength`, warns if `--sampler` injects no noise. |
 | `inference.py` | `--cns` / `--cns_strength` CLI surface. |
-| `bench/cns/calibrate.py` | Phase-1 completion-matrix calibration → the shipped npz + a `bench/cns/results/` record. |
+| `bench/cns/calibrate.py` | Phase-1 completion-matrix calibration → produces the shipped `cns_gamma.npz` plus an optional run summary JSON. |
 | `bench/cns/gamma_probe.py` | Phase-0 read-only staircase check (one config). |
 | `bench/cns/plan.md` | Precondition, phase log, composition tensions. |
 | `networks/calibration/cns_gamma.npz` | Shipped completion matrix (`--cns auto`). |

@@ -1,5 +1,7 @@
 # Qwen Image 2.1 独立 T2I / Edit 推理接线（2026-10-05，10 月 6 日追加）
 
+状态：验收记录 / 阶段快照
+
 Qwen Image 2.1 已接入独立 `inference.py` 单图入口：`single`、T2I / Edit、Euler、BF16、
 最多一个 plain LoRA。Edit 接受 1–4 张有序参考图。runner 依次加载和释放 Qwen3-VL、
 参考图 VAE、DiT + LoRA，最后使用专属 64-channel/16x VAE 和 mean/std 反归一化保存图片。

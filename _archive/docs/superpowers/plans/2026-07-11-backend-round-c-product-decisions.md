@@ -1,5 +1,7 @@
 # 后端 Round C 产品决策 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 `feat/backend-config-optimization` 上落地 Round C：item 级 retry override（T-R2）、`image_test_save_root`（S-R6）、路径便利冻结测（S-R3/S-R4 不收紧）。

@@ -1,5 +1,7 @@
 # Embedding Inversion (historical)
 
+状态：已归档（Status: archived）
+
 > Current status: the old `make invert`, `make invert-ref`, `exp-test-ref`,
 > the former `archive/inversion/invert_embedding.py` prototype, and inference
 > `--prefix_weight` paths are not active commands in this tree. The archive

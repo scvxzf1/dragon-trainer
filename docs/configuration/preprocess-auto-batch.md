@@ -27,8 +27,9 @@ VAE 和文本编码各自从 batch 1 开始探测。自动结果只属于当前�
 现有配置里显式保存的整数不会被新默认覆盖。CPU auto 保守地固定为 1。
 
 支持 `scripts.preprocess.cache_latents`、`scripts.preprocess.cache_text_embeddings`、
-`scripts.krea2.preprocess_te_cache`、`scripts.z_image.preprocess_te_cache` 的
-`--batch_size auto`；这些 CLI 未指定参数时默认使用 `auto`，共享的
+`scripts.krea2.preprocess_te_cache`、`scripts.z_image.preprocess_te_cache`、
+`scripts.qwen_image_2_1.preprocess_te_cache` 与 `scripts.moss_image.preprocess_te_cache` 的
+`--batch_size auto`（其中 `moss_image` 文本缓存因保存真实变长序列而将 `auto` 固定解析为 `1`，拒绝大于 `1` 的显式批大小；`qwen_image_2_1` Edit 配对预处理走 `scripts.qwen_image_2_1.preprocess_edit_cache` 逐对编码）；这些 CLI 未指定参数时默认使用 `auto`，共享的
 `cache_latents()` / `cache_text_embeddings()` API 同样默认使用 `auto`。
 训练内部的 `vae_batch_size` / `text_encoder_batch_size` 属于另外一条路径，没有改变。
 
@@ -45,9 +46,9 @@ VAE 和文本编码各自从 batch 1 开始探测。自动结果只属于当前�
 5. CUDA OOM 时退出失败 encode 的异常栈，清理模型缓存和对应设备 allocator，再把失败批次
    减半重试。失败档位形成上界；成功后在边界内折半探测，避免重复尝试已知失败档位。
 
-VAE 按精确 `(W,H)` 分别学习，保留有限 CPU decode/save 流水线。
+VAE（覆盖全部 5 个模型族的 `cache_latents`）按精确 `(W,H)` 分别学习，保留有限 CPU decode/save 流水线。
 文本在 caption 变体展开后控制真正的 forward 批大小；caption 变体在重试前已生成，
-不因 OOM 重新洗牌。当前三个文本编码器使用固定 padding，控制器不裁剪 token。
+不因 OOM 重新洗牌。Anima、Krea-2、Z-Image 与 Qwen Image 2.1（`qwen_image_2_1` T2I）的文本编码使用固定 padding，控制器不裁剪 token；MOSS-Image（`moss_image`）则保存按 `max_token_length` 截断的真实长度序列而非固定 max-padding，因此文本缓存固定以单条（`batch_size=1`）执行。
 
 只有编码和 GPU 到 CPU 的结果传输属于重试边界；磁盘写入在成功编码之后执行。
 非 OOM 错误不重试，模型清理失败也立即停止。batch 1 仍 OOM 或模型加载阶段 OOM 时，

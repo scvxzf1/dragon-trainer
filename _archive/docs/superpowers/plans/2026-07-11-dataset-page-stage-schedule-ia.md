@@ -1,5 +1,7 @@
 # 数据集页重构 + 可变阶段课表 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把数据集页收成「精简主卡 + 顶栏双弹窗」，阶段数 N 可变，课表仍写入当前训练配置的 `stage_schedule*`。

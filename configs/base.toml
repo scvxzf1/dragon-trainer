@@ -12,10 +12,10 @@ output_dir = "output/ckpt"
 output_name = "anima_lora"
 save_model_as = "safetensors"
 
-# Model family switch (stage 6, docs/proposal/krea2_raw_migration.md):
-# "anima" (default, Qwen3+T5 cross-attn DiT) | "krea2_raw" (Qwen3-VL single-stream
-# MMDiT). CLI --model_family / presets / methods may override. Drives DiT loader,
-# text-strategy, and forward_for_loss dispatch in train.py + generation.py.
+# Model family switch (see library/models/family_registry.py and docs/multi_model_support.md):
+# "anima" (default) | "krea2_raw" | "z_image" | "qwen_image_2_1" | "moss_image".
+# CLI --model_family / presets / methods may override. Drives DiT loader,
+# text-strategy, cache suffix, and forward_for_loss dispatch.
 model_family = "anima"
 # Qwen3-VL cache phase only: auto | cpu_offload | gpu | cpu.
 qwen_text_encoder_cache_policy = "auto"
@@ -66,13 +66,11 @@ sigmoid_bias = 0.0
 discrete_flow_shift = 1.0
 mixed_precision = "bf16"
 
-# Experimental adaptive precision / OOM recovery controls. Exposed in the
-# Next WebUI for every registered model family; ``auto`` is hardware-selected,
-# Anima FP16 candidates use native AMP (``native_fp16``), while ``fp16_fp32``
-# enables the explicit island contract. Native AMP requires torch attention,
-# full checkpointing, plain LoRA, no NF4/compile. Native OOM retry is a bounded
-# startup-only experiment with explicit seed, accumulation=1 and disk caches.
-# Keep ``off`` here
+# Experimental adaptive precision / OOM recovery controls. Supported on
+# anima, krea2_raw, and z_image (rejected on qwen_image_2_1 and moss_image);
+# ``auto`` is hardware-selected, ``native_fp16`` uses native AMP, while
+# ``fp16_fp32`` enables the explicit island contract. Native AMP requires torch
+# attention, full checkpointing, plain LoRA, no NF4/compile. Keep ``off`` here
 # until a method opts into the compatible plain-LoRA contract.
 adaptive_precision = "off"
 adaptive_fp32_modules = []

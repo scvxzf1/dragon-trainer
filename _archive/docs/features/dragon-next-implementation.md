@@ -3,13 +3,13 @@
 > 2026-09-30 更新：Next 已是唯一生产前端。服务根路径 `/` 及旧 `ui` query 均映射到 `/next`；旧 Dragon/classic 源码已退役。下文保留 2026-09-09 的验收快照。
 
 > 范围说明：下文的功能对账、旧辅助工具入口及“待批准事项”均记录 2026-09-09 的阶段状态。
-> 默认入口切换和旧前端退役已在后续完成，见[退役记录](../../_archive/docs/proposal/legacy_ui_retirement_plan.md)
-> 和[当前前端说明](../../web/frontend-next/README.md)。这不补足当时未执行的 GPU、外部服务或并发验收证据。
+> 默认入口切换和旧前端退役已在后续完成，见[退役记录](../proposal/legacy_ui_retirement_plan.md)
+> 和[当前前端说明](../../../web/frontend-next/README.md)。这不补足当时未执行的 GPU、外部服务或并发验收证据。
 
-- 状态：八个主工作区历史工程实现记录；生产默认切换已完成；数据集蒙版编辑为独立子路由
+- 状态：已归档（八个主工作区历史工程实现记录；生产默认切换已完成；数据集蒙版编辑为独立子路由）
 - 日期：2026-09-09
-- 本页验收数字是 2026-09-09 的历史记录，不代表当前工作树；当前审计见 [2026-09-13 前端审计](../findings/webui_frontend_audit_20260913.md)。
-- 计划：[新前端开发计划书](../../_archive/docs/proposal/dragon_frontend_rebuild_plan.md)
+- 本页验收数字是 2026-09-09 的历史记录，不代表当前工作树；当前审计见 [2026-09-13 前端审计](../../../docs/findings/webui_frontend_audit_20260913.md)。
+- 计划：[新前端开发计划书](../proposal/dragon_frontend_rebuild_plan.md)
 - 工作树：`dev`，实施开始基线 `2e96bd0ce3a7c2803d542e5b0b7dfeac77369d8b`，含大量已有未提交改动。
 - 本次未 pull、切分支、提交或推送，没有恢复/清理用户数据。
 
@@ -23,7 +23,7 @@ React + TypeScript + Vite 承载独立页面，TanStack Query 管服务端快照
 已有 React Hook Form/Zod 数据集模型继续复用。Tailwind token/utilities 与本地 Radix/CVA Button 构成共享控件底座，
 ECharts 按需加载。没有引入 SSR、BFF、第三套运行时或生产 Node 服务。
 
-“八页”指 P1-P8 八个主工作区；数据集蒙版编辑通过 `/next/datasets/masks` 进入，作为独立子路由验收，详见[手动蒙版编辑器](manual-mask-editor.md)。
+“八页”指 P1-P8 八个主工作区；数据集蒙版编辑通过 `/next/datasets/masks` 进入，作为独立子路由验收，详见[手动蒙版编辑器](../../../docs/features/manual-mask-editor.md)。
 
 ## 功能对账
 
@@ -73,7 +73,7 @@ ECharts 按需加载。没有引入 SSR、BFF、第三套运行时或生产 Node
 ### 首轮全站基线
 
 工具链：Node 24.13.0、pnpm 11.9.0、Chrome、Python 3.13；`install --frozen-lockfile --offline` 成功。
-命令入口见 [工程说明](../../web/frontend-next/README.md)。
+命令入口见 [工程说明](../../../web/frontend-next/README.md)。
 
 | 验证 | 结果与边界 |
 | --- | --- |
@@ -108,10 +108,10 @@ ECharts 按需加载。没有引入 SSR、BFF、第三套运行时或生产 Node
 截图保存在 `web/frontend-next/test-results/`；生产真实数据截图仅留本机 `/tmp/dragon-next-production-check-20260909/`。
 每次测试会刷新截图目录，不能把旧截图当作新代码验收。最终复测的代表合成截图已保留：
 
-- 训练配置：[桌面浅色](assets/dragon-next/training-desktop-light.png)、[移动深色](assets/dragon-next/training-mobile-dark.png)。
-- 执行工作区：[桌面队列](assets/dragon-next/queue-desktop-light.png)、[桌面监控](assets/dragon-next/monitor-desktop-dark.png)。
-- 打标审阅：[桌面](assets/dragon-next/caption-review-desktop.png)、[移动](assets/dragon-next/caption-review-mobile.png)。
-- 历史：[移动产物](assets/dragon-next/history-artifacts-mobile.png)、[任务对比](assets/dragon-next/history-comparison.png)。
+- 训练配置：[桌面浅色](../../../docs/features/assets/dragon-next/training-desktop-light.png)、[移动深色](../../../docs/features/assets/dragon-next/training-mobile-dark.png)。
+- 执行工作区：[桌面队列](../../../docs/features/assets/dragon-next/queue-desktop-light.png)、[桌面监控](../../../docs/features/assets/dragon-next/monitor-desktop-dark.png)。
+- 打标审阅：[桌面](../../../docs/features/assets/dragon-next/caption-review-desktop.png)、[移动](../../../docs/features/assets/dragon-next/caption-review-mobile.png)。
+- 历史：[移动产物](../../../docs/features/assets/dragon-next/history-artifacts-mobile.png)、[任务对比](../../../docs/features/assets/dragon-next/history-comparison.png)。
 
 ## 数据集库封面补充
 
@@ -174,7 +174,7 @@ ECharts 按需加载。没有引入 SSR、BFF、第三套运行时或生产 Node
 集合 `123` 实页只读验证显示 1 个配置组、8 条可见任务，展开与移动布局正常，无脚本错误、横向溢出或写请求。
 本次未替用户实际拖动并保存真实历史分组。其他任务的数据集封面后端仍须在原服务加载后才生效，静态发布不等于后端热更新。
 
-截图：[桌面堆叠](assets/dragon-next/history-stacked-desktop.png)、[移动展开](assets/dragon-next/history-stacked-mobile.png)，均为合成数据。
+截图：[桌面堆叠](../../../docs/features/assets/dragon-next/history-stacked-desktop.png)、[移动展开](../../../docs/features/assets/dragon-next/history-stacked-mobile.png)，均为合成数据。
 
 ### 待批准事项
 

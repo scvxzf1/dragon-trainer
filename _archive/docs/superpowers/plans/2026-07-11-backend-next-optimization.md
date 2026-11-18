@@ -1,5 +1,7 @@
 # 后端下一轮优化 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在已完成的 backend-config-optimization 基线上，把下一轮后端优化做成可持久推进、可严格回归的任务序列：先闭环 auto_retry 与路径安全，再统一 ROOT/allowlist，再策略配置化，最后硬化 HTTP/WS 契约与 backend smoke。

@@ -11,8 +11,8 @@ WebUI 显示为 MOSS-Image。组件路径相对项目根目录：
 - 文本编码器（静态 NF4 权重）：`models/moss_image/MOSS-Image-TextEncoder-NF4`
 - VAE：`models/moss_image/MOSS-Image-VAE`
 
-先准备本地组件权重和数据，再使用现有预处理入口建立磁盘 latent 与 text 缓存。
-训练加载顺序保持文本编码器 → 缓存 → 释放、VAE → 缓存 → 释放，最后加载 DiT。
+先准备本地组件权重和数据，再通过 `python tasks.py preprocess METHOD=moss_image_lora` 预先生成完整的磁盘 latent 与文本缓存。
+训练要求磁盘缓存预先就绪：`train.py` 在缓存完整且未启用预览采样 / CMMD 时不加载文本编码器与 VAE（直接加载冻结 DiT）；若启用训练预览，采样提示词编码与 VAE 解码按预览阶段独立编排并释放。
 首版只支持普通文生图 plain LoRA，文本编码器始终冻结。
 
 ## 精度与缓存
@@ -57,11 +57,51 @@ MOSS 不使用 P2 加权，方法配置固定 `p2_gamma=0`。默认每轮保存�
 训练预览使用 Euler，默认 50 步、CFG 3、shift 5。训练 shift 与预览 shift 分开处理。
 预览默认值由 MOSS 专属预览实现提供；普通推理/image-test 的支持以 registry 为准。
 
-配置预检明确拒绝 compile、DiT NF4、其他 adapter、流水线并行、选择性/卸载 checkpoint、
-自适应精度、AUTO block swap、weighted caption、TE 训练和高级损失。
+配置预检（`library/training/moss_compat.py`）明确拒绝 compile、DiT NF4、其他 adapter、
+选择性/卸载 checkpoint、自适应精度、AUTO block swap、weighted caption、TE 训练和高级损失。
 训练只接受 L2 flow loss、`timestep_sampling="uniform"`、`weighting_scheme="none"`。
 caption dropout 在顶层、general、dataset 和 subset 都必须为 0。
+对于流水线并行（`pipeline_parallel`）：MOSS 已发布实验性双卡 1F1B `pipeline_parallel`
+runtime 并接线专用训练会话（仅限 `PP=2` / `1F1B` / `FP16` / plain LoRA / 完整磁盘缓存，
+且与 `blocks_to_swap > 0`、compile 等互斥；其余未接线形状仍由门禁具名拒绝），详见
+[moss_image_pipeline_parallel_v0.md](../experimental/moss_image_pipeline_parallel_v0.md) 与
+[moss_image_pp_trainer_wiring.md](../experimental/moss_image_pp_trainer_wiring.md)。
 不要把其他模型的编译、路由或损失配置直接带入 MOSS；这些配置会报错。
+
+## 训练前契约核对与执行模板
+
+以下取值越界会在配置预检阶段直接报错，不会静默降级（来源 `library/training/moss_compat.py`）：
+
+| 键 | 允许值 / 要求 |
+| --- | --- |
+| `model_family` | `moss_image`（别名 `moss`） |
+| `mixed_precision` | `bf16` / `fp16` / `no` |
+| `base_compute` | 仅接受 `bf16`（`nf4` 不代表文本编码器量化，会被拒绝） |
+| `moss_te_quantization` | `nf4`（默认，BF16 compute）/ `bf16`；失败即报错，不静默回退 |
+| `attn_mode` | `torch` / `sdpa` |
+| `blocks_to_swap` | 整数 `0..40`（`0 <= n <= len(layers) - 2`，当前 42 层即上界 40）；`> 0` 时训练及所有 dataset 的 `batch_size` 必须为 1 |
+| `block_swap_transfer_dtype` | 推荐 `bf16`；`int8` 会打印实验性 WARNING 且存在逐 step 数值偏移，不建议作为正式训练默认 |
+| `max_token_length` | `1..4096` 整数，且写入 `moss_image_te_v2` 缓存身份（`max_text_tokens`） |
+| 缓存开关 | `use_text_cache = true` 且 `use_vae_cache = true`（完整磁盘缓存） |
+| 损失与采样 | `loss_type = "l2"`、`timestep_sampling = "uniform"`、`weighting_scheme = "none"`、`discrete_flow_shift = 1`、`p2_gamma = 0` |
+| Adapter | 仅 `networks.lora_anima` plain LoRA；`network_train_unet_only = true`、`router_source = "none"` |
+| Caption | `caption_dropout_rate` / `caption_tag_dropout_rate` 在顶层、general、dataset、subset 全为 `0`；不支持 weighted captions 或 caption shuffle |
+| `pipeline_parallel` | 实验性放行 `PP=2` / `1F1B` / `FP16` / plain LoRA / 完整缓存（与 `blocks_to_swap > 0` 互斥） |
+
+通用 CLI 执行序列模板：
+
+```bash
+# 0) 预检：核对合并后的模型族、档位、缓存与块交换配置
+.venv/bin/python tasks.py print-config METHOD=moss_image_lora PRESET=default
+
+# 1) 预处理：resize -> VAE(float32) -> TE(NF4, 含 max_token_length 缓存身份)
+.venv/bin/python tasks.py preprocess METHOD=moss_image_lora
+
+# 2) 单卡训练（切换档位直接改 --method moss_image_lora_t768 等，不要单改 resolution）
+.venv/bin/python train.py --method moss_image_lora --preset default --max_train_epochs 3
+```
+
+修改 `max_token_length` 或 `moss_te_quantization` 后必须重新运行文本缓存预处理或切换独立缓存目录。
 
 ## 分辨率 / token 预算档位
 

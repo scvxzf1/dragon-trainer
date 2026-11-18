@@ -5,13 +5,13 @@
 
 Per-layer, time-indexed soft tokens in T5-compatible space. DiT is frozen. ~1M trainable params at default config (n_layers=10, K=4, D=1024, n_t_buckets=100). Each of the first `n_layers` DiT blocks gets its own learned (K, D) token bank plus a per-(t-bucket, layer) D-vector offset, spliced into `crossattn_emb` for that block alone. Trained with plain FM.
 
-Reference: Lee et al., *Aligning Text to Image in Diffusion Models is Easier Than You Think* (arXiv:2503.08250, NeurIPS 2025) — "SoftREPA". The base recipe adopts only the parameterization (per-layer × per-t soft tokens), trained under plain FM; the paper's InfoNCE contrastive objective was originally skipped because at Anima's training batch size (B=1) there are no in-batch negatives, and the paper itself reported SD3 FID regression at paper-strength contrastive. An **optional, B=1-adapted contrastive objective** is now available (off by default) — it builds negatives by swapping a cached text embedding off disk instead of using batch peers. See §"Contrastive objective" below and [soft_tokens_contrastive.md](../proposal/soft_tokens_contrastive.md).
+Reference: Lee et al., *Aligning Text to Image in Diffusion Models is Easier Than You Think* (arXiv:2503.08250, NeurIPS 2025) — "SoftREPA". The base recipe adopts only the parameterization (per-layer × per-t soft tokens), trained under plain FM; the paper's InfoNCE contrastive objective was originally skipped because at Anima's training batch size (B=1) there are no in-batch negatives, and the paper itself reported SD3 FID regression at paper-strength contrastive. An **optional, B=1-adapted contrastive objective** is now available (off by default) — it builds negatives by swapping a cached text embedding off disk instead of using batch peers. See §"Contrastive objective" below and [soft_tokens_contrastive.md](../../_archive/docs/proposal/soft_tokens_contrastive.md).
 
 ## Quick start
 
 ```bash
-make exp-soft-tokens                    # default preset
 python tasks.py exp-soft-tokens         # cross-platform
+make exp-soft-tokens                    # compatibility alias
 ```
 
 **Inference is supported.** `create_network_from_weights` loads the checkpoint and the denoising loop fires the per-step splice for you: `library/inference/generation.py` and `networks/spectrum.py` call `soft_tokens_net.append_postfix(embed, seqlens, timesteps=t)` once per CFG branch before each forward (cond + uncond, including the tiled path), mirroring the training-side trainer hook. On Spectrum *cached* steps the blocks don't fire, so soft tokens silently no-op for those steps — it composes freely with `--spectrum`.
@@ -71,12 +71,12 @@ Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params
 | `_make_block_hook(layer_idx, org_forward)` | Closure that reads the cached step tokens at `layer_idx`, splices into `crossattn_emb`, calls the original block forward. |
 | `SoftTokensMethodAdapter` (same file) | Contrastive extra-forward driver: stashes `neg_crossattn_emb` in `prime_for_forward`, runs the negative forwards + the active objective in `extra_forwards`, replays the deferred ∂L/∂v_neg in `after_backward`, surfaces metrics. Auto-resolved by `resolve_adapters` when `_contrastive_target_weight > 0`. |
 | `contrastive_loss(...)` / `step_contrastive_warmup(...)` | InfoNCE over the negatives (with optional jaccard penalty) + the warmup gate. |
-| `softrank_loss(...)` / `softrank_diagnostics(...)` / `_soft_rank(...)` | Soft-rank objective: differentiable listwise rank of the matched caption among candidates via `softtorch` (`contrastive_objective=softrank`). Dual ψ⁺/ψ⁻ banks ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See [soft_tokens_softrank.md](../proposal/soft_tokens_softrank.md). |
+| `softrank_loss(...)` / `softrank_diagnostics(...)` / `_soft_rank(...)` | Soft-rank objective: differentiable listwise rank of the matched caption among candidates via `softtorch` (`contrastive_objective=softrank`). Dual ψ⁺/ψ⁻ banks ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See [soft_tokens_softrank.md](../../_archive/docs/proposal/soft_tokens_softrank.md). |
 | `library/datasets/base.py` | `setup_contrastive_negatives` / `_load_te_for_stem` — negative TE sourcing + `neg_crossattn_emb` / `neg_jaccard` on the example. |
 | `library/datasets/identity_pairs.py` | `IdentityPairSampler.hard_negative` / `shuffled` / `tag_jaccard` — negative policy. |
 | `library/training/losses.py::_soft_tokens_contrastive_loss` | Applies the warmup-gated `λ_con` to the adapter's InfoNCE scalar. |
 | `configs/methods/soft_tokens.toml` | Default config (splice_position=front_of_padding, lr=1e-3, 4 epochs; plain FM, contrastive off). |
-| `configs/gui-methods/soft_tokens.toml` | Sibling for `make lora-gui GUI_PRESETS=soft_tokens`. |
+| `configs/gui-methods/soft_tokens.toml` | Sibling for `python tasks.py lora-gui GUI_PRESETS=soft_tokens` (`make lora-gui` compatible). |
 | `scripts/experimental_tasks/training.py::cmd_soft_tokens` | Task entry-point. |
 | `tasks.py` `exp-soft-tokens` | Make/CLI registration. |
 
@@ -111,13 +111,13 @@ The existing postfix module logs an aggressive guard against K-slot permutation 
 > soft tokens already **structurally avoid** slot collapse (see "Why no
 > slot-collapse" above: different `(k, t)` pairs are consumed at different
 > positions, so gradients differ from step 1 and there's no symmetry to break).
-> The repr-space variant was separately probed and found redundant
-> ([[project_soft_tokens_contrastive_phase0]]). Plain FM is now the baseline;
+> The repr-space variant was separately probed in Phase 0 and found redundant.
+> Plain FM is now the baseline;
 > the only optional add-on is the contrastive objective below.
 
 ## Contrastive objective (optional, B=1-adapted SoftREPA InfoNCE)
 
-A revival of SoftREPA's contrastive objective, off by default. It is **data-conditioned** and **needs negatives** — it sharpens prompt-following by making the *matched* text explain the anchor's latent better than *mismatched* text does. Compatibility entry: [soft_tokens_contrastive.md](../proposal/soft_tokens_contrastive.md).
+A revival of SoftREPA's contrastive objective, off by default. It is **data-conditioned** and **needs negatives** — it sharpens prompt-following by making the *matched* text explain the anchor's latent better than *mismatched* text does. Compatibility entry: [soft_tokens_contrastive.md](../../_archive/docs/proposal/soft_tokens_contrastive.md).
 
 The B=1 trick (no batch peers): a negative is a **different stem's cached text embedding** (`{stem}_anima_te.safetensors`, the post-LLM-adapter `crossattn_emb`) swapped off disk — the same cached-feature-swap precedent the IP-Adapter identity pairs use, but swapping the TE feature instead of the PE feature. Each step runs the primary forward (matched text = the positive) plus `k` extra DiT forwards with the negative text spliced through the same soft tokens; the logit of a forward is its negative flow-matching error against the shared velocity target:
 
@@ -129,7 +129,7 @@ L_total       = L_FM + λ_con · L_contrastive                         (post-war
 
 Only `crossattn_emb` differs across the forwards, so the gradient isolates text-conditioning. Each negative is one extra full DiT forward — `k=4` ≈ 5× step time — so keep `k ∈ {1, 2}`. To further amortize the cost, `contrastive_every_n` runs the negatives only every Nth *optimizer* step (the term is a small-weight auxiliary regularizer; the warmup window already proves the bank trains fine with it fully off for a stretch). It's a **manual frequency knob, not auto-scaled**: effective strength ≈ `weight × 1/N`, so bump `contrastive_weight` if you want to hold the average pull constant. Firing-step peak memory is unchanged and off-steps are cheaper, so it's a free throughput lever with no OOM risk.
 
-> **Why not a fused single-backward instead?** A tempting alternative is to run the `k` negatives *with* grad and do one combined backward (cutting `2k`→`k` DiT forwards). At the shipped default preset (no gradient checkpointing, `blocks_to_swap=0`) that holds a full second forward's activation graph co-resident — ~+6 GB on a ~13 GB run, OOM-risking a 16 GB card — which is exactly why `extra_forwards` keeps the `no_grad` value pass + `after_backward` grad-cache replay split ([[project_blockswap_extra_forwards_gradcache]]). `contrastive_every_n` gets the throughput win without the memory hit.
+> **Why not a fused single-backward instead?** A tempting alternative is to run the `k` negatives *with* grad and do one combined backward (cutting `2k`→`k` DiT forwards). At the shipped default preset (no gradient checkpointing, `blocks_to_swap=0`) that holds a full second forward's activation graph co-resident — ~+6 GB on a ~13 GB run, OOM-risking a 16 GB card — which is why `extra_forwards` keeps the `no_grad` value pass + `after_backward` grad-cache replay split. `contrastive_every_n` gets the throughput win without the memory hit.
 
 **Negative modes** (`contrastive_negative_mode`):
 
@@ -139,7 +139,7 @@ Only `crossattn_emb` differs across the forwards, so the gradient isolates text-
 | `jaccard` | shuffled sourcing + per-negative logit down-weight `ℓ_neg −= α·s` | `s` = caption tag-overlap (character ∪ copyright ∪ artist) Jaccard; a near-miss negative pulls less gradient. Cheap middle path — no new sampler. `α = contrastive_jaccard_alpha`. |
 | `hard` | a same-artist / **different-character** sibling (style-matched, content-different) | Cancels style-induced velocity similarity so the only axis left to win on is content. Falls back to `shuffled` for orphan/untagged artists — on the current dataset Phase 0 measured the strict pool at ~29% coverage, so ~71% of steps degrade to shuffled. |
 
-Negative grouping comes from the shared caption index (`make caption-index` → `post_image_dataset/captions/caption_index.json`), reusing `IdentityPairSampler` (`hard_negative` / `shuffled` / `tag_jaccard`). The index path is not a user knob.
+Negative grouping comes from the shared caption index (`python tasks.py caption-index` / `make caption-index` → `post_image_dataset/captions/caption_index.json`), reusing `IdentityPairSampler` (`hard_negative` / `shuffled` / `tag_jaccard`). The index path is not a user knob.
 
 **Wiring.** Negatives are sourced in `library/datasets/base.py::setup_contrastive_negatives` / `_load_te_for_stem` (surfaced as `neg_crossattn_emb` `(B, k, S, D)` on **train steps only** — validation FM-MSE stays a clean baseline). The `k` extra forwards + InfoNCE live in `SoftTokensMethodAdapter.extra_forwards` + `SoftTokensNetwork.contrastive_loss`; the warmup-gated weight is composed in `library/training/losses.py::_soft_tokens_contrastive_loss` (active iff `_contrastive_target_weight > 0`). `step_contrastive_warmup` holds `λ_con` at 0 for the first `warmup_ratio` of steps. The objective leaves **no learned parameters** — a trained checkpoint is bit-identical whether or not contrastive was on, and inference ignores it entirely.
 
@@ -162,7 +162,7 @@ TensorBoard signals: `reg/soft_tokens_contrastive` (raw InfoNCE), `_weighted`, `
 A second objective on the **same** extra-forward plumbing (negatives, warmup,
 `contrastive_every_n`, compose seam, `after_backward` grad-cache), selected with
 `contrastive_objective=softrank` (the shipped config default). Compatibility entry:
-[soft_tokens_softrank.md](../proposal/soft_tokens_softrank.md). Where InfoNCE's negative branch is
+[soft_tokens_softrank.md](../../_archive/docs/proposal/soft_tokens_softrank.md). Where InfoNCE's negative branch is
 *unbounded* (maximizing negative error has no fixed point — the SoftREPA
 degrade-while-loss-drops failure), soft-rank replaces the softmax with a
 **differentiable listwise rank** of the matched caption among the candidates. With
@@ -185,7 +185,7 @@ PL-weighted EMA bank) was the third option and was **removed 2026-05-30**: in th
 live A/B its `w_matched` stayed pinned at chance (`1/(k+1)` for every epoch — "Δ
 rotates but w stays at chance"), while soft-rank's `matched_rank` descended
 monotonically toward 1 and won on eyeballed image quality. This matches the
-offline Tier-A gradient probe ([[project_softrank_agsm_gradient_probe]]): soft-rank's
+offline Tier-A gradient probe: soft-rank's
 `cos(∂L/∂V, ∂margin/∂V)` ≈ 0.86 vs AGSM's ≈ 0.25, at the same boundedness. The same
 chance-pin sank the mod-guidance AGSM probe, which was removed with it.
 
@@ -203,8 +203,7 @@ InfoNCE too; the live softrank run shows ψ⁻ training via `tokens_neg_mean_nor
 
 Gradient flow mirrors InfoNCE exactly — `L` rides the anchor's FM backward (grad
 via the live `v_pos`, negatives detached), and `∂L/∂v_neg` is deferred to
-`after_backward` (the block-swap-safe grad-cache split,
-[[project_blockswap_extra_forwards_gradcache]]). The objective leaves **no learned
+`after_backward` (the block-swap-safe grad-cache split). The objective leaves **no learned
 parameters** beyond the bank(s) — inference ignores it entirely, same as InfoNCE.
 
 | Knob | Default | Meaning |

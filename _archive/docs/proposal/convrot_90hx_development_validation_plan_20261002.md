@@ -1,10 +1,10 @@
 # ConvRot INT8：CMP 90HX 开发与重新验证计划
 
-状态：S0–S4 工具、基线、优化筛选与生产功能验证已完成；S5 因没有通过门槛的候选而跳过（不是500步完成）。原协议与门槛保留。结论见[90HX验证报告](../findings/convrot_90hx_validation_20261002.md)，后续见[开发计划](convrot_90hx_followup_development_plan_20261002.md)。日期：2026-10-02。
+状态：已归档（S0–S4 工具、基线、优化筛选与生产功能验证已完成；S5 因没有通过门槛的候选而跳过）。原协议与门槛保留。结论见[90HX验证报告](../../../docs/findings/convrot_90hx_validation_20261002.md)，后续见[开发计划](../../../docs/proposal/convrot_90hx_followup_development_plan_20261002.md)。日期：2026-10-02。
 
 目标：在当前 CMP 90HX 上重新比较 BF16、现有 W8A16、现有 W8A8；再分别验证保持数值规则的 Triton 优化与改变反向精度的方案，决定是否值得用于真实 Anima LoRA 训练。
 
-依据：[本地与 musubi 专项对比](../findings/int8_training_local_vs_musubi_20261002.md)、[已有架构规格](convrot_w8a_training_plan.md)、[3080 优化路线](convrot_w8a_optimization_roadmap.md)。本计划补充新的硬件与验证协议，不覆盖历史结果，不把旧 3080 数字当成当前基线。
+依据：[本地与 musubi 专项对比](../../../docs/findings/int8_training_local_vs_musubi_20261002.md)、[已有架构规格](convrot_w8a_training_plan.md)、[3080 优化路线](../../../docs/proposal/convrot_w8a_optimization_roadmap.md)。本计划补充新的硬件与验证协议，不覆盖历史结果，不把旧 3080 数字当成当前基线。
 
 ## 1. 当前资源和固定输入
 
@@ -12,9 +12,9 @@
 
 - GPU 1：NVIDIA CMP 90HX，10240 MiB；UUID `GPU-806debd9-d254-da57-d515-ccae15b4ac6a`。查询时利用率 0%，未列出该卡 compute 进程。空闲状态只是快照，每次执行前重新检查。
 - 驱动 `580.178.04`；`.venv` 分发元数据为 torch `2.12.0`、Triton `3.7.0`、bitsandbytes `0.49.2`、flash_attn `2.8.3+cu130torch2.12`。本轮没有 import CUDA 验证 ABI；S0 记录实际 CUDA runtime、SM、设备身份和算子可用性。
-- BF16 基座：`/home/scv/pac/models/diffusion_models/anima/anima-base-v1.0-sha.safetensors`。
-- 可复用输入：[1024 数据集配置](../../configs/datasets/anima-ab-1024-20261002.toml)，60 张图片、独立 cache、关闭 bucket。文件存在性已核，cache 内容/schema 由 S0 核验。
-- 可复用 profile：[上轮 BF16 配置](../../output/anima-mixed-swap-fix-20261002-163852/bf16.toml)。只提取公共参数，重新生成独立输出路径和训练时长，不直接启动旧配置。
+- BF16 基座：本机 `anima-base-v1.0-sha.safetensors`。
+- 可复用输入：本机未入库实验数据集配置 `configs/datasets/anima-ab-1024-20261002.toml`，60 张图片、独立 cache、关闭 bucket。文件存在性已核，cache 内容/schema 由 S0 核验。
+- 可复用 profile：上轮本地 BF16 配置 `output/anima-mixed-swap-fix-20261002-163852/bf16.toml`。只提取公共参数，重新生成独立输出路径和训练时长，不直接启动旧配置。
 
 首轮固定 Anima、1024×1024、batch1、accumulation1、plain LoRA rank/alpha32、AdamW、LR 2e-5、BF16 compute、full checkpoint、Flash、swap12、BF16 transfer、foreach restore、compile off。禁用 adaptive precision、自动 swap、OOM 自动降档和 caption dropout，避免对照过程中配置漂移。
 

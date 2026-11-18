@@ -19,12 +19,17 @@
 | [reft.md](reft.md) | ReFT 残差流表示编辑，配合 [../structure/reft.md](../structure/reft.md) 阅读 |
 | [adaln.md](adaln.md) | AdaLN LoRA：`train_adaln` 旋钮与 runtime↔ComfyUI 键布局互转 |
 | [mod-guidance.md](mod-guidance.md) | Modulation guidance，基于 pooled-text AdaLN steering |
-| [invert.md](invert.md) | 历史 inversion 说明；当前可运行入口是 `exp-invert-directedit` 探针 |
+| [../../_archive/docs/methods/invert.md](../../_archive/docs/methods/invert.md) | 已归档的历史 inversion 说明；现行可运行实验探针见 [../experimental/directedit_editing_v3.md](../experimental/directedit_editing_v3.md)（`python tasks.py exp-invert-directedit`） |
 | [spectrum.md](spectrum.md) | Spectrum 推理加速，配合 [../structure/spectrum.md](../structure/spectrum.md) 阅读 |
 | [dcw.md](dcw.md) | DCW：post-step SNR-t bias correction |
 | [smc_cfg.md](smc_cfg.md) | SMC-CFG / CFG-Ctrl 风格控制器 |
 | [cns.md](cns.md) | Colored Noise Sampling |
 | [channel_scaling.md](channel_scaling.md) | 通道缩放相关方法记录 |
+
+此外，仓库还提供以下已接入配置入口（尚无独立 methods 单页）：
+
+- **VeRA / GLoRA**：自包含 GUI 变体位于 `configs/gui-methods/vera.toml` 与 `configs/gui-methods/glora.toml`，可通过 `python tasks.py lora-gui vera` / `python tasks.py lora-gui glora` 或 WebUI 变体选择启动（VeRA 超参消融计划见 [../experimental/vera_ablation.md](../experimental/vera_ablation.md)）。
+- **Register-token adapter**：配置位于 `configs/methods/register.toml`（`networks.methods.register`），CLI 入口为 `python tasks.py register`。
 
 Postfix 当前用户入口在 [../guidelines/training.md#postfix](../guidelines/training.md#postfix)，[../experimental/postfix.md](../experimental/postfix.md) 只保留兼容跳转。
 

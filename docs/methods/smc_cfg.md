@@ -1,5 +1,8 @@
 # SMC-CFG — Sliding-Mode Control CFG (α-adaptive variant)
 
+状态：稳定
+适用版本：当前 main
+
 Training-free, sampler-level modification of the CFG cond/uncond combine. Treats CFG as a control problem and applies classical sliding-mode control to the velocity-space residual `e = v_cond − v_uncond`. No extra DiT forwards; one velocity-shaped buffer of state.
 
 Paper: [Wang et al., "CFG-Ctrl: Control-Based Classifier-Free Diffusion Guidance"](https://arxiv.org/abs/2603.03281)
@@ -9,9 +12,10 @@ This implementation is the **α-adaptive variant** of the paper — the fixed sw
 ## Quick start
 
 ```bash
-make test-smc-cfg            # latest LoRA + SMC-CFG (λ=5, α=0.2)
-SPECTRUM=1 make test-smc-cfg # Spectrum + SMC-CFG composed
-MOD=1 make test-smc-cfg      # Mod-guidance + SMC-CFG composed
+python tasks.py test-smc-cfg              # latest LoRA + SMC-CFG (λ=5, α=0.2)
+python tasks.py test-smc-cfg SPECTRUM=1   # Spectrum + SMC-CFG composed
+python tasks.py test-smc-cfg MOD=1        # Mod-guidance + SMC-CFG composed
+# Compatibility alias: make test-smc-cfg
 ```
 
 Or add `--smc_cfg` to any `inference.py` invocation:
@@ -97,7 +101,7 @@ SMC-CFG operates strictly on the velocity-space cond/uncond combine, so it compo
 | **Mod-guidance** | AdaLN coefficients (inside each block) | yes |
 | **Spectrum** | feature forecasting (skips DiT forwards on cached steps) | yes (sampler still runs the combine) |
 
-All five can run together: `python inference.py --smc_cfg --dcw --spectrum --mod_guidance ...`. Each one's effect on outputs is mechanistically distinct.
+All five can run together: `python inference.py --smc_cfg --dcw --spectrum --pooled_text_proj <path> ...`. Each one's effect on outputs is mechanistically distinct.
 
 ## CLI
 
@@ -123,9 +127,9 @@ What changed is the gain law: fixed `k` → `k_t = α·mean(|e_t|)`. This is a t
 
 | File | Purpose |
 |---|---|
-| `library/inference/smc_cfg.py` | `SMCCFGState` — sliding-surface combine, α-adaptive gain, sign() switch |
+| `library/inference/corrections/smc_cfg.py` (`library/inference/smc_cfg.py` shim) | `SMCCFGState` — sliding-surface combine, α-adaptive gain, sign() switch |
 | `library/inference/generation.py` | Constructs `SMCCFGState` and calls `.combine()` inside the per-step CFG combine |
 | `networks/spectrum.py` | Same `smc_cfg.combine()` call site inside Spectrum's per-step combine (cached-step path skips the forward but still runs the combine) |
 | `inference.py` | CLI surface (`--smc_cfg`, `--smc_cfg_lambda`, `--smc_cfg_alpha`) |
-| `scripts/tasks/inference.py` | `make test-smc-cfg` wrapper |
+| `scripts/tasks/inference.py` | `python tasks.py test-smc-cfg` wrapper |
 | [archived SMC-CFG analysis](../../_archive/docs/findings/smc-cfg-analysis-and-proposal-202605.md) | Frozen design analysis and measurement context for the α-adaptive form. The original bench scripts were retired in commit `f2c5f72f`. |

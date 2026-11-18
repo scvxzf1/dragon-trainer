@@ -8,7 +8,7 @@
 `library/training/checkpoints.py`、`library/runtime/launch.py`、`library/runtime/accelerator.py`、
 `library/training/compat_matrix.py`、`library/training/bootstrap.py`
 上游研究：[Lulynx 多卡对照报告](../findings/lulynx_multigpu_comparison_20261107.md)（下称 **对照报告**）、
-[多卡训练实现研究计划](multi_gpu_training_plan.md)
+[多卡训练实现研究计划（已归档）](../../_archive/docs/proposal/multi_gpu_training_plan.md)
 
 本文把前轮研究结论转成**可执行、可判定、责任到阶段**的验收合同。凡本文与旧文档冲突，以本文为准；
 凡本文结论与实时源码冲突，以源码为准并须走 §17 修订流程。

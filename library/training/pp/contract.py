@@ -1,4 +1,4 @@
-"""Runtime contract for the Anima pipeline-parallel v0 runtime.
+"""Runtime contract for the shared pipeline-parallel v0 runtime.
 
 Everything in this module is fail-closed.  ``pipeline_parallel`` is either fully
 available with the exact configuration validated here, or the caller gets a

@@ -1,5 +1,7 @@
 # Qwen Image 2.1 LoKr / LoHa 90HX 热测
 
+状态：研究记录 / 阶段快照
+
 2026-09-29，CMP 90HX 10 GiB，Qwen Image 2.1 T2I，同一单图数据、缓存和种子 1234。配置为 BF16 base/训练、full checkpoint、swap24、`attn_mode="torch"`、Inductor default compile、关闭阶段 3 投影融合。每组独立进程；热测 20 步，统计第 6--20 步的相邻完成时间。配置快照、命令、GPU 遥测、训练日志、进度和 checkpoint 均保存在下列结果目录。
 
 | Adapter | smoke | 20 步 | 稳态中位数 | 首/末 5 步均值 | PyTorch 分配峰值 | checkpoint |

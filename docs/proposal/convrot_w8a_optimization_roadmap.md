@@ -34,7 +34,7 @@ python tasks.py lora ... --base_compute w8a8_convrot
 
 相关文档：
 
-- 落地规格：[`convrot_w8a_training_plan.md`](convrot_w8a_training_plan.md)
+- 落地规格：[`../../_archive/docs/proposal/convrot_w8a_training_plan.md`](../../_archive/docs/proposal/convrot_w8a_training_plan.md)
 - 实验与实测：[`../experimental/convrot_int8_training.md`](../experimental/convrot_int8_training.md)
 - 旧 int8 审计：[`../findings/anima_int8_base_linear_audit.md`](../findings/anima_int8_base_linear_audit.md)
 

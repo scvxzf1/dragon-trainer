@@ -1,86 +1,51 @@
 # UI 缩放
 
 状态：稳定
-适用版本：当前 WebUI 主界面
-入口命令：
+适用版本：当前 WebUI Next 工作台 `/next/settings`
+相关代码：`web/frontend-next/src/features/settings/SettingsPage.tsx`、`settingsForm.ts`、`web/frontend-next/src/app/uiPreferences.ts`、`web/services/settings_service.py`
+
+---
+
+## 1. 缩放机制
+
+WebUI 提供两级百分比缩放（有效范围 `25`–`400`，推荐 `75`–`150`，默认 `100`）：
+
+1. **全局默认缩放（`ui_scale`）**：全站所有页面的基准比例，在 `/next/settings`「界面显示」中通过快捷按钮（`80%`–`125%`）、滑块或数字框调整。
+2. **分页面独立缩放**：在 `/next/settings`「分页面缩放」平铺数字输入框中为特定页面填写百分比；**输入框留空即自动跟随全局默认比例**，无需额外勾选复选框。修改后点击 **保存设置** 持久化到 `web-ui-settings.toml`。
+
+---
+
+## 2. 路由覆盖范围
+
+- **支持独立缩放的主页面与辅助工具页**：
+  - 训练配置（`/next/training` → `ui_scale_config`）
+  - 数据集蓝图（`/next/datasets` → `ui_scale_datasets`）
+  - 当前监控（`/next/monitor` → `ui_scale_training`）
+  - 模型配置（`/next/models` → `ui_scale_model_config`）
+  - 全局设置（`/next/settings` → `ui_scale_settings`）
+  - 权重分析（`/next/weight-analysis` → `ui_scale_weight_analysis`）
+  - 生图测试（`/next/image-test` → `ui_scale_image_test`）
+  - 环境检测（`/next/environment` → `ui_scale_environment`）
+- **历史任务与详情子视图（`/next/history`）**：
+  - 概览（默认 → `ui_scale_history_overview`）
+  - 指标（`?view=metrics` → `ui_scale_history_analysis`）
+  - 产物（`?view=artifacts` → `ui_scale_history_preview`）
+  - 日志（`?view=logs` → `ui_scale_history_logs`）
+  - 配置（`?view=config` → `ui_scale_history_config_files`）
+- **始终跟随全局 `ui_scale` 的页面**：训练队列（`/next/queue`）、预览工作区（`/next/preview`）、打标工作台（`/next/captioning`）、数据管理（`/next/data`）。
+
+---
+
+## 3. 注意事项
+
+- 极端比例（接近 `25%` 或 `400%`）会影响密集表单与图表的可读性，日常建议保持在 `75%`–`150%`。
+- 若仅单个页面字号异常，检查「分页面缩放」对应输入框是否残留了历史独立数值，清空并保存即可恢复跟随全局。
+
+---
+
+## 4. 相关测试
 
 ```bash
-.venv/bin/python tasks.py web --host 127.0.0.1 --port 20102
-```
-
-相关代码：
-
-- `web/frontend-next/src/features/settings/`（全局设置 · 界面设置）
-- `web/services/settings_service.py`
-- `web/frontend-next/src/app/uiPreferences.ts`（全局与页面缩放）
-- `tests/test_ui_scale_settings.py`
-
----
-
-## 1. 这是干什么的
-
-一句话：把 WebUI 整体或单个页面放大/缩小，适配不同屏幕和视力习惯。
-
-缩放分两层：
-
-1. **默认缩放比例**：全站兜底
-2. **独立比例**：某个主页面或历史详情子页取消“跟随默认”后单独保存
-
----
-
-## 2. 入口
-
-1. 打开 **全局设置**。
-2. 找到 **界面设置**。
-3. 改 **缩放比例 (%)**。
-4. 需要时展开：
-   - **主页面独立比例**
-   - **历史详情独立比例**
-5. 取消某页的 **跟随默认**，再填该页自己的百分比。
-6. 点 **保存全局设置**。
-
-取值范围：`25`–`400`，步进通常为 `5`。
-推荐：`75`–`150`。默认：`100`。
-
----
-
-## 3. 关键配置项
-
-| 配置 | 作用 |
-| --- | --- |
-| 默认缩放比例 | 所有“跟随默认”的页面使用这个值 |
-| 配置 / 数据集 / 训练 / ΔW 分析 / 生图测试 / 全局设置 / 全局模型配置 / 环境检测 | 主页面独立比例 |
-| 历史概览 / 训练分析 / 样张与权重 / 日志 / 配置与文件 | 历史详情内容区独立比例 |
-| 跟随默认 | 勾选后忽略该页独立值，回到默认比例 |
-
-说明：
-
-- 历史详情独立比例只作用于详情内容，不改标题栏和关闭按钮。
-- 设置保存在全局设置里，刷新页面后仍会生效。
-
----
-
-## 4. 危险项
-
-- **设得太小（接近 25%）**：按钮和字会挤在一起，难操作。
-- **设得太大（接近 400%）**：一屏装不下，频繁滚动。
-- **只改了输入框没保存**：不会持久化。
-- **某些页面取消跟随默认后忘记改回去**：会表现为“只有这一页大小不对”。
-
----
-
-## 5. 相关测试
-
-```bash
-timeout 60 .venv/bin/python -m pytest \
-  tests/test_ui_scale_settings.py \
-  tests/test_preview_service.py \
-  -q
-```
-
-Next 前端交互由 `web/frontend-next/e2e/scale-keyboard.spec.ts` 覆盖；运行：
-
-```bash
-.venv/bin/python tasks.py web-next-check
+timeout 60 .venv/bin/python -m pytest tests/test_ui_scale_settings.py -q
 .venv/bin/python tasks.py web-next-e2e -- scale-keyboard.spec.ts
 ```

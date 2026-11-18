@@ -1,5 +1,7 @@
 # Qwen Image 2.1 frozen projection packing (experimental)
 
+状态：实验（默认关闭，显式 opt-in）
+
 The training-only `qwen_fused_projections` option defaults to `off`. It accepts
 `mlp`, `qkv`, or `all` in a training TOML or as `--qwen_fused_projections all`
 on the CLI. It is not a default recommendation and has no WebUI control.

@@ -2,9 +2,9 @@
 
 Every case here pins one of the acceptance points of the wiring task:
 
-* anima + a valid ``pipeline_parallel`` config is no longer reported as
-  ``pipeline_parallel_runtime_unavailable``, while krea2_raw / z_image /
-  qwen_image_2_1 stay fail-closed with a named code;
+* wired families (anima / krea2_raw / moss_image) + a valid ``pipeline_parallel``
+  config are no longer reported as ``pipeline_parallel_runtime_unavailable``,
+  while z_image / qwen_image_2_1 stay fail-closed with a named code;
 * the compatibility key stays ``pipeline_parallel`` (the WebUI resume gate and
   the multimodel tests depend on it) and a more specific ``pp_*`` code is only
   the issue's ``code``;
@@ -35,7 +35,10 @@ from library.models.family_registry import (
 )
 from library.training import cli_entry, loop
 from library.training.bootstrap import TrainingBootstrap
-from library.training.checkpoints import publish_state_with_bundle, save_checkpoint_state
+from library.training.checkpoints import (
+    publish_state_with_bundle,
+    save_checkpoint_state,
+)
 from library.training.compat_matrix import check_training_compat
 from library.training.pp import errors as pp_errors
 from library.training.pp.errors import PipelineParallelError
@@ -100,7 +103,7 @@ def test_compat_matrix_releases_anima_pipeline_parallel() -> None:
     assert "pp_trainer_path_unavailable" in warnings[0].message
 
 
-@pytest.mark.parametrize("family", ["krea2_raw", "z_image"])
+@pytest.mark.parametrize("family", ["z_image"])
 def test_compat_matrix_keeps_unimplemented_families_fail_closed(family: str) -> None:
     issues = _pipeline_issues(check_training_compat(_config(family), world_size=2))
 
@@ -168,12 +171,12 @@ def test_compat_matrix_fails_closed_without_the_torch_pipelining_api(monkeypatch
 def test_capability_catalog_exposes_the_anima_runtime_switch() -> None:
     catalog = {item["name"]: item for item in model_family_capability_catalog()}
 
-    anima = catalog["anima"]["pipeline_parallel"]
-    assert anima["runtime_available"] is True
-    assert anima["runtime_backend"] == PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B
-    for family in ("krea2_raw", "z_image"):
-        assert catalog[family]["pipeline_parallel"]["runtime_available"] is False
-        assert catalog[family]["pipeline_parallel"]["runtime_backend"] is None
+    for wired in ("anima", "krea2_raw", "moss_image"):
+        pp = catalog[wired]["pipeline_parallel"]
+        assert pp["runtime_available"] is True
+        assert pp["runtime_backend"] == PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B
+    assert catalog["z_image"]["pipeline_parallel"]["runtime_available"] is False
+    assert catalog["z_image"]["pipeline_parallel"]["runtime_backend"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +191,7 @@ def test_require_trainer_topology_refuses_ddp_for_a_valid_pp_config() -> None:
     assert excinfo.value.code == "pp_trainer_path_unavailable"
     message = str(excinfo.value)
     assert "unit-test" in message
-    assert "library.training.pp.build_anima_pipeline_runtime" in message
+    assert "library.training.pp build_*_pipeline_runtime" in message
     assert "Refusing to fall back to DDP" in message
 
 
@@ -467,8 +470,8 @@ def test_cli_preflight_admits_wired_families_and_refuses_others(monkeypatch) -> 
 
     created: list[object] = []
     with pytest.raises(PipelineParallelError) as excinfo:
-        _run_cli(monkeypatch, {**_config("krea2_raw"), "attn_mode": "torch"}, created=created)
-    # krea2_raw has no 1F1B runtime at all: the shared runtime gate refuses one
+        _run_cli(monkeypatch, {**_config("z_image"), "attn_mode": "torch"}, created=created)
+    # z_image has no 1F1B runtime at all: the shared runtime gate refuses one
     # step earlier than the trainer-path admission, still fail-closed.
     assert excinfo.value.code == "pp_runtime_unavailable"
     assert "Refusing to fall back" in str(excinfo.value)
@@ -479,7 +482,7 @@ def test_cli_preflight_never_reaches_the_trainer_for_a_pipeline_config(monkeypat
 
     created: list[object] = []
     try:
-        _run_cli(monkeypatch, {**_config("krea2_raw"), "attn_mode": "torch"}, created=created)
+        _run_cli(monkeypatch, {**_config("z_image"), "attn_mode": "torch"}, created=created)
     except PipelineParallelError:
         pass
     assert created == []
@@ -487,7 +490,7 @@ def test_cli_preflight_never_reaches_the_trainer_for_a_pipeline_config(monkeypat
 
 def test_cli_preflight_names_the_missing_runtime_for_other_families(monkeypatch) -> None:
     with pytest.raises(PipelineParallelError) as excinfo:
-        _run_cli(monkeypatch, {**_config("krea2_raw"), "attn_mode": "torch"})
+        _run_cli(monkeypatch, {**_config("z_image"), "attn_mode": "torch"})
 
     assert excinfo.value.code == "pp_runtime_unavailable"
     assert "Refusing to fall back to ordinary Accelerate data parallelism" in str(

@@ -124,7 +124,7 @@ Far heavier than vanilla LoRA at the same rank because the per-expert `(down, up
 | `router_source` | `"fei"` | Router input = `FEI(z_t)`. |
 | `num_experts` | 4 | Paper used 3; default raised to 4 here. |
 | `use_ortho` | `true` | PSOFT-style Cayley parameterization on each expert. Drops trainable params ~3 OOM. |
-| `fera_num_bands` | 3 | Paper default. Drop to 2 for Anima's bench-validated bimodal split (see [[project_fera_probe_2band_decision]]). |
+| `fera_num_bands` | 3 | Paper default. Drop to 2 for Anima's bench-validated bimodal split (see §"3 bands vs 2 bands" below). |
 | `fei_feature_dim` | 2 | Router input width. Set to `num_bands` for the raw simplex, or 2 for the `(e_low, e_high)` low-dim projection. |
 | `fei_sigma_low_div` | 4.0 | `σ_low = min(H_lat, W_lat) / fei_sigma_low_div`. Default picked from the historical 2026-05-13 dataset sweep (`20260513-1649-dataset-sweep`) — `div=4` yields the highest router std(e_low) at low/mid t on real training latents. NOT the paper's pixel-domain `min(H, W)/128` (that's SD2-512-specific). |
 | `router_tau` | 0.7 | Softmax temperature. Lower → sharper expert specialization. |
@@ -148,7 +148,7 @@ Aspect invariance held across 1024², 832×1248, 1248×832 at the inference prob
 
 ## 3 bands vs 2 bands
 
-Author paper picks `num_bands = 3` (low / mid / high). On Anima flow-matching latents the mid band is structurally near-empty (`e_mid ≤ 8%` at `σ_mid = 4`, `≤ 1.5%` at `σ_mid = 8`) — see [[project_fera_probe_2band_decision]]. Anima's velocity target `(image − noise)` is bimodal by construction (concentrated at very-low image structure + very-high noise), so the third band carries no routing-useful signal.
+Author paper picks `num_bands = 3` (low / mid / high). On Anima flow-matching latents the mid band is structurally near-empty (`e_mid ≤ 8%` at `σ_mid = 4`, `≤ 1.5%` at `σ_mid = 8`). Anima's velocity target `(image − noise)` is bimodal by construction (concentrated at very-low image structure + very-high noise), so the third band carries no routing-useful signal.
 
 A local FeRA TOML can keep `num_bands = 3` for paper fidelity; if held-out
 gate-entropy + per-expert utilization shows expert collapse, drop to 2. The
@@ -246,7 +246,7 @@ The bet is that the global router on latent spectral state captures *per-prompt*
 2. **Per-expert utilization on a held-out prompt set.** Histogram of `argmax_k w_k` (or weighted utilization) across prompts. Useful answer: experts specialize by *content type*, not by σ-stage (that's what Hydra does).
 3. **Per-prompt routing stability across seeds.** Two seeds of the same prompt should produce similar gate distributions (gate is a function of `z_t`, which differs by seed but converges to similar spectral shape). If gates drift wildly seed-to-seed, the router is noise-sensitive — tighten `router_tau` or grow `router_hidden_dim`.
 4. **A/B vs FEI-on-Hydra.** Same dataset, matched epochs/lr. The author-faithful path is heavier (independent A) and globally-routed; FEI-on-Hydra is lighter and locally-routed. Whichever wins tells us which axis matters more on Anima.
-5. **Sample quality vs `make lora`.** The hard test — is FeRA better than the current LoRA-family default? Use the same prompt set used for `make test` and look at structural quality + prompt following + style coherence. FM val-MSE is uninformative on Anima (see [[project_fm_val_loss_uninformative]]).
+5. **Sample quality vs `python tasks.py lora` (`make lora`).** The hard test — is FeRA better than the current LoRA-family default? Use the same prompt set used for `python tasks.py test` (`make test`) and look at structural quality + prompt following + style coherence. FM val-MSE is uninformative on Anima.
 
 ## Hyperparameters worth sweeping
 

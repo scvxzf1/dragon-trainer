@@ -1,6 +1,8 @@
 # AdamW8bit → fused AdamW
 
-This doc records why `optimizer_type = "AdamW8bit"` was replaced with `"AdamW"` + `optimizer_args = ["fused=True"]` as the project default, and when it still makes sense to choose the bitsandbytes-backed 8-bit optimizer.
+状态：稳定
+
+This doc records why `optimizer_type = "AdamW8bit"` was replaced with `"AdamW"` (running with `fused=True` on CUDA) as the project default, and when it still makes sense to choose the bitsandbytes-backed 8-bit optimizer.
 
 ## What was there
 
@@ -25,12 +27,11 @@ The 308 ms optimizer plateau was the dominant idle source — `loss.item()` sync
 ```toml
 # configs/base.toml
 optimizer_type = "AdamW"
-optimizer_args = ["fused=True"]
 ```
 
-`torch.optim.AdamW(..., fused=True)` runs the entire optimizer step as a single fused CUDA kernel — no per-block dispatch, no quantize/dequantize round-trip. The 308 ms plateau collapses to a few milliseconds.
+In `library/training/optimizers.py`, the `"AdamW"` branch automatically injects `fused=True` whenever `torch.cuda.is_available()` is true and `"fused"` was not explicitly set in `optimizer_args`. `torch.optim.AdamW(..., fused=True)` runs the entire optimizer step as a single fused CUDA kernel — no per-block dispatch, no quantize/dequantize round-trip. The 308 ms plateau collapses to a few milliseconds.
 
-`fused=True` is parsed by `get_optimizer` via `ast.literal_eval`, which only accepts Python literals — must be capitalized (`"fused=True"`, not `"fused=true"`). Lowercase will raise.
+If you ever want to override `fused` via `optimizer_args`, note that `get_optimizer_kwargs` parses values with `ast.literal_eval`, which only accepts Python literals — booleans must be capitalized (`["fused=False"]`, not `["fused=false"]`).
 
 ## Trade-off
 
@@ -46,11 +47,11 @@ Important dependency constraint: keep the PyTorch CUDA track on CUDA 13.0 (`cu13
 
 ## If you want to use AdamW8bit
 
-1. In `configs/base.toml` or the WebUI config, set:
+1. In your method / override TOML or the WebUI config, set:
    ```toml
    optimizer_type = "AdamW8bit"
-   # remove optimizer_args = ["fused=True"]  — bitsandbytes doesn't accept it
    ```
+   (`configs/base.toml` does not set `optimizer_args = ["fused=True"]`, so no manual `optimizer_args` cleanup is needed when switching to `AdamW8bit`.)
 2. Run `uv sync` if you are on an older environment that was created before bitsandbytes was added back.
 
 Expect the GPU-utilization dip to come back. If 8-bit state is genuinely needed for VRAM (full-DiT train on 16 GB), the dip is worth the trade. For LoRA, fused AdamW is strictly better.

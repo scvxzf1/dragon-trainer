@@ -62,7 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ``argv=None`` reads ``sys.argv`` (the CLI path). Pass an explicit list to
     build an args namespace programmatically — see ``examples/01_generate.py``.
     """
-    parser = argparse.ArgumentParser(description="HunyuanImage inference script")
+    parser = argparse.ArgumentParser(description="Dragon Trainer inference CLI")
 
     parser.add_argument("--dit", type=str, default=None, help="DiT directory or path")
     parser.add_argument(
@@ -71,7 +71,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         choices=list(KNOWN_MODEL_FAMILIES),
         help="DiT model family (anima default; krea2_raw and qwen_image_2_1 "
-        "support single-prompt inference; z_image currently training-only). "
+        "support single-prompt inference; z_image and moss_image have no "
+        "standalone inference registered). "
         "Unset falls back to env ANIMA_MODEL_FAMILY then 'anima'.",
     )
     parser.add_argument("--qwen_image_2_1_task", choices=["t2i", "edit"], default=None)
@@ -96,7 +97,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--text_encoder",
         type=str,
         required=True,
-        help="Text Encoder 1 (Qwen2.5-VL) directory or path",
+        help="Text encoder directory or safetensors path",
     )
 
     # LoRA
@@ -248,7 +249,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="number of inference steps, default is 50",
     )
     parser.add_argument(
-        "--save_path", type=str, required=True, help="path to save generated video"
+        "--save_path", type=str, required=True, help="path to save generated image(s)"
     )
     parser.add_argument("--seed", type=int, default=None, help="Seed for evaluation.")
 

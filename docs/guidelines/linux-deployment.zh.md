@@ -1,5 +1,7 @@
 # Linux 部署与启动指南
 
+状态：稳定
+
 本文面向准备在 GitHub 上拉取并运行本项目的 Linux 用户，覆盖从系统依赖、Python 环境、模型下载、WebUI 启动到常见故障排查的完整流程。
 
 当前项目推荐使用 `uv` 管理 Python 3.13 虚拟环境。不要直接把系统 Python 或 Conda base 环境混进训练环境里，否则很容易出现 `toml`、`torch`、`flash-attn` 等依赖版本不一致的问题。
@@ -83,9 +85,11 @@ export PATH="$HOME/.local/bin:$PATH"
 ## 4. 克隆项目
 
 ```bash
-git clone <你的仓库地址> anima_lora
-cd anima_lora
+git clone <你的仓库地址> dragon-trainer
+cd dragon-trainer
 ```
+
+（若沿用旧目录名如 `anima_lora` 或 `anima_lora_webui`，项目内相对路径行为完全兼容。）
 
 如果仓库内使用了 Git LFS 文件，执行：
 
@@ -275,15 +279,12 @@ http://服务器IP:20102/?token=你的令牌
 
 1. 打开 WebUI。
 2. 在 Next「模型」工作区检查模型路径是否存在。
-3. 进入 Next「训练」工作区。
-4. 设置 `source_image_dir`。
-5. 点击「自动填入缩放图和缓存目录」。
-6. 保存当前配置。
-7. 在 Next「训练」工作区检查任务配置。
-8. 如果提示需要预处理，先执行预处理。
-9. 预处理完成后启动训练。
-10. 在 Next「历史」和训练监控中查看日志、loss 曲线和任务配置快照。
-11. 在 Next「预览」工作区查看训练样张和推理预览图。
+3. 进入 Next「数据集蓝图」工作区（`/next/datasets`），新建或选择一份数据集预设，在子集卡片中设置原始图片目录 `source_dir`、缩放图目录 `image_dir`（如 `post_image_dataset/resized`）和缓存目录 `cache_dir`（如 `post_image_dataset/lora`），点击保存。
+4. 进入 Next「训练」工作区（`/next/training`），在数据集与子集卡片中绑定该数据集预设（或直接在当前配置的子集卡片中核对目录），保存当前训练配置。
+5. 如果提示需要预处理，先执行预处理。
+6. 预处理完成后启动训练。
+7. 在 Next「历史」和训练监控中查看日志、loss 曲线和任务配置快照。
+8. 在 Next「预览」工作区查看训练样张和推理预览图。
 
 训练任务快照中会记录：
 
@@ -410,8 +411,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/USER/anima_lora
-ExecStart=/home/USER/anima_lora/.venv/bin/python tasks.py web --host 127.0.0.1 --port 20102
+WorkingDirectory=/home/USER/dragon-trainer
+ExecStart=/home/USER/dragon-trainer/.venv/bin/python tasks.py web --host 127.0.0.1 --port 20102
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
@@ -423,27 +424,29 @@ WantedBy=multi-user.target
 保存为：
 
 ```text
-/etc/systemd/system/anima-lora-webui.service
+/etc/systemd/system/dragon-trainer-webui.service
 ```
+
+（若升级前已配置 `anima-lora-webui.service`，沿用原服务名即可。）
 
 启用并启动：
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable anima-lora-webui
-sudo systemctl start anima-lora-webui
+sudo systemctl enable dragon-trainer-webui
+sudo systemctl start dragon-trainer-webui
 ```
 
 查看状态：
 
 ```bash
-systemctl status anima-lora-webui
+systemctl status dragon-trainer-webui
 ```
 
 查看日志：
 
 ```bash
-journalctl -u anima-lora-webui -f
+journalctl -u dragon-trainer-webui -f
 ```
 
 
@@ -475,8 +478,7 @@ output/tests/               默认推理预览目录
 - `models/`
 - `output/`
 - `image_dataset/`
-- `*_resized/`
-- `*_lora_cache/`
+- `post_image_dataset/`（含 `resized/`、`lora/`、`masks/` 等预处理缓存；旧版 `*_resized/`、`*_lora_cache/` 同理）
 - `.env`
 - 大型 `.safetensors` / `.ckpt` / `.pt` 文件
 
@@ -555,11 +557,10 @@ ls post_image_dataset/lora
 
 处理方式：
 
-1. 确认 `source_image_dir` 指向真实源图目录。
-2. 在 WebUI 点击「自动填入缩放图和缓存目录」。
-3. 保存配置。
-4. 先运行预处理。
-5. 再启动训练。
+1. 在 `/next/datasets` 的数据集子集卡片中确认 `source_dir` 指向真实源图目录，并设置对应的 `image_dir`（如 `post_image_dataset/resized`）与 `cache_dir`（如 `post_image_dataset/lora`），保存数据集蓝图。
+2. 在 `/next/training` 的数据集与子集卡片中确认已绑定该数据集蓝图并保存配置。
+3. 先运行预处理。
+4. 再启动训练。
 
 
 ### 15.5 训练很久没有预览图
@@ -603,7 +604,7 @@ PNG；只有一行提示词时，仅一张 GPU 执行采样，其余 rank 等待
 Next 工作台提供返回训练配置的恢复入口；部署、静态构建和隔离验收步骤见
 [Next 前端 README](../../web/frontend-next/README.md)。旧 `ui=dragon` / `ui=classic`
 查询参数只会重定向到 Next，不应作为故障回退或排查入口。旧界面背景记录见
-[已退役 Dragon UI 历史记录](../features/dragon-ui.md)。
+[已退役 Dragon UI 历史记录](../../_archive/docs/features/dragon-ui.md)。
 
 
 ## 16. 更新项目
@@ -633,8 +634,8 @@ pkill -f "python -m web"
 新机器从零开始：
 
 ```bash
-git clone <你的仓库地址> anima_lora
-cd anima_lora
+git clone <你的仓库地址> dragon-trainer
+cd dragon-trainer
 uv sync
 .venv/bin/hf auth login
 .venv/bin/python tasks.py download-models
@@ -645,7 +646,7 @@ mkdir -p image_dataset
 已有项目日常启动：
 
 ```bash
-cd anima_lora
+cd dragon-trainer
 .venv/bin/python tasks.py web --host 127.0.0.1 --port 20102
 ```
 

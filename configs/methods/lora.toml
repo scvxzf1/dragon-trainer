@@ -153,6 +153,6 @@ validation_split_num = 8
 # control-variate λ. The control-variate forward reuses the trainable DiT
 # with adapter multiplier=0 (equivalent to a frozen base DiT for LoRA-family
 # runs), so there is no extra model copy in VRAM — only ~+40% step compute.
-# See bench/fm_vr_headroom/proposal.md.
+# See _archive/docs/findings/vr-loss-headroom/proposal.md and docs/experimental/vr_loss.md.
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0

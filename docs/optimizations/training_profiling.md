@@ -1,5 +1,6 @@
 # 训练性能 Profiling 落地流程
 
+状态：稳定
 更新时间：`2026-06-29`
 
 本文记录 Anima LoRA 训练器的性能观测路径。目标是先用低开销信号判断瓶颈类型，再决定
@@ -50,12 +51,8 @@ GPU kernel、H2D/D2H 或 CUDA 同步，应该优先处理训练图、融合、co
 - MFU 低、步时不稳定：优先排查 block swap、数据加载、同步和缓存命中。
 - 同一数据下某方法比 plain LoRA 慢很多：先把 adapter、rank、checkpoint、block swap 的成本拆开。
 
-当前仓库已有一次归档对照：
-
-- `docs/findings/mfu_plain_lora_vs_lokr_blockswap_20260629_022138.md`
-- `bench/mfu/README.md`
-
-结论是当前 `RTX 3080 10GB` 上，`plain LoRA + checkpointing + no block swap`
+MFU 套件说明见 `bench/mfu/README.md`。例如在 `RTX 3080 10GB` 对照中，
+`plain LoRA + checkpointing + no block swap`
 约 `36.44% MFU`，而 `LoKr + blocks_to_swap=26` 约 `7.16% MFU`。这说明低 MFU
 不等于训练主链必然慢，可能是省显存策略的吞吐代价。
 
@@ -75,6 +72,8 @@ GPU kernel、H2D/D2H 或 CUDA 同步，应该优先处理训练图、融合、co
 - `--progress_jsonl`：结构化训练进度，默认写到 `<output_dir>/../logs/*.progress.jsonl`。
 - `--memory_probe_jsonl auto`：写显存、组件、optimizer 诊断。
 - `--memory_probe_max_steps 5`：只记录前 5 个训练 step 的细粒度显存快照。
+- `--peak_probe_jsonl auto`（配合 `--peak_probe_level block|ops|lokr|full`）：写逐 DiT 块边界、算子或 LoKr 的细粒度 CUDA 峰值显存诊断。
+- `--gradient_flow_probe_jsonl auto`：写按需开启的逐块梯度与真实优化器更新遥测。
 - `--block_swap_profile_jsonl auto`：写 block swap 传输和等待观测。
 
 `block_swap_profile_jsonl` 是诊断探针，不应作为正式吞吐对比的默认条件。长训或热测要比较
@@ -288,6 +287,6 @@ Qt / 推理进程，先把这次 run 标记成“脏口径”，不要把它写�
 ## 注意事项
 
 - 不要默认启动长训练、大模型下载或真实采样；profiling 先用短窗口。
-- `output/`、`logs/`、`bench/mfu/assets/` 等产物默认是运行数据，不要作为普通源码清理。
+- `output/`、`logs/`、`post_image_dataset/` 等产物默认是运行数据，不要作为普通源码清理。
 - Nsight Systems 适合看时间线和调度；单 kernel 的算力/带宽细节再用 Nsight Compute。
 - 修改 compile、bucket、token shape、attention layout 后，要补对应 invariant 测试。

@@ -1,5 +1,7 @@
 # 后端配置优化与严格 Debug 推进 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不破坏现有训练主链路的前提下，把后端配置真相、路径安全、stage 可观测、队列策略做成可长期推进且每步可测的优化路线。

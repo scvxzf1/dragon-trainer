@@ -1,5 +1,6 @@
 # 多模型采样批次与 tiled 块交换生命周期验收
 
+状态：验收记录 / 阶段快照
 日期：2026-10-02。范围：Anima、Krea-2、Z-Image 训练预览，以及 Anima tiled 推理。
 Qwen Image 2.1 继续默认方案 B；本轮没有扩展其他模型族的 DiT K/V 缓存。
 

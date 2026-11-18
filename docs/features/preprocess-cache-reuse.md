@@ -1,8 +1,8 @@
 # 预处理缓存复用（共享池）
 
-状态：实验 / 第一期落地  
-适用版本：`feat/preprocess-cache-reuse` 起  
-入口：WebUI 配置页 → 预处理相关开关  
+状态：稳定
+适用版本：当前 WebUI Next 工作台 `/next/training`
+入口：`/next/training` 输入准备 → 缓存分组
 相关代码：`library/cache_pool/`、`web/services/training/runtime_prepare.py`、`web/services/training/history_ops.py`
 
 ---

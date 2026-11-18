@@ -115,6 +115,7 @@ def run_training(
 GPU_TIER_PRESET = {
     "8GB": "low_vram",
     "16GB": "default",
+    "high": "default",
 }
 
 

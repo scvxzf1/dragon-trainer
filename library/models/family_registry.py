@@ -114,8 +114,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             supported_stages=frozenset({2}),
             supported_schedules=frozenset({"1f1b"}),
             supported_splits=frozenset({"balanced"}),
-            # PP v0 switch: only anima has a stage-local runtime today
-            # (``library/training/pp``).  Keep every other family at ``None``.
+            # Stage-local 1F1B PP runtime (``library/training/pp``).
             runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
         ),
     ),

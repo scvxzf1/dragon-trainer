@@ -106,8 +106,8 @@ CSS 样式入口检查中，Classic `style.css` 的 26 个 import 和 Dragon `dr
 ## 已落地文档
 
 - [前端健康度评分卡](../features/frontend-health-scorecard.md)：区分 2026-07-11 历史基线与 `dev @ 2e96bd0c` 当前工作树快照，保留 69/D 评分和证据入口。
-- [Dragon Next 实施与验收记录](../features/dragon-next-implementation.md)：明确 P1-P8 是八个主工作区，补充 `/next/datasets/masks` 子路由，并修正历史日志分页/虚拟窗口表述。
-- [Dragon Next UI/UX 实施进度](../features/dragon-next-uiux-progress.md)：将 2026-09-10 的测试数字和截图标为历史快照，指向本轮当前工作树复核。
+- [Dragon Next 实施与验收记录（已归档）](../../_archive/docs/features/dragon-next-implementation.md)：明确 P1-P8 是八个主工作区，补充 `/next/datasets/masks` 子路由，并修正历史日志分页/虚拟窗口表述。
+- [Dragon Next UI/UX 实施进度（已归档）](../../_archive/docs/features/dragon-next-uiux-progress.md)：将 2026-09-10 的测试数字和截图标为历史快照，指向本轮当前工作树复核。
 - [手动蒙版编辑器](../features/manual-mask-editor.md)：补充“应用到子集”会设置 `alpha_mask=true` 的配置副作用。
 - [历史任务日志](../features/history-logs.md)：补充搜索关键词空值/长度边界、非对象 JSON 占位和任务目录路径保护。
 - [配置工作台](../features/config-workbench.md)：区分 Classic Dragon 配置库与 Next React 当前能力，修正预检阶段、GPU 选择、另存、配置文件/分组管理、TOML 导入导出和续训入口描述，并补充 Next 定向测试入口。

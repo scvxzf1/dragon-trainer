@@ -4,7 +4,7 @@ Covers the InfoNCE loss math, the warmup-gated weight contract, the
 negative-mode validation (jaccard/hard are Phase 2), and the metadata stamp.
 The dataset-sourcing and extra-forward wiring are integration-tested elsewhere;
 here we exercise the pure-CPU network surface. See
-docs/proposal/soft_tokens_contrastive.md.
+docs/experimental/soft_tokens.md (_archive/docs/proposal/soft_tokens_contrastive.md).
 """
 
 from __future__ import annotations

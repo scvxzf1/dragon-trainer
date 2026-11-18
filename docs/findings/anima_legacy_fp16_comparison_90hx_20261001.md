@@ -74,10 +74,10 @@ Luna 执行唯一 GPU 热测，Sol 独立 CPU 审核 `status=pass`，无阻断 P
 独立review及汇总核验补足，不能说旧快照执行了最新观察代码。
 
 原始目录为 `output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/`。
-完整[运行报告](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/report.md)、
-[五组汇总](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/comparison.json)、
-[独立审核](../../output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/review.json)
-均已落盘。CPU复算可用 `.venv/bin/python <该目录>/comparison_cpu.py --output <新的JSON路径>`，
+完整运行报告（`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/report.md`）、
+五组汇总（`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/comparison.json`）、
+独立审核（`output/runs/anima-adaptive-precision-90hx-20261001-delivery-batch2-legacy-fp16/review.json`）
+均已落盘（本地未入库产物）。CPU复算可用 `.venv/bin/python <该目录>/comparison_cpu.py --output <新的JSON路径>`，
 拒绝覆盖旧输出，不调用 GPU。
 
 候选05/04仍只有严格矩阵数值优势，没有实用显存收益；旧 FP16 已显示短窗性能优势，

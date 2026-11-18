@@ -96,10 +96,9 @@ def check_moss_training_contract(out, config):
     ):
         reject(key, _enabled(_get(config, key)), f"does not support {key}; disable it.")
     # ``pipeline_parallel`` is no longer blanket-rejected: MOSS-Image publishes a
-    # stage-local PP v0 runtime backend, so the shared compatibility matrix and
-    # ``library.training.pp.gate`` decide whether the requested PP config is
-    # servable (the trainer entry still refuses any PP run with
-    # ``pp_trainer_path_unavailable``).  Block swap remains MOSS-legal alone and
+    # stage-local PP v0 runtime backend and wired trainer session, so the shared
+    # compatibility matrix and ``library.training.pp.gate`` decide whether the
+    # requested PP config is servable. Block swap remains MOSS-legal alone and
     # the PP config validation rejects the combination.
     reject("network_module", _get(config, "network_module", "networks.lora_anima") not in
            {"", "networks.lora_anima"}, "supports networks.lora_anima plain LoRA only.")

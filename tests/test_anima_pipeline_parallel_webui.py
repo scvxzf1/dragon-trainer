@@ -1,6 +1,6 @@
 """Anima WebUI/config PP wiring tests (t5, CPU service layer only).
 
-Contract §5 (docs/proposal/anima_pp_trainer_wiring.md):
+Contract §5 (_archive/docs/proposal/anima_pp_trainer_wiring.md):
 
 * the WebUI preflight shows the wired Anima PP trainer session (no launch
   block), and surfaces the trainer-admission knob view (e.g. a preview field

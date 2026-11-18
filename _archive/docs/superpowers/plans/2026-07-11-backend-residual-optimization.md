@@ -1,5 +1,7 @@
 # 后端残留债优化 Implementation Plan
 
+状态：已归档
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 `feat/backend-config-optimization` @ `ff257245` 基线上，清掉残留 High/关键 Med 债：methods 文件真相、策略层级与 clamp、home_search 一等设置、preview/analysis 统一 path resolve、retry 集成测、跨域换 root 删除矩阵；并把契约门禁补到可持久回归。

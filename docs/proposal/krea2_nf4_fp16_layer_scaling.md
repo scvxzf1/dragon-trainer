@@ -1,7 +1,7 @@
-状态：活跃提案 / 未实现（原型已验证，生产未落地）
+状态：半活跃 / 核心已落地（`--nf4_dir1` 与 WebUI 预检已上线；1024² 长训与整网编译待验收）
 日期：2026-11-09
-适用版本：当前 dev（分支 `codex/krea2-fp16-layer-scaling`）
-前置证据：[NF4 fp16 梯度偏差机制溯源](../findings/krea2_nf4_fp16_grad_underflow_20261108.md)
+适用版本：当前 `dev`（配置模板见 `configs/methods/krea2_lora_nf4_fp16.toml`）
+前置与落地证据：[NF4 fp16 梯度偏差机制溯源](../findings/krea2_nf4_fp16_grad_underflow_20261108.md)、[内层 FP16 路径实测与预检规则](../findings/krea2_nf4_fp16_inner_path_20261109.md)
 相关代码：`library/quantization/nf4.py`（唯一介入点）
 探针：`bench/krea2_nf4_fp16_grad/sim_layer_scaling.py`（合成模拟）、
 `dir1_chain.py`（真实权重四臂）、`dir1_bench.py`（算子级基准 + 28 层串联）、

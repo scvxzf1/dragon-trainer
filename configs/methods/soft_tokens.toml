@@ -33,7 +33,7 @@ network_dim = 4
 # making the matched text explain the anchor's latent better than mismatched
 # text. Each negative costs one extra full DiT forward, so keep contrastive_k
 # small. Off by default (weight 0.0 = plain-FM behavior, bit-identical).
-# See docs/proposal/soft_tokens_contrastive.md.
+# See docs/experimental/soft_tokens.md (archived spec: _archive/docs/proposal/soft_tokens_contrastive.md).
 # contrastive_weight            — λ_con. 0.0 disables (and the dataset stops
 #                                 producing negatives, so no extra forwards).
 # contrastive_k                 — negatives per step → (k+1)× step time. Keep 1–2.
@@ -63,7 +63,7 @@ network_dim = 4
 #                                 steps (lets plain FM shape the bank first).
 #
 # contrastive_objective         — "infonce" (default) | "softrank".
-#   "softrank" (docs/proposal/soft_tokens_softrank.md): differentiable listwise
+#   "softrank" (docs/experimental/soft_tokens.md): differentiable listwise
 #   rank of the matched caption among the candidates via softtorch.rank,
 #   L = softtorch.rank(r)[matched] − 1. Gradient flows THROUGH the ordering yet
 #   stays bounded (unlike infonce's unbounded negative push). Costs k extra

@@ -1,5 +1,8 @@
 # Plain LoRA inside Anima
 
+状态：稳定
+适用版本：当前 main
+
 How a vanilla low-rank adapter plugs into the Anima DiT. Plain LoRA means *just* the low-rank adapter. All of those stack on top of the scaffolding described here.
 
 ![Plain LoRA](../structure_images/lora.png)
@@ -8,7 +11,7 @@ How a vanilla low-rank adapter plugs into the Anima DiT. Plain LoRA means *just*
 
 ## 1. Where LoRA attaches
 
-Every DiT block (`library/anima/models.py:962–1223`) contains ~10 `Linear` layers — fused `qkv_proj` and `output_proj` in self-attention; `q_proj`, `kv_proj`, `output_proj` in cross-attention; `layer1` and `layer2` in the MLP; the SiLU-fused AdaLN heads for the three sub-layers. LoRA wraps each of them. Across 28 blocks that is roughly **280 target Linears**, plus a few outside the stack (`PatchEmbed`, `TimestepEmbedding`, `FinalLayer`).
+Every DiT block (`Block` in `library/anima/models.py`) contains attention, MLP, and AdaLN `Linear` layers. By default (`train_adaln = false`), `_DEFAULT_EXCLUDE` (`networks/lora_anima/config.py`) excludes the AdaLN projections (`adaln_fused_down`, `adaln_up_*`) as well as the outside-stack embedders and `final_layer` (`x_embedder`, `t_embedder`, `pooled_text_proj`, `final_layer`). Consequently, plain LoRA wraps **7 attention + MLP `Linear`s per block** — fused `qkv_proj` and `output_proj` in self-attention; `q_proj`, `kv_proj`, `output_proj` in cross-attention; `layer1` and `layer2` in the MLP — totaling **196 target modules** across the 28 blocks. (Opting in via `train_adaln = true` adds the 3 per-block `adaln_up_*` projections; see [../methods/adaln.md](../methods/adaln.md).)
 
 LoRA does **not** touch the VAE, text encoder, or LLMAdapter — those are frozen and, since text embeddings and latents are cached to disk before training starts, they are not even resident in VRAM during the training loop.
 
@@ -71,30 +74,32 @@ so roughly 99.9% of parameters are frozen and skipped by the optimizer.
 
 ### 3.1 The module
 
-`networks/lora_modules/lora.py:62–94` — the training `forward`:
+`BaseLoRAModule` / `LoRAModule` (`networks/lora_modules/{base,lora,custom_autograd}.py`) — simplified training `forward`:
 
 ```python
 def forward(self, x):
     org = self.org_forward(x)                     # frozen W0·x
-
     if self._skip_module():                       # module-dropout
         return org
 
-    lx = self.lora_down(x)                        # (..., r)
+    # Bottleneck down-projection runs in FP32 (lora_down_project / chunked FP32
+    # down) while keeping saved activations compact in BF16/FP16:
+    lx = lora_down_project(x, self.lora_down.weight, inv_scale)   # (..., r)
+    lx = lx * self._timestep_mask                 # T-LoRA hook (ones when off)
 
     if self.dropout is not None and self.training:
         lx = F.dropout(lx, p=self.dropout)
     lx, scale = self._apply_rank_dropout(lx)      # returns self.scale if off
 
-    lx = self.lora_up(lx)                         # (..., d_out)
-    return org + lx * self.multiplier * scale
+    lx = self.lora_up(lx.to(work))                # (..., d_out)
+    return org + (lx * self.multiplier * scale).to(org.dtype)
 ```
 
-One subtlety worth knowing — **three dropout knobs**: `dropout` kills neurons in the `r`-dim bottleneck; `rank_dropout` masks full ranks per-sample with the standard $1/(1-p)$ rescale; `module_dropout` skips the entire adapter for the step — useful as stochastic regularization across the 280 LoRAs.
+One subtlety worth knowing — **three dropout knobs**: `dropout` kills neurons in the `r`-dim bottleneck; `rank_dropout` masks full ranks per-sample with the standard $1/(1-p)$ rescale; `module_dropout` skips the entire adapter for the step — useful as stochastic regularization across the 196 LoRA modules.
 
 ### 3.2 Attaching to the model (monkey-patching)
 
-`networks/lora_modules/base.py:115–118`:
+`BaseLoRAModule.apply_to` (`networks/lora_modules/base.py`):
 
 ```python
 def apply_to(self):
@@ -126,7 +131,7 @@ name = "lora_unet_blocks_{i}_{submodule}_{linear}"
              lora_unet_blocks_27_mlp_layer2
 ```
 
-Filters: `--network_target` regex, `--layer_start`/`--layer_end` (block-index range), `exclude_patterns` / `include_patterns`. These let you constrain plain LoRA to, say, cross-attention only (`*_cross_attn_*`) or just the mid-stack blocks.
+Filters: `--network_target` regex, `--layer_start`/`--layer_end` (block-index range), `exclude_patterns` / `include_patterns` (with `_DEFAULT_EXCLUDE` in `networks/lora_anima/config.py` excluding AdaLN, embedders, and `final_layer` unless overridden by `include_patterns` or `train_adaln = true`). These let you constrain plain LoRA to, say, cross-attention only (`*_cross_attn_*`) or just the mid-stack blocks.
 
 After `apply_to()`, LoRA parameters are the **only** trainable tensors. Everything else is frozen.
 
@@ -134,27 +139,31 @@ After `apply_to()`, LoRA parameters are the **only** trainable tensors. Everythi
 
 ## 4. What gets saved
 
-On checkpoint, each wrapped Linear writes two weights (`networks/lora_save.py`):
+At runtime, self-attention uses a fused `qkv_proj` (`[6144, 2048]`) and cross-attention uses a fused `kv_proj` (`[4096, 1024]`). On checkpoint write (`networks/lora_save.py` via `networks/attn_fuse.py`), fused attention projections are **defused (split)** into per-component `q_proj`, `k_proj`, `v_proj` keys (and re-fused symmetrically on load in `networks/lora_anima/loading.py`):
 
 ```
-lora_unet_blocks_0_self_attn_qkv_proj.lora_down.weight    [r, 2048]
-lora_unet_blocks_0_self_attn_qkv_proj.lora_up.weight      [6144, r]
-lora_unet_blocks_0_self_attn_qkv_proj.alpha               ()          # for s = α/r
+lora_unet_blocks_0_self_attn_q_proj.lora_down.weight    [r, 2048]
+lora_unet_blocks_0_self_attn_q_proj.lora_up.weight      [2048, r]
+lora_unet_blocks_0_self_attn_q_proj.alpha               ()          # for s = α/r
+lora_unet_blocks_0_self_attn_k_proj.lora_down.weight    [r, 2048]
+lora_unet_blocks_0_self_attn_k_proj.lora_up.weight      [2048, r]
+lora_unet_blocks_0_self_attn_v_proj.lora_down.weight    [r, 2048]
+lora_unet_blocks_0_self_attn_v_proj.lora_up.weight      [2048, r]
 ...
 ```
 
-A plain LoRA `.safetensors` is just a flat dict of these pairs plus scalars. Because $\alpha$ is stored per-module, loading can reconstruct $s$ without knowing the training recipe. If channel rebalancing was enabled, an extra `inv_scale` buffer rides along; inference absorbs it back into `lora_down` before merging (`lora.py:141–144`).
+A plain LoRA `.safetensors` is just a flat dict of these pairs plus scalars. Because $\alpha$ is stored per-module, loading can reconstruct $s$ without knowing the training recipe. If channel rebalancing was enabled, an extra `inv_scale` buffer rides along; inference absorbs it back into `lora_down` before merging (`networks/lora_modules/lora.py`).
 
 ### ComfyUI-friendly by default
 
-The `lora_unet_` prefix is not arbitrary — it is the **kohya-ss LoRA convention** that ComfyUI's built-in `LoraLoader` node recognizes natively. No custom node, no conversion step: drop a plain-LoRA `.safetensors` into `ComfyUI/models/loras/` and it loads. The prefix is literally commented as such in `networks/lora_anima/network.py:54` (`LORA_PREFIX_ANIMA = "lora_unet"  # ComfyUI compatible`).
+The `lora_unet_` prefix and unfused `q_proj`/`k_proj`/`v_proj` layout follow the **kohya-ss / ComfyUI LoRA convention** that ComfyUI's built-in `LoraLoader` node recognizes natively. No custom node, no conversion step: drop a plain-LoRA `.safetensors` into `ComfyUI/models/loras/` and it loads (`LORA_PREFIX_ANIMA = "lora_unet"` in `networks/lora_anima/network.py`).
 
 The loader maps keys onto ComfyUI's DiT state dict by stripping `lora_unet_` and swapping underscores back to dots:
 
 ```
-lora_unet_blocks_0_self_attn_qkv_proj.lora_down.weight
+lora_unet_blocks_0_self_attn_q_proj.lora_down.weight
         ↓  (strip prefix, "_" → ".")
-diffusion_model.blocks.0.self_attn.qkv_proj.weight   (target in the ComfyUI model)
+diffusion_model.blocks.0.self_attn.q_proj.weight   (target in the ComfyUI model)
 ```
 
 For the stock ComfyUI LoRA path no conversion is needed. This is also why OrthoLoRA's save pipeline converts its native `S_p` / `S_q` / `λ` / `P_basis` / `Q_basis` back to `lora_up.weight` / `lora_down.weight` / `alpha` on write (see `ortholora.md` §7) — fitting this key schema is what lets it ride the stock loader for free.
@@ -169,7 +178,7 @@ $$
 W_\text{merged}\ =\ W_0\ +\ m \cdot s \cdot B A
 $$
 
-(`lora.py:147`). After merging, the forward is `org_forward` only — LoRA becomes a no-op. `scripts/merge_to_dit.py` uses exactly this path to produce a standalone ComfyUI-compatible DiT checkpoint.
+(`networks/lora_modules/lora.py`). After merging, the forward is `org_forward` only — LoRA becomes a no-op. `python tasks.py merge` (`scripts/merge_to_dit.py`) uses this path to produce a standalone ComfyUI-compatible DiT checkpoint.
 
 ---
 
@@ -177,7 +186,7 @@ $$
 
 Everything plain LoRA does comes down to four facts:
 
-1. The DiT is a stack of `Block`s whose actual compute is a dozen or so `Linear`s each. LoRA attaches to those.
+1. Each DiT `Block` runs 7 default-targeted attention + MLP `Linear`s (196 modules across 28 blocks when `train_adaln = false`). LoRA attaches to those.
 2. The patch is **per-Linear, monkey-patched `forward`** — no model changes.
 3. The delta is $m \cdot (\alpha/r) \cdot BAx$ with $B$ starting at zero, so training begins from an exact copy of the pretrained model.
 4. The whole adapter is ~0.1% of the parameters but sits at exactly the points in the velocity field $v_\theta(x_t, t, c)$ that matter for steering generation.

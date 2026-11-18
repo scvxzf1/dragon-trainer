@@ -1,5 +1,6 @@
 # Qwen Image 2.1 编辑 LoRA 1024 双图采样性能实测
 
+状态：研究记录 / 阶段快照
 日期：2026-10-03。结果：正常完成，进程退出 0，输出两张 1024×1024 PNG，latent finite。
 
 使用此前训练的 step400 LoRA（严格加载全部键通过），CMP 90HX 10 GiB，BF16、torch attention、swap24/slab、32块 Inductor dynamic compile、方案 B，关闭 DiT K/V 缓存。两条独立单参考图编辑分别生成两张结果，不是同一次生成输入两个参考图。Euler28、CFG1、seed42/43，保持此前 heavy-paint 提示词。a-2 原图是输入，b-2 仅在验收对照图中展示，没有输入采样。
