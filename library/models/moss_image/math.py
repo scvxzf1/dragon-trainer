@@ -127,22 +127,25 @@ class _Block(nn.Module):
         self.proj['ffn_down'] = nn.Linear(ffn_dim, dim, bias=False)
 
     def forward(self, x, rope, modulation, spans=None):
-        if isinstance(x, tuple):
-            return tuple(
-                (
-                    checkpoint(
-                        self._forward,
-                        x_i,
-                        r_i,
-                        modulation[i : i + 1],
-                        use_reentrant=False,
-                    )
-                    if self.gradient_checkpointing and torch.is_grad_enabled()
-                    else self._forward(x_i, r_i, modulation[i : i + 1])
-                )
-                for i, (x_i, r_i) in enumerate(zip(x, rope))
-            )
         if spans is not None:
+            if isinstance(rope, tuple):
+                return torch.cat(
+                    [
+                        (
+                            checkpoint(
+                                self._forward,
+                                x[:, s:e],
+                                r_i,
+                                modulation[i : i + 1],
+                                use_reentrant=False,
+                            )
+                            if self.gradient_checkpointing and torch.is_grad_enabled()
+                            else self._forward(x[:, s:e], r_i, modulation[i : i + 1])
+                        )
+                        for i, ((s, e), r_i) in enumerate(zip(spans, rope))
+                    ],
+                    dim=1,
+                )
             if self.gradient_checkpointing and torch.is_grad_enabled():
                 return checkpoint(
                     self._forward_packed, x, rope, modulation, spans, use_reentrant=False
@@ -229,19 +232,26 @@ def run_moss_block_sequence(
         return [x]
 
     if samples[0].device.type != "cuda":
-        # Preserve bitwise-exact fp32 CPU per-sample numerics while invoking
-        # ``layer(...)`` once per layer so ModelOffloader's full_backward_hook
-        # wraps the entire batch as a single unit.
-        cur_tuple = tuple(samples)
+        # Pass a single top-level Tensor ``x_cat`` into ``layer(...)`` so PyTorch's
+        # BackwardHook sees a grad-requiring Tensor arg (true post-backward firing)
+        # while slicing ``x[:, s:e]`` inside ``forward`` for bitwise-exact CPU math.
+        spans_cpu: list[tuple[int, int]] = []
+        cursor = 0
+        for sample in samples:
+            next_cursor = cursor + int(sample.shape[1])
+            spans_cpu.append((cursor, next_cursor))
+            cursor = next_cursor
+        span_tuple = tuple(spans_cpu)
         rope_tuple = tuple(ropes)
+        x_cat = torch.cat(samples, dim=1)
         for layer_index, layer in enumerate(layers):
             if blocks_to_swap:
                 offloader.wait_for_block(layer_index)
             if layer_index not in skip_layers:
-                cur_tuple = layer(cur_tuple, rope_tuple, modulation)
+                x_cat = layer(x_cat, rope_tuple, modulation, spans=span_tuple)
             if blocks_to_swap:
                 offloader.submit_move_blocks(layers, layer_index)
-        return list(cur_tuple)
+        return [x_cat[:, start:end] for start, end in span_tuple]
 
     first_len = int(samples[0].shape[1])
     if all(int(sample.shape[1]) == first_len for sample in samples):

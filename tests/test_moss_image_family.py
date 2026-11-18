@@ -280,24 +280,46 @@ def test_cfg_swap_ring_keeps_both_branches_complete(tiny_model, skip):
 
 
 def test_batch_gt_1_block_swap_ring_and_compat_contract(tiny_model):
+    import warnings
     from library.training.compat_matrix import check_training_compat
 
+    tiny_model = deepcopy(tiny_model).requires_grad_(False)
     offloader = _LogicalSwap(len(tiny_model.layers))
     tiny_model.offloader, tiny_model.blocks_to_swap = offloader, 1
     tiny_model.enable_gradient_checkpointing()
     offloader.prepare_block_devices_before_forward(tiny_model.layers)
 
-    z = torch.randn(2, 128, 2, 2, requires_grad=True)
-    text = torch.randn(2, 4, 8)
-    mask = torch.tensor([[1, 1, 0, 0], [0, 1, 1, 1]], dtype=torch.bool)
-    times = torch.tensor([250.0, 750.0])
+    bwd_events: list[tuple[int, bool]] = []
+    handles = [
+        layer.register_full_backward_hook(
+            lambda _mod, grad_in, _grad_out, idx=i: bwd_events.append(
+                (idx, bool(grad_in and grad_in[0] is not None))
+            )
+        )
+        for i, layer in enumerate(tiny_model.layers)
+    ]
+    try:
+        z = torch.randn(2, 128, 2, 2, requires_grad=True)
+        text = torch.randn(2, 4, 8)
+        mask = torch.tensor([[1, 1, 0, 0], [0, 1, 1, 1]], dtype=torch.bool)
+        times = torch.tensor([250.0, 750.0])
 
-    out = tiny_model(z, times, text, mask).sample
-    out.square().mean().backward()
+        with warnings.catch_warnings(record=True) as caught_warns:
+            warnings.simplefilter("always")
+            out = tiny_model(z, times, text, mask).sample
+            out.square().mean().backward()
+        assert not [
+            w for w in caught_warns if "Full backward hook is firing" in str(w.message)
+        ]
+    finally:
+        for h in handles:
+            h.remove()
+
     assert out.shape == (2, 128, 2, 2)
     assert z.grad is not None and torch.isfinite(z.grad).all()
-    # Layer-outer execution visits each block once for the whole batch=2 forward.
+    # Layer-outer execution visits each block once in forward and post-backward.
     assert offloader.events == list(range(len(tiny_model.layers)))
+    assert bwd_events == [(i, True) for i in reversed(range(len(tiny_model.layers)))]
 
     report = check_training_compat(
         {
