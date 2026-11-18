@@ -29,6 +29,33 @@ def with_runtime_caption_dropout_rate(text_encoder_outputs, rate: float):
     return outputs
 
 
+def _as_float32_tensor(array_or_tensor) -> torch.Tensor:
+    if isinstance(array_or_tensor, torch.Tensor):
+        return array_or_tensor.to(dtype=torch.float32)
+    arr = np.asarray(array_or_tensor)
+    if arr.dtype != np.float32 or not arr.flags.c_contiguous or not arr.flags.writeable:
+        arr = np.array(arr, dtype=np.float32, copy=True, order="C")
+    return torch.from_numpy(arr)
+
+
+def _maybe_downsample_mask_to_latent(
+    alpha_mask: torch.Tensor | None,
+    latents: torch.Tensor | None,
+    image: torch.Tensor | None,
+) -> torch.Tensor | None:
+    """Pre-downsample pixel masks in CPU workers when training on cached latents."""
+    if alpha_mask is None or latents is None or image is not None:
+        return alpha_mask
+    lat_hw = tuple(int(d) for d in latents.shape[-2:])
+    if tuple(int(d) for d in alpha_mask.shape[-2:]) == lat_hw:
+        return alpha_mask
+    return (
+        torch.nn.functional.interpolate(
+            alpha_mask.unsqueeze(0).unsqueeze(0), size=lat_hw, mode="area"
+        )
+        .squeeze(0)
+        .squeeze(0)
+    )
 def load_visual_sample(dataset, image_info, subset, flipped: bool):
     """Load image/latents/alpha/crop metadata for one training sample."""
     if image_info.latents is not None:
@@ -61,9 +88,9 @@ def load_visual_sample(dataset, image_info, subset, flipped: bool):
                 None if alpha_mask is None else alpha_mask[:, ::-1].copy()
             )
             del flipped_latents
-        latents = torch.FloatTensor(latents)
+        latents = _as_float32_tensor(latents)
         if alpha_mask is not None:
-            alpha_mask = torch.FloatTensor(alpha_mask)
+            alpha_mask = _as_float32_tensor(alpha_mask)
 
         if dataset.force_load_images_for_ip:
             image = dataset._load_image_at_bucket(subset, image_info, flipped)
@@ -133,6 +160,8 @@ def load_visual_sample(dataset, image_info, subset, flipped: bool):
         alpha_mask = image_info.preloaded_alpha_mask.float() / 255.0
         if flipped:
             alpha_mask = torch.flip(alpha_mask, [1])
+
+    alpha_mask = _maybe_downsample_mask_to_latent(alpha_mask, latents, image)
 
     target_size = (
         (image.shape[2], image.shape[1])

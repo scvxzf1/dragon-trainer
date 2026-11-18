@@ -126,15 +126,34 @@ def prepare_reference_image(
     return image, np.asarray(image, dtype=np.uint8)
 
 
+_REFERENCE_HASH_STATE_CACHE: dict[tuple[str, int, int], "hashlib._Hash"] = {}
+_REFERENCE_HASH_CACHE_MAX = 4096
+
+
+def _reference_file_hash_prefix(reference_path: str):
+    """Return a clonable SHA-256 state after ``reference_path`` bytes, memoized by ``(abspath, mtime_ns, size)``."""
+    abspath = os.path.abspath(reference_path)
+    st = os.stat(abspath)
+    cache_key = (abspath, int(st.st_mtime_ns), int(st.st_size))
+    cached = _REFERENCE_HASH_STATE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached.copy()
+    file_hash = hashlib.sha256()
+    with open(abspath, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            file_hash.update(chunk)
+    if len(_REFERENCE_HASH_STATE_CACHE) >= _REFERENCE_HASH_CACHE_MAX:
+        _REFERENCE_HASH_STATE_CACHE.pop(next(iter(_REFERENCE_HASH_STATE_CACHE)))
+    _REFERENCE_HASH_STATE_CACHE[cache_key] = file_hash
+    return file_hash.copy()
+
+
 def edit_condition_fingerprint(
     reference_path: str,
     instruction: str,
     target_bucket: tuple[int, int],
 ) -> str:
-    digest = hashlib.sha256()
-    with open(reference_path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
+    digest = _reference_file_hash_prefix(reference_path)
     digest.update(b"\0")
     digest.update(instruction.encode("utf-8"))
     digest.update(b"\0")

@@ -318,7 +318,32 @@ def process_batch_inner(
     if func_loss is not None:
         loss_aux["func_loss"] = func_loss
 
-    composer = build_loss_composer(args, getattr(trainer, "_network", network))
+    net_for_loss = getattr(trainer, "_network", network)
+    composer_sig = (
+        id(args),
+        id(net_for_loss),
+        float(getattr(args, "vr_loss_weight", 0.0) or 0.0),
+        float(getattr(args, "velocity_direction_loss_weight", 0.0) or 0.0),
+        float(getattr(args, "prior_preservation_weight", 0.0) or 0.0),
+        float(getattr(args, "inverted_mask_prior_weight", 0.0) or 0.0),
+        float(getattr(args, "functional_loss_weight", 0.0) or 0.0),
+        float(getattr(args, "multiscale_loss_weight", 0.0) or 0.0),
+        float(getattr(net_for_loss, "_ortho_reg_weight", 0.0) or 0.0),
+        float(getattr(net_for_loss, "_balance_loss_weight", 0.0) or 0.0),
+        bool(getattr(net_for_loss, "_use_chimera_hydra", False)),
+        float(getattr(net_for_loss, "fecl_weight", 0.0) or 0.0),
+        getattr(getattr(net_for_loss, "cfg", None), "use_moe_style", False),
+        float(getattr(net_for_loss, "_contrastive_target_weight", 0.0) or 0.0),
+    )
+    cached_composer = getattr(trainer, "_cached_loss_composer", None)
+    if cached_composer is not None and cached_composer[0] == composer_sig:
+        composer = cached_composer[1]
+    else:
+        composer = build_loss_composer(args, net_for_loss)
+        try:
+            trainer._cached_loss_composer = (composer_sig, composer)
+        except Exception:
+            pass
 
     def _build_loss_ctx(aux: dict) -> LossContext:
         return LossContext(

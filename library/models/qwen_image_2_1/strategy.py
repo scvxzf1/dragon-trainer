@@ -201,8 +201,23 @@ def encode_edit_prompt(
 def _expected_edit_reference_latent_shape(info) -> tuple[int, int, int]:
     if not info.reference_image_path:
         raise ValueError("Qwen edit reference image path is missing")
-    with Image.open(info.reference_image_path) as reference:
-        width, height = reference_size_for_bucket(reference.size, info.bucket_reso)
+    bucket_tuple = tuple(int(v) for v in info.bucket_reso)
+    cached_key = getattr(info, "_edit_reference_size_key", None)
+    cached_size = getattr(info, "edit_reference_size", None)
+    if (
+        cached_size is not None
+        and len(cached_size) == 2
+        and (cached_key is None or cached_key == (info.reference_image_path, bucket_tuple))
+    ):
+        width, height = int(cached_size[0]), int(cached_size[1])
+    else:
+        with Image.open(info.reference_image_path) as reference:
+            width, height = reference_size_for_bucket(reference.size, bucket_tuple)
+        try:
+            info.edit_reference_size = (width, height)
+            info._edit_reference_size_key = (info.reference_image_path, bucket_tuple)
+        except Exception:
+            pass
     space = QWEN_IMAGE_21_F16C64_P1
     stride = space.vae_spatial_compression
     if width % stride or height % stride:
@@ -480,6 +495,7 @@ class QwenImage21LatentCache(anima_strategy.AnimaLatentsCachingStrategy):
         if not info.reference_image_path:
             return None
         in_memory_latent = getattr(info, "edit_reference_latent", None)
+        verified_disk_key = None
         if in_memory_latent is not None:
             latent = in_memory_latent
             path = info.reference_image_path
@@ -487,6 +503,16 @@ class QwenImage21LatentCache(anima_strategy.AnimaLatentsCachingStrategy):
             path = info.edit_reference_latent_path or self.get_edit_reference_latent_path(
                 info, subset
             )
+            if not getattr(info, "edit_reference_latent_path", None):
+                try:
+                    info.edit_reference_latent_path = path
+                except Exception:
+                    pass
+            try:
+                st = os.stat(path)
+                verified_disk_key = (path, int(st.st_mtime_ns), int(st.st_size))
+            except OSError:
+                verified_disk_key = None
             with safe_open(path, framework="pt") as handle:
                 metadata = handle.metadata() or {}
                 if metadata.get("edit_cache_schema") != self.EDIT_LATENT_CACHE_SCHEMA:
@@ -494,6 +520,15 @@ class QwenImage21LatentCache(anima_strategy.AnimaLatentsCachingStrategy):
                 latent = handle.get_tensor("latent")
         if tuple(latent.shape) != _expected_edit_reference_latent_shape(info):
             raise ValueError(f"Qwen edit reference latent shape mismatch: {path}")
-        if not torch.isfinite(latent).all():
-            raise ValueError(f"Qwen edit reference latent cache contains non-finite values: {path}")
+        if (
+            verified_disk_key is None
+            or getattr(info, "_edit_ref_latent_verified_key", None) != verified_disk_key
+        ):
+            if not torch.isfinite(latent).all():
+                raise ValueError(f"Qwen edit reference latent cache contains non-finite values: {path}")
+            if verified_disk_key is not None:
+                try:
+                    info._edit_ref_latent_verified_key = verified_disk_key
+                except Exception:
+                    pass
         return latent.float()

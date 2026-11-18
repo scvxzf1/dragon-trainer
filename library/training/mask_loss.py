@@ -16,15 +16,25 @@ import torch.nn.functional as F
 def mask_image_for_loss(
     loss: torch.Tensor, batch: dict[str, Any]
 ) -> torch.Tensor | None:
-    """Return a broadcastable ``[B, 1, H, W]`` mask, if the batch has one."""
+    """Return a broadcastable ``[B, 1, H, W]`` (or 5D ``[B, 1, T, H, W]``) mask, if present."""
+    target_hw = tuple(int(d) for d in loss.shape[-2:])
     if "conditioning_images" in batch:
-        mask = batch["conditioning_images"].to(dtype=loss.dtype)[:, 0].unsqueeze(1)
-        return F.interpolate(mask / 2 + 0.5, size=loss.shape[2:], mode="area")
+        cond = batch["conditioning_images"].to(
+            device=loss.device, dtype=loss.dtype, non_blocking=True
+        )[:, 0].unsqueeze(1)
+        cond = cond * 0.5 + 0.5
+        if tuple(int(d) for d in cond.shape[-2:]) != target_hw:
+            cond = F.interpolate(cond, size=target_hw, mode="area")
+        return cond.unsqueeze(2) if loss.ndim == 5 else cond
     alpha_masks = batch.get("alpha_masks")
     if alpha_masks is None:
         return None
-    mask = alpha_masks.to(dtype=loss.dtype).unsqueeze(1)
-    return F.interpolate(mask, size=loss.shape[2:], mode="area")
+    mask = alpha_masks.to(
+        device=loss.device, dtype=loss.dtype, non_blocking=True
+    ).unsqueeze(1)
+    if tuple(int(d) for d in mask.shape[-2:]) != target_hw:
+        mask = F.interpolate(mask, size=target_hw, mode="area")
+    return mask.unsqueeze(2) if loss.ndim == 5 else mask
 
 
 def apply_mask(loss: torch.Tensor, batch: dict[str, Any]) -> torch.Tensor:
@@ -46,18 +56,18 @@ def reduce_masked_loss(
     only over the soft mask and falls back to the unmasked mean for an empty
     mask, preventing NaNs and making malformed masks observable by callers.
     """
+    reduce_dims = tuple(range(1, loss.ndim))
     mask = mask_image_for_loss(loss, batch)
-    full_mean = loss.mean(dim=tuple(range(1, loss.ndim)))
     if mask is None:
-        return full_mean
+        return loss.mean(dim=reduce_dims)
     expanded_mask = mask.expand_as(loss)
     masked = loss * expanded_mask
     if normalize == "none":
-        return masked.mean(dim=tuple(range(1, loss.ndim)))
+        return masked.mean(dim=reduce_dims)
     if normalize != "foreground_mean":
         raise ValueError(f"unsupported mask loss normalization: {normalize!r}")
 
-    reduce_dims = tuple(range(1, loss.ndim))
+    full_mean = loss.mean(dim=reduce_dims)
     area = expanded_mask.sum(dim=reduce_dims)
     valid = area > 1e-6
     denom = area.clamp_min(1e-6)

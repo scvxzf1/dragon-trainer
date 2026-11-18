@@ -180,10 +180,16 @@ def apply_inverted_masked_loss(loss, batch) -> torch.FloatTensor:
     if "alpha_masks" not in batch or batch["alpha_masks"] is None:
         return loss.new_zeros(loss.shape)
 
-    mask_image = batch["alpha_masks"].to(dtype=loss.dtype).unsqueeze(1)
-    mask_image = torch.nn.functional.interpolate(
-        mask_image, size=loss.shape[2:], mode="area"
-    )
+    target_hw = tuple(int(d) for d in loss.shape[-2:])
+    mask_image = batch["alpha_masks"].to(
+        device=loss.device, dtype=loss.dtype, non_blocking=True
+    ).unsqueeze(1)
+    if tuple(int(d) for d in mask_image.shape[-2:]) != target_hw:
+        mask_image = torch.nn.functional.interpolate(
+            mask_image, size=target_hw, mode="area"
+        )
+    if loss.ndim == 5:
+        mask_image = mask_image.unsqueeze(2)
     return loss * (1.0 - mask_image)
 
 

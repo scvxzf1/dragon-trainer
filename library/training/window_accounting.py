@@ -113,7 +113,7 @@ class WindowBuffer:
         scalar: Optional[float] = None,
     ) -> float:
         value = float(scalar) if scalar is not None else loss_value(loss)
-        self.batches.append(batch)
+        self.batches.append(batch if WINDOW_MAX_REPLAYS > 0 else None)
         self.losses.append(value)
         self.slots.append((int(epoch), int(step)))
         return value
@@ -132,7 +132,7 @@ class WindowBuffer:
             self.add(batch, detached, epoch=epoch, step=step)
             return
         idx = len(self.losses)
-        self.batches.append(batch)
+        self.batches.append(batch if WINDOW_MAX_REPLAYS > 0 else None)
         self.losses.append(0.0)
         self.slots.append((int(epoch), int(step)))
         self._deferred_losses.append((idx, detached))

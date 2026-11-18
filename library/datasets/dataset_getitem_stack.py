@@ -33,32 +33,14 @@ def none_or_stack_elements(tensors_list, converter):
             result.append(torch.stack([converter(x) for x in tensors]))
         else:
             tensors = [converter(x) for x in tensors]
-            if tensors[0].ndim == 1:
-                result.append(
-                    torch.stack(
-                        [
-                            (
-                                torch.nn.functional.pad(
-                                    x, (0, max_len - x.shape[0])
-                                )
-                            )
-                            for x in tensors
-                        ]
-                    )
-                )
-            else:
-                result.append(
-                    torch.stack(
-                        [
-                            (
-                                torch.nn.functional.pad(
-                                    x, (0, 0, 0, max_len - x.shape[0])
-                                )
-                            )
-                            for x in tensors
-                        ]
-                    )
-                )
+            out = torch.zeros(
+                (len(tensors), max_len, *tensors[0].shape[1:]),
+                dtype=tensors[0].dtype,
+                device=tensors[0].device,
+            )
+            for row_idx, x in enumerate(tensors):
+                out[row_idx, : x.shape[0]] = x
+            result.append(out)
     return result
 
 
@@ -91,7 +73,7 @@ def assemble_training_example(
 
     example = {}
     example["custom_attributes"] = custom_attributes
-    example["loss_weights"] = torch.FloatTensor(loss_weights)
+    example["loss_weights"] = torch.tensor(loss_weights, dtype=torch.float32)
     example["text_encoder_outputs_list"] = none_or_stack_elements(
         text_encoder_outputs_list,
         lambda x: (
@@ -106,21 +88,19 @@ def assemble_training_example(
     if all(none_or_not):
         example["alpha_masks"] = None
     elif any(none_or_not):
+        existing_hw = next(
+            (tuple(int(d) for d in m.shape[-2:]) for m in alpha_mask_list if m is not None),
+            None,
+        )
         for i in range(len(alpha_mask_list)):
             if alpha_mask_list[i] is None:
-                if images[i] is not None:
-                    alpha_mask_list[i] = torch.ones(
-                        (images[i].shape[1], images[i].shape[2]),
-                        dtype=torch.float32,
-                    )
+                if existing_hw is not None:
+                    mask_hw = existing_hw
+                elif images[i] is not None:
+                    mask_hw = (images[i].shape[1], images[i].shape[2])
                 else:
-                    alpha_mask_list[i] = torch.ones(
-                        (
-                            latents_list[i].shape[1] * 8,
-                            latents_list[i].shape[2] * 8,
-                        ),
-                        dtype=torch.float32,
-                    )
+                    mask_hw = tuple(int(d) for d in latents_list[i].shape[-2:])
+                alpha_mask_list[i] = torch.ones(mask_hw, dtype=torch.float32)
         example["alpha_masks"] = torch.stack(alpha_mask_list)
     else:
         example["alpha_masks"] = torch.stack(alpha_mask_list)
@@ -153,19 +133,13 @@ def assemble_training_example(
         example["qwen_edit_reference_latents"] = None
     example["captions"] = captions
 
-    example["original_sizes_hw"] = torch.stack(
-        [torch.LongTensor(x) for x in original_sizes_hw]
-    )
-    example["crop_top_lefts"] = torch.stack(
-        [torch.LongTensor(x) for x in crop_top_lefts]
-    )
-    example["target_sizes_hw"] = torch.stack(
-        [torch.LongTensor(x) for x in target_sizes_hw]
-    )
+    example["original_sizes_hw"] = torch.tensor(original_sizes_hw, dtype=torch.long)
+    example["crop_top_lefts"] = torch.tensor(crop_top_lefts, dtype=torch.long)
+    example["target_sizes_hw"] = torch.tensor(target_sizes_hw, dtype=torch.long)
     example["flippeds"] = flippeds
 
-    example["network_multipliers"] = torch.FloatTensor(
-        [dataset.network_multiplier] * len(captions)
+    example["network_multipliers"] = torch.full(
+        (len(captions),), float(dataset.network_multiplier), dtype=torch.float32
     )
 
     # Inversion runs for functional-loss supervision (postfix-func).

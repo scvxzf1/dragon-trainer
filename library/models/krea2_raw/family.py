@@ -40,6 +40,36 @@ class Krea2TextEmbedding:
     mask: Tensor
 
 
+_KREA2_POS_CACHE: dict[
+    tuple[int, int, int, int, torch.device], tuple[Tensor, Tensor]
+] = {}
+_KREA2_POS_CACHE_MAX = 16
+
+
+def _cached_krea2_pos_and_imgmask(
+    b: int,
+    h_: int,
+    w_: int,
+    txtlen: int,
+    device: torch.device,
+) -> tuple[Tensor, Tensor]:
+    key = (b, h_, w_, txtlen, device)
+    cached = _KREA2_POS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    imgids = torch.zeros((h_, w_, 3), device=device)
+    imgids[..., 1] = torch.arange(h_, device=device)[:, None]
+    imgids[..., 2] = torch.arange(w_, device=device)[None, :]
+    imgpos = repeat(imgids, "h w three -> b (h w) three", b=b, three=3)
+    imgmask = torch.ones(b, h_ * w_, device=device, dtype=torch.bool)
+    txtpos = torch.zeros(b, txtlen, 3, device=device)
+    pos = torch.cat((txtpos, imgpos), dim=1)
+    if len(_KREA2_POS_CACHE) >= _KREA2_POS_CACHE_MAX:
+        _KREA2_POS_CACHE.pop(next(iter(_KREA2_POS_CACHE)))
+    _KREA2_POS_CACHE[key] = (pos, imgmask)
+    return pos, imgmask
+
+
 def prepare_img_tokens(
     img: Tensor,
     txtlen: int,
@@ -57,15 +87,9 @@ def prepare_img_tokens(
     """
     b, _, h, w = img.shape
     h_, w_ = h // patch, w // patch
-    imgids = torch.zeros((h_, w_, 3), device=img.device)
-    imgids[..., 1] = torch.arange(h_, device=img.device)[:, None]
-    imgids[..., 2] = torch.arange(w_, device=img.device)[None, :]
-    imgpos = repeat(imgids, "h w three -> b (h w) three", b=b, three=3)
-    imgmask = torch.ones(b, h_ * w_, device=img.device, dtype=torch.bool)
+    pos, imgmask = _cached_krea2_pos_and_imgmask(b, h_, w_, txtlen, img.device)
     img = rearrange(img, "b c (h ph) (w pw) -> b (h w) (c ph pw)", ph=patch, pw=patch)
-    txtpos = torch.zeros(b, txtlen, 3, device=img.device)
     mask = torch.cat((txtmask, imgmask), dim=1)
-    pos = torch.cat((txtpos, imgpos), dim=1)
     return img, pos, mask
 
 
