@@ -56,6 +56,19 @@ def get_schema_load_status() -> dict[str, Any]:
     }
 
 
+def _build_schema_inputs() -> tuple[Any, dict[str, config_schema.ConfigKey]]:
+    """Build CLI parser + network extras without importing ``train``."""
+    from library.training.cli_args import setup_parser
+    from networks.registry import all_network_kwargs
+
+    parser = setup_parser()
+    extras = {
+        key: config_schema.ConfigKey(name=key, type="str", source="network_module")
+        for key in all_network_kwargs()
+    }
+    return parser, extras
+
+
 def ensure_schema_populated() -> dict[str, config_schema.ConfigKey]:
     """Populate CONFIG_SCHEMA if empty; record load failures for observability."""
     global _SCHEMA_LOAD_ATTEMPTED, _SCHEMA_LOAD_OK, _SCHEMA_LOAD_ERROR, _SCHEMA_KEY_COUNT
@@ -69,14 +82,7 @@ def ensure_schema_populated() -> dict[str, config_schema.ConfigKey]:
 
     _SCHEMA_LOAD_ATTEMPTED = True
     try:
-        import train as train_mod
-
-        parser = train_mod.setup_parser()
-        extras = (
-            train_mod.build_network_extras()
-            if hasattr(train_mod, "build_network_extras")
-            else None
-        )
+        parser, extras = _build_schema_inputs()
         config_schema.populate_schema(parser, extras=extras)
     except Exception as exc:
         _SCHEMA_LOAD_OK = False

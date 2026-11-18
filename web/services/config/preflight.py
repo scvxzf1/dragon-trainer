@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from library.config.normalize import parse_bool
 from library.models.family_registry import normalize_registered_family
 from web.services.config.preflight_tasks import task_check_config, training_task_summary
 
@@ -138,17 +139,10 @@ __all__ = [
 def _validate_lokr_config(cfg: dict) -> list[str]:
     """Extra LoKR rules that are not pure argparse choices."""
     errors: list[str] = []
-    use_lokr = cfg.get("use_lokr")
-    if isinstance(use_lokr, str):
-        use_lokr = use_lokr.strip().lower() in {"1", "true", "yes", "on"}
-    if not use_lokr:
+    if not parse_bool(cfg.get("use_lokr"), default=False):
         return errors
-    full_factor = cfg.get("lokr_full_factor")
-    if isinstance(full_factor, str):
-        full_factor = full_factor.strip().lower() in {"1", "true", "yes", "on"}
-    decompose_w2 = cfg.get("lokr_decompose_w2")
-    if isinstance(decompose_w2, str):
-        decompose_w2 = decompose_w2.strip().lower() in {"1", "true", "yes", "on"}
+    full_factor = parse_bool(cfg.get("lokr_full_factor"), default=False)
+    decompose_w2 = parse_bool(cfg.get("lokr_decompose_w2"), default=False)
     if full_factor and decompose_w2:
         errors.append("lokr_full_factor=true conflicts with lokr_decompose_w2=true")
     network_dim = cfg.get("network_dim")
@@ -156,9 +150,7 @@ def _validate_lokr_config(cfg: dict) -> list[str]:
         network_dim_i = int(network_dim) if network_dim is not None else None
     except (TypeError, ValueError):
         network_dim_i = None
-    allow_legacy = cfg.get("lokr_allow_legacy_dim")
-    if isinstance(allow_legacy, str):
-        allow_legacy = allow_legacy.strip().lower() in {"1", "true", "yes", "on"}
+    allow_legacy = parse_bool(cfg.get("lokr_allow_legacy_dim"), default=False)
     if network_dim_i == 114514 and not allow_legacy:
         errors.append(
             "LoKR network_dim=114514 is a deprecated full-factor sentinel "
@@ -522,9 +514,11 @@ def preflight_training_config(
     ):
         check_file("dataset_config", "数据集配置", (".toml",))
 
-    _check_dataset_source_paths(cfg, add)
-    _check_dataset_bucket_settings(cfg, add)
-    _check_dataset_paths(cfg, add, check_runtime_dirs=runtime_config)
+    _check_dataset_source_paths(cfg, add, dataset_rows=dataset_rows)
+    _check_dataset_bucket_settings(cfg, add, dataset_rows=dataset_rows)
+    _check_dataset_paths(
+        cfg, add, check_runtime_dirs=runtime_config, dataset_rows=dataset_rows
+    )
     _check_training_sample_config(cfg, add)
     check_stage_schedule(
         cfg,
@@ -540,8 +534,8 @@ def preflight_training_config(
     if not runtime_config:
         _check_web_preprocess_environment(add)
     if runtime_config:
-        _check_training_images(cfg, add)
-        _check_cache_sidecars(cfg, add)
+        _check_training_images(cfg, add, dataset_rows=dataset_rows)
+        _check_cache_sidecars(cfg, add, dataset_rows=dataset_rows)
 
     from web.services.config.preflight_pp import cached_runtime_vae_is_unused
 

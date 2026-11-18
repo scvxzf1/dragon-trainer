@@ -143,6 +143,7 @@ def _patch_config_service_paths(monkeypatch, root: Path) -> None:
     from web.services.config import raw_files as raw_files_impl
 
     configs = root / "configs"
+    monkeypatch.setenv("ANIMA_WEBUI_SETTINGS_FILE", str(configs / "web-ui-settings.toml"))
     for name, value in (
         ("ROOT", root),
         ("CONFIGS_DIR", configs),

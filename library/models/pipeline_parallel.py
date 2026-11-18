@@ -39,15 +39,9 @@ def _bool(value: Any, default: bool, *, field: str) -> bool:
         return value
     if value is None:
         return default
-    if isinstance(value, int) and value in {0, 1}:
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    raise ValueError(f"{field} must be a boolean, got {value!r}")
+    from library.config.normalize import parse_bool
+
+    return parse_bool(value, default=default, strict=True, field=field)
 
 
 def _int(value: Any, default: int, *, field: str) -> int:

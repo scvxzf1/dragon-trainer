@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import toml
 
+from library.env import expand_env_vars_in_obj
 from web.services import config_service
+
+LOGGER = logging.getLogger(__name__)
 from web.services.training.common import _positive_int_or_none
 from web.services.training.runtime_paths import (
     _display_settings_path,
@@ -82,9 +86,12 @@ def _load_config_file_config(config_file: str) -> dict[str, Any]:
     if path is None or not _path_exists(path):
         return {}
     try:
-        return toml.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        parsed = toml.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LOGGER.warning("failed to parse training config file %s: %s", path, exc)
         return {}
+    expanded = expand_env_vars_in_obj(parsed)
+    return expanded if isinstance(expanded, dict) else {}
 
 
 def toml_dumps_sorted(data: dict[str, Any]) -> str:

@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 
+from library.config.normalize import parse_bool
 from library.models.family_registry import (
     get_model_family_spec,
     normalize_registered_family,
@@ -17,7 +18,7 @@ def _get(config, key, default=None):
 
 
 def _enabled(value):
-    return str(value or "").strip().lower() in {"true", "1", "yes", "on"}
+    return parse_bool(value, default=False)
 
 
 def dataset_requires_edit(config) -> bool:

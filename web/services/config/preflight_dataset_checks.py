@@ -21,8 +21,13 @@ from web.services.config.preflight_runtime import (
     _resolve_project_path,
 )
 
-def _check_training_images(cfg: dict[str, Any], add) -> None:
-    rows = _dataset_rows_for_estimate(cfg)
+def _check_training_images(
+    cfg: dict[str, Any],
+    add,
+    *,
+    dataset_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    rows = _dataset_rows_for_estimate(cfg) if dataset_rows is None else dataset_rows
     if not rows:
         rows = [{
             "source_dir": str(cfg.get("source_image_dir") or ""),
@@ -92,8 +97,13 @@ def _check_training_images(cfg: dict[str, Any], add) -> None:
         summary = _caption_detection_counts_text(detected_caption_modes, detected_caption_total)
         add("ok", "captions", f"抽样图片均找到标注；{summary}" if summary else "抽样图片均找到标注")
 
-def _check_dataset_source_paths(cfg: dict[str, Any], add) -> None:
-    rows = _dataset_rows_for_estimate(cfg)
+def _check_dataset_source_paths(
+    cfg: dict[str, Any],
+    add,
+    *,
+    dataset_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    rows = _dataset_rows_for_estimate(cfg) if dataset_rows is None else dataset_rows
     if not rows:
         return
     for idx, row in enumerate(rows, start=1):
@@ -169,10 +179,16 @@ def _check_dataset_source_paths(cfg: dict[str, Any], add) -> None:
         else:
             add("ok", key, f"{label} 存在", source)
 
-def _check_dataset_paths(cfg: dict[str, Any], add, *, check_runtime_dirs: bool = True) -> None:
-    rows = _dataset_rows_for_estimate(cfg)
+def _check_dataset_paths(
+    cfg: dict[str, Any],
+    add,
+    *,
+    check_runtime_dirs: bool = True,
+    dataset_rows: list[dict[str, Any]] | None = None,
+) -> None:
     if not check_runtime_dirs:
         return
+    rows = _dataset_rows_for_estimate(cfg) if dataset_rows is None else dataset_rows
     for idx, row in enumerate(rows, start=1):
         image_dir = _resolve_project_path(str(row.get("image_dir") or ""))
         prefix = f"dataset_{idx}"
@@ -188,8 +204,13 @@ def _check_dataset_paths(cfg: dict[str, Any], add, *, check_runtime_dirs: bool =
             elif not cache_dir.is_dir():
                 add("error", f"{prefix}_cache_dir", f"第 {idx} 组缓存路径不是目录", cache_dir)
 
-def _check_cache_sidecars(cfg: dict[str, Any], add) -> None:
-    rows = _dataset_rows_for_estimate(cfg)
+def _check_cache_sidecars(
+    cfg: dict[str, Any],
+    add,
+    *,
+    dataset_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    rows = _dataset_rows_for_estimate(cfg) if dataset_rows is None else dataset_rows
     for idx, row in enumerate(rows, start=1):
         image_dir = _resolve_project_path(
             str(row.get("image_dir") or row.get("source_dir") or "")
@@ -267,14 +288,19 @@ def _check_cache_sidecar_pattern(
             add("warning", item_key, f"第 {idx} 组{missing_message}", cache_dir)
 
 
-def _check_dataset_bucket_settings(cfg: dict[str, Any], add) -> None:
+def _check_dataset_bucket_settings(
+    cfg: dict[str, Any],
+    add,
+    *,
+    dataset_rows: list[dict[str, Any]] | None = None,
+) -> None:
     """Catch impossible preprocess bucket params before launch.
 
     BucketManager asserts max_bucket_reso >= resolution. Leaving the UI default
     max_bucket_reso=1024 while raising resolution (e.g. 1536) used to hard-crash
     resize mid-preprocess.
     """
-    rows = _dataset_rows_for_estimate(cfg)
+    rows = _dataset_rows_for_estimate(cfg) if dataset_rows is None else dataset_rows
     if not rows:
         return
     for idx, row in enumerate(rows, start=1):

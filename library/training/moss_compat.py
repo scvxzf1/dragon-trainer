@@ -3,6 +3,8 @@
 from collections.abc import Mapping
 import logging
 
+from library.config.normalize import is_flag_enabled
+
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +14,7 @@ def _get(config, key, default=None):
 
 
 def _enabled(value):
-    return str(value or "").strip().lower() not in {"", "0", "false", "none", "off", "no"}
+    return is_flag_enabled(value)
 
 
 def _number(value, default=0):

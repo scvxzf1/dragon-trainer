@@ -11,16 +11,10 @@ def test_schema_load_failure_is_observable(monkeypatch):
     monkeypatch.setattr(config_schema, "CONFIG_SCHEMA", {})
     monkeypatch.setattr(config_schema, "get_schema", lambda: config_schema.CONFIG_SCHEMA)
 
-    import builtins
+    def _broken_inputs():
+        raise ImportError("schema parser unavailable for test")
 
-    real_import = builtins.__import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name == "train" or name.startswith("train."):
-            raise ImportError("train unavailable for test")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    monkeypatch.setattr(schema_gate, "_build_schema_inputs", _broken_inputs)
     schema_gate.reset_schema_load_state_for_tests()
 
     status = schema_gate.get_schema_load_status()
@@ -34,7 +28,27 @@ def test_schema_load_failure_is_observable(monkeypatch):
     status_after = schema_gate.get_schema_load_status()
     assert status_after["ok"] is False
     assert status_after["error"]
-    assert "train" in status_after["error"].lower() or "unavailable" in status_after["error"].lower()
+    assert "unavailable" in status_after["error"].lower()
+
+
+def test_ensure_schema_populated_does_not_import_train() -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; "
+        "from web.services.config import schema_gate; "
+        "schema = schema_gate.ensure_schema_populated(); "
+        "assert 'network_dim' in schema and 'use_lokr' in schema; "
+        "assert 'train' not in sys.modules"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
 
 
 def test_nested_dict_and_list_values_are_not_false_errors(monkeypatch):

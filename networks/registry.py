@@ -11,6 +11,8 @@ import logging
 import pkgutil
 from typing import Any, Mapping, Optional, Tuple
 
+from library.config.normalize import parse_bool
+
 from .registry_api import (
     ContinueWeightDetectionContext,
     ModuleCreationContext,
@@ -39,12 +41,7 @@ def all_network_kwargs() -> Tuple[str, ...]:
 
 
 def _parse_bool_flag(kwargs: Mapping[str, Any], key: str) -> bool:
-    v = kwargs.get(key, False)
-    if isinstance(v, bool):
-        return v
-    if v is None:
-        return False
-    return str(v).lower() == "true"
+    return parse_bool(kwargs.get(key, False), default=False)
 
 
 def ensure_builtin_plugins_loaded() -> None:

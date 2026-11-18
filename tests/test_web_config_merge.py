@@ -355,3 +355,33 @@ def test_list_methods_empty_dir_returns_empty(tmp_path: Path, monkeypatch) -> No
     monkeypatch.setattr(config_merge, "CONFIGS_DIR", tmp_path)
 
     assert config_merge.list_methods.__wrapped__() == []
+
+
+def test_web_list_presets_includes_custom_preset_files(tmp_path: Path, monkeypatch) -> None:
+    configs = tmp_path / "configs"
+    (configs / "custom" / "presets").mkdir(parents=True)
+    (configs / "presets.toml").write_text("[default]\nlearning_rate = 1e-4\n", encoding="utf-8")
+    (configs / "custom" / "presets" / "v100_fast.toml").write_text(
+        "learning_rate = 2e-4\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(config_merge, "CONFIGS_DIR", configs)
+    monkeypatch.setattr(config_merge, "PRESETS_FILE", configs / "presets.toml")
+
+    assert config_merge.list_presets.__wrapped__() == ["default", "v100_fast"]
+
+
+def test_parse_bool_unifies_network_registry_flags() -> None:
+    from library.config.normalize import is_flag_enabled, parse_bool
+    from networks.registry import resolve_network_spec
+
+    for raw in (True, 1, "1", "true", "TRUE", " yes ", "on"):
+        assert parse_bool(raw) is True
+    for raw in (False, 0, "0", "false", "no", "off", None, "", "none"):
+        assert parse_bool(raw) is False
+
+    assert is_flag_enabled("shared_A") is True
+    assert is_flag_enabled("off") is False
+
+    assert resolve_network_spec({"use_ortho": "1"}).name == "ortho"
+    assert resolve_network_spec({"use_ortho": "on"}).name == "ortho"
+    assert resolve_network_spec({"dora_wd": 1}).name == "dora"

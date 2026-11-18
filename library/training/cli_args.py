@@ -1901,9 +1901,9 @@ def add_sd_saving_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--save_model_as",
         type=str,
-        default=None,
-        choices=[None, "ckpt", "safetensors", "diffusers", "diffusers_safetensors"],
-        help="format to save the model (default is same to original)",
+        default="safetensors",
+        choices=[None, "ckpt", "pt", "safetensors"],
+        help="format to save the model (default is .safetensors)",
     )
     parser.add_argument(
         "--use_safetensors", action="store_true", help="use safetensors format to save"

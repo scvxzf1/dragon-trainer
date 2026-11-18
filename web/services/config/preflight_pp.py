@@ -29,11 +29,11 @@ def cached_runtime_vae_is_unused(
     """Only a frozen runtime bypasses preprocessing and may skip VAE loading."""
     from types import SimpleNamespace
 
+    from library.config.normalize import is_flag_enabled
     from library.training.train_bootstrap import sample_preview_enabled
     from web.services.config.pp_cache_validation import krea2_runtime_latents_complete
 
-    def enabled(value: Any) -> bool:
-        return str(value or "").lower() not in {"", "0", "false", "none", "off", "no"}
+    enabled = is_flag_enabled
 
     if (
         not runtime_file or dataset_count < 1

@@ -11,7 +11,7 @@ from library.config import schema as _config_schema
 from library.config.io import read_config_from_file
 from library.datasets import base as _datasets_base
 from library.training import verify_command_line_training_args
-from library.training.bootstrap import NETWORK_KWARG_ALLOWLIST
+from networks.registry import all_network_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def build_network_extras() -> dict[str, _config_schema.ConfigKey]:
     return {
         k: _config_schema.ConfigKey(name=k, type="str", source="network_module")
-        for k in NETWORK_KWARG_ALLOWLIST
+        for k in all_network_kwargs()
     }
 
 

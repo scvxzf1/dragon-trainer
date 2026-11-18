@@ -208,10 +208,16 @@ def list_all_variants() -> list[str]:
 
 
 def list_presets() -> list[str]:
-    if not PRESETS_FILE.exists():
-        return []
-    data = toml.loads(PRESETS_FILE.read_text(encoding="utf-8"))
-    return sorted(k for k, v in data.items() if isinstance(v, dict))
+    names: set[str] = set()
+    if PRESETS_FILE.exists():
+        data = toml.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+        names.update(k for k, v in data.items() if isinstance(v, dict))
+    base_dir = PRESETS_FILE.parent if PRESETS_FILE != CONFIGS_DIR / "presets.toml" else CONFIGS_DIR
+    for subdir in config_io._CUSTOM_PRESET_SUBDIRS:
+        custom_dir = Path(base_dir) / subdir
+        if custom_dir.is_dir():
+            names.update(p.stem for p in custom_dir.glob("*.toml"))
+    return sorted(names)
 
 
 def load_merged_config(variant: str, preset: str, methods_subdir: str = "gui-methods") -> dict[str, Any]:
