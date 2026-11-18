@@ -1,6 +1,7 @@
 import {
   FIELD_LABEL_ZH,
   FIELD_OPTIONS,
+  FIELD_OPTION_LABELS,
 } from "./domain/labels-options.js";
 import { configFieldInputKind, normalizeBooleanConfigValue } from "./domain/config-field-types.js";
 import { CONFIG_FIELD_CATALOG } from "./domain/config-field-catalog.js";
@@ -16,6 +17,7 @@ import {
   normalizeModelFamily,
 } from "./domain/model-family.js";
 import { apiRequest } from "../../api/client";
+import { isScopeHiddenInApplicable } from "./fieldHierarchy";
 import {
   sameTrainingValue,
   TRAINING_FIELDS,
@@ -71,10 +73,12 @@ export function fieldsForConfig(
   return [...fields.values()].map((field) => {
     if (CONFIG_FIELD_CATALOG[field.key]?.cluster === "preprocess") field = { ...field, group: "input" };
     const options = FIELD_OPTIONS[field.key];
-    return field.kind === "select" &&
+    const optionLabels = field.optionLabels || FIELD_OPTION_LABELS[field.key];
+    const withLabels = optionLabels ? { ...field, optionLabels } : field;
+    return withLabels.kind === "select" &&
       options?.every((value) => typeof value === "string")
-      ? { ...field, options: options as string[] }
-      : field;
+      ? { ...withLabels, options: options as string[] }
+      : withLabels;
   });
 }
 
@@ -163,6 +167,7 @@ export function filterTrainingFields(
     if (availability.code === "auto-block-swap-disabled") return false;
     if (view === "all") return true;
     if (view === "changed") return changed;
+    if (!query && isScopeHiddenInApplicable(field, draft, baseline)) return false;
     return availability.visible;
   });
 }

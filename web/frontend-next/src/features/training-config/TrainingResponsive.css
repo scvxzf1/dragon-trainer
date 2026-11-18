@@ -19,15 +19,6 @@
     gap: 8px;
   }
 
-  .training-command-bar button span {
-    display: none;
-  }
-
-  .training-command-bar button {
-    min-width: 36px;
-    padding: 8px;
-  }
-
   .training-resource-group-grid {
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   }

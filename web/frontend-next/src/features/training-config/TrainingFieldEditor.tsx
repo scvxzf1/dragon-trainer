@@ -1,6 +1,6 @@
 import { sameTrainingValue, type TrainingDraft, type TrainingFieldSpec } from "./trainingForm";
 import { FilePenLine } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { Fragment, lazy, Suspense, useState, type ReactNode } from "react";
 import { SettingSwitch } from "../../components/SettingSwitch";
 import { TrainingFieldHeader } from "./TrainingFieldHeader";
 import { useTrainingFieldHelpDisplay } from "./TrainingFieldHelpPreference";
@@ -24,6 +24,8 @@ type Props = {
   onChange: (key: string, value: string | number | boolean) => void;
   method?: string;
   onEditPrompts?: () => void;
+  renderAfterField?: (field: TrainingFieldSpec, onHelp: (target: TrainingFieldSpec) => void) => ReactNode;
+  subgrid?: boolean;
 };
 
 export function TrainingFieldEditor({
@@ -36,6 +38,8 @@ export function TrainingFieldEditor({
   onChange,
   method = "lora",
   onEditPrompts,
+  renderAfterField,
+  subgrid = false,
 }: Props) {
   const [helpField, setHelpField] = useState<TrainingFieldSpec | null>(null);
   const { display: helpDisplay } = useTrainingFieldHelpDisplay();
@@ -43,7 +47,7 @@ export function TrainingFieldEditor({
   return (
     <>
     <div
-      className="training-edit-fields"
+      className={subgrid ? "training-edit-fields training-dependent-fields" : "training-edit-fields"}
       data-field-count={fields.length}
       data-auto-columns={getTrainingGridColumns(fields)}
     >
@@ -52,7 +56,15 @@ export function TrainingFieldEditor({
         const layout = getTrainingFieldLayout(field, fields.length);
         const hasInherited = defaults !== undefined && Object.hasOwn(defaults, field.key);
         const overridden = hasInherited && !sameTrainingValue(draft[field.key], defaults[field.key], field.kind);
-        if (field.key === "dataset_config") return <TrainingDatasetField key={field.key} value={String(draft.dataset_config ?? "")} dirty={dirty} overridden={overridden} onReset={hasInherited ? () => onChange(field.key, defaults![field.key]) : undefined} disabled={disabled} own={ownKeys.has(field.key)} onHelp={() => setHelpField(field)} onChange={(value) => onChange(field.key, value)} onUndo={() => onChange(field.key, baseline.dataset_config ?? "")} />;
+        const afterContent = renderAfterField?.(field, setHelpField);
+        if (field.key === "dataset_config") {
+          return (
+            <Fragment key={field.key}>
+              <TrainingDatasetField value={String(draft.dataset_config ?? "")} dirty={dirty} overridden={overridden} onReset={hasInherited ? () => onChange(field.key, defaults![field.key]) : undefined} disabled={disabled} own={ownKeys.has(field.key)} onHelp={() => setHelpField(field)} onChange={(value) => onChange(field.key, value)} onUndo={() => onChange(field.key, baseline.dataset_config ?? "")} />
+              {afterContent}
+            </Fragment>
+          );
+        }
         const availability = fieldAvailability(field.key, draft, method);
         const options = availableFieldOptions(
           field,
@@ -61,11 +73,12 @@ export function TrainingFieldEditor({
         );
         const controlDisabled = disabled || !availability.enabled;
         return (
+          <Fragment key={field.key}>
           <div
-            key={field.key}
             id={`training-field-${field.key}`}
             tabIndex={-1}
             className="training-field-card"
+            data-field-kind={field.kind}
             data-own={ownKeys.has(field.key) || undefined}
             data-dirty={dirty || undefined}
             data-overridden={overridden || undefined}
@@ -147,6 +160,8 @@ export function TrainingFieldEditor({
               </small>
             )}
           </div>
+          {afterContent}
+          </Fragment>
         );
       })}
     </div>

@@ -1,6 +1,7 @@
 declare module "*domain/labels-options.js" {
   export const FIELD_LABEL_ZH: Record<string, string>;
   export const FIELD_OPTIONS: Record<string, (string | number | boolean)[]>;
+  export const FIELD_OPTION_LABELS: Record<string, Record<string, string>>;
 }
 declare module "*domain/config-field-types.js" {
   export function configFieldInputKind(
@@ -28,6 +29,7 @@ declare module "*domain/config-field-catalog.js" {
       cluster: string;
       siblingOrder: number;
       controlledBy: string[];
+      dependsOn: string[];
     }
   >;
   export function configFieldCatalogEntry(key: string): {
@@ -65,6 +67,7 @@ declare module "*domain/config-field-disclosure-rules.js" {
 declare module "*domain/model-family.js" {
   export function configureModelFamilyCapabilities(payload: unknown): unknown[];
   export function normalizeModelFamily(value: unknown): string;
+  export function isKrea2ModelFamily(value: unknown): boolean;
   export function modelFamilyOptionSupported(
     key: string,
     family: string,

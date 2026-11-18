@@ -1,53 +1,87 @@
-/* Shared wrapping layout: every row grows to fill the group, including models/cache. */
+/* Responsive 12-column grid: cards align strictly to column tracks without stretching orphan toggles across the full row. */
 .training-resource-group {
   container-type: inline-size;
   container-name: parameter-group;
 }
+
 .training-config-page .training-edit-fields {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 10px;
   padding: 12px;
-  align-items: start;
+  align-items: stretch;
 }
+
+.training-config-page .training-edit-fields.training-dependent-fields {
+  padding: 8px 10px 10px;
+  gap: 8px;
+}
+
 .training-config-page .training-edit-fields > .training-field-card {
-  flex: 1 1 100%;
+  grid-column: span 12;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
 }
-.training-config-page .training-edit-fields > .training-field-card[data-auto-span="wide"] {
-  flex-grow: 2;
+
+.training-config-page .training-edit-fields > .training-field-card[data-field-kind="boolean"] {
+  justify-content: space-between;
+  padding-block: 9px;
 }
+
+.training-config-page .training-edit-fields > .training-dataset-field,
+.training-config-page .training-edit-fields > .training-dependent-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
 .training-config-page .training-edit-fields > .training-dataset-field {
-  flex: 1 1 100%;
-  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
 }
+
 .training-config-page .training-field-card > :is(input, select, textarea, .training-model-path-control),
 .training-config-page .training-model-path-control {
   width: 100%;
   min-width: 0;
   max-width: none;
 }
+
 @container parameter-group (min-width: 520px) {
-  .training-config-page .training-edit-fields > .training-field-card { flex-basis: calc(50% - 6px); }
-  .training-config-page .training-edit-fields > .training-field-card[data-auto-span="wide"] { flex-basis: 100%; }
+  .training-config-page .training-edit-fields > .training-field-card {
+    grid-column: span 6;
+  }
+  .training-config-page .training-edit-fields > .training-field-card[data-auto-span="wide"] {
+    grid-column: span 12;
+  }
 }
+
 @container parameter-group (min-width: 960px) {
-  .training-config-page .training-edit-fields > .training-field-card { flex-basis: calc(25% - 9px); }
-  .training-config-page .training-edit-fields > .training-field-card[data-auto-span="wide"] { flex-basis: calc(50% - 6px); }
+  .training-config-page .training-edit-fields > .training-field-card {
+    grid-column: span 4;
+  }
+  .training-config-page .training-edit-fields > .training-field-card[data-auto-span="wide"] {
+    grid-column: span 6;
+  }
 }
-@container parameter-group (min-width: 1560px) {
-  .training-config-page .training-edit-fields > .training-field-card[data-auto-span="single"] { flex-basis: calc(100% / 6 - 10px); }
+
+@container parameter-group (min-width: 1400px) {
+  .training-config-page .training-edit-fields > .training-field-card {
+    grid-column: span 3;
+  }
+  .training-config-page .training-edit-fields > .training-field-card[data-auto-span="wide"] {
+    grid-column: span 6;
+  }
 }
+
 @media (max-width: 559px) {
-  .training-config-page .training-edit-fields > .training-field-card[data-auto-span] { flex-basis: 100%; }
+  .training-config-page .training-edit-fields > .training-field-card[data-auto-span] {
+    grid-column: span 12;
+  }
 }

@@ -105,20 +105,9 @@
   opacity: 1;
 }
 
-/* Select dropdown arrow enhancement */
+/* Keep select arrow styling unified in controlDefaults.css to avoid double chevrons. */
 .training-edit-fields select {
-  background-image: linear-gradient(45deg, transparent 50%, var(--text) 50%),
-                    linear-gradient(135deg, var(--text) 50%, transparent 50%);
-  background-position: calc(100% - 15px) center,
-                       calc(100% - 10px) center;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  padding-right: 30px;
-}
-
-.training-edit-fields select:focus {
-  background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%),
-                    linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+  padding-right: 34px;
 }
 
 /* Smooth color transitions for dark mode */

@@ -204,13 +204,20 @@
   gap: 6px;
   min-height: 34px;
   height: 34px;
-  padding: 0 9px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  color: var(--muted);
-  background: transparent;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface-subtle);
   box-shadow: none;
   transform: none;
+}
+.training-config-page .training-command-bar > :is(.compact-tool, .icon-button):disabled,
+.training-config-page .training-command-bar .training-tool-action:disabled {
+  color: var(--muted);
+  border-color: var(--line);
+  background: transparent;
+  opacity: 0.62;
 }
 .training-config-page .training-command-bar .training-save-command {
   border-color: var(--line-strong);
@@ -238,12 +245,9 @@
 .training-preview-command {
   position: relative;
 }
-.training-preview-command > span:last-child {
-  display: none;
-}
-.training-preview-icon {
+.training-preview-command > .training-preview-icon {
   position: relative;
-  display: inline-flex;
+  display: inline-flex !important;
 }
 .training-dirty-dot {
   position: absolute;
@@ -257,10 +261,6 @@
 }
 .training-config-page .training-command-bar .training-toml-command {
   min-width: 34px;
-  padding-inline: 7px;
-}
-.training-config-page .training-command-bar .training-toml-command > span {
-  display: none;
 }
 .training-config-page .training-command-bar > .training-command-popover:last-of-type {
   flex-shrink: 0;
@@ -320,14 +320,14 @@
   min-height: 34px;
   white-space: nowrap;
 }
-@container workspace (max-width: 1350px) {
+@container workspace (max-width: 820px) {
   .training-config-page .training-command-bar > .compact-tool,
   .training-config-page .training-command-bar > .training-save-group .training-save-command {
     width: 34px;
     min-width: 34px;
     padding: 0;
   }
-  .training-config-page .training-command-bar > .compact-tool > span,
+  .training-config-page .training-command-bar > .compact-tool > span:not(.training-preview-icon),
   .training-config-page .training-command-bar > .training-save-group .training-save-command > span {
     display: none;
   }
