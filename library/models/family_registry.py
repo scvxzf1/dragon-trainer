@@ -181,6 +181,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             # Stage-local 1F1B PP runtime (``library/training/pp``).
             runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
             trainer_wired=True,
+            requires_batch_divisible_by_microbatches=True,
         ),
     ),
     "krea2_raw": ModelFamilySpec(
@@ -214,7 +215,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         attention=AttentionCapabilitySpec(
             canonical_modes=frozenset({"torch", "flash"}),
             mode_aliases={"sdpa": "torch", "cudnn": "torch", "cudnn_sdpa": "torch"},
-            forbids_xformers_flag=True,
+            forbids_xformers_flag=False,
         ),
         compile_spec=CompileCapabilitySpec(
             supported=True,

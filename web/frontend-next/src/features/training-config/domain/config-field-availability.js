@@ -266,13 +266,6 @@ export function configFieldAvailability(key, context = {}) {
         );
     }
 
-    if (COMPILE_CHILD_KEYS.has(key) && !toggleEnabled(context, 'torch_compile', true)) {
-        return unavailable('请先启用 torch.compile。', 'torch-compile-disabled');
-    }
-    if (key === 'compile_seq_bands' && !toggleEnabled(context, 'compile_dynamic_seq')) {
-        return unavailable('请先启用动态序列编译。', 'compile-dynamic-seq-disabled');
-    }
-
     const ui = familyCapability?.ui_constraints || null;
     if (ui) {
         const displayName = familyCapability?.display_name || modelFamily;
@@ -306,10 +299,17 @@ export function configFieldAvailability(key, context = {}) {
             const isCurrentValueFixed = typeof requiredValue === 'boolean'
                 ? normalizeBooleanConfigValue(key, currentValue, false) === requiredValue
                 : String(currentValue ?? requiredValue).trim().toLowerCase() === requiredValue;
-            if (isCurrentValueFixed) {
-                return unavailable(reason, code);
-            }
+            return isCurrentValueFixed
+                ? unavailable(reason, code)
+                : { enabled: true, reason: '', code: null };
         }
+    }
+
+    if (COMPILE_CHILD_KEYS.has(key) && !toggleEnabled(context, 'torch_compile', true)) {
+        return unavailable('请先启用 torch.compile。', 'torch-compile-disabled');
+    }
+    if (key === 'compile_seq_bands' && !toggleEnabled(context, 'compile_dynamic_seq')) {
+        return unavailable('请先启用动态序列编译。', 'compile-dynamic-seq-disabled');
     }
 
     if (key === 'selective_checkpoint_blocks'

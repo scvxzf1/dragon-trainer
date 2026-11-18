@@ -155,6 +155,9 @@ const availability = await import({json.dumps(availability_uri)});
 console.log(JSON.stringify({{
     zCompileOff: availability.configFieldAvailability('torch_compile', {{ modelFamily: 'z_image', values: {{ torch_compile: false }} }}),
     zCompileOnEditable: availability.configFieldAvailability('torch_compile', {{ modelFamily: 'z_image', values: {{ torch_compile: true }} }}),
+    zResidualDynamicSeqEditable: availability.configFieldAvailability('compile_dynamic_seq', {{ modelFamily: 'z_image', values: {{ torch_compile: false, compile_dynamic_seq: true }} }}),
+    qwenResidualBandsEditable: availability.configFieldAvailability('compile_seq_bands', {{ modelFamily: 'qwen_image_2_1', values: {{ torch_compile: true, compile_dynamic_seq: false, compile_seq_bands: true }} }}),
+    qwenResidualInductorEditable: availability.configFieldAvailability('compile_inductor_mode', {{ modelFamily: 'qwen_image_2_1', values: {{ torch_compile: false, compile_inductor_mode: 'reduce-overhead' }} }}),
     zNativeAttn: family.modelFamilyOptionSupported('attn_mode', 'z_image', 'native'),
     qwenNativeAttn: family.modelFamilyOptionSupported('attn_mode', 'qwen_image_2_1', 'native'),
     kreaCudnnAttn: family.modelFamilyOptionSupported('attn_mode', 'krea2_raw', 'cudnn'),
@@ -169,6 +172,9 @@ console.log(JSON.stringify({{
     assert payload["zCompileOff"]["enabled"] is False
     assert payload["zCompileOff"]["code"] == "family-torch-compile-unsupported"
     assert payload["zCompileOnEditable"]["enabled"] is True
+    assert payload["zResidualDynamicSeqEditable"]["enabled"] is True
+    assert payload["qwenResidualBandsEditable"]["enabled"] is True
+    assert payload["qwenResidualInductorEditable"]["enabled"] is True
     assert payload["zNativeAttn"] is True
     assert payload["qwenNativeAttn"] is True
     assert payload["kreaCudnnAttn"] is True

@@ -255,4 +255,11 @@ def test_ssot_capability_consumers_match_registry() -> None:
     assert catalog["anima"]["pixel_alignment"] == 16
     assert catalog["krea2_raw"]["pipeline_parallel"]["supports_stage_block_swap"] is True
     assert catalog["anima"]["pipeline_parallel"]["supports_stage_block_swap"] is False
+    assert catalog["anima"]["pipeline_parallel"]["requires_batch_divisible_by_microbatches"] is True
+    assert catalog["krea2_raw"]["pipeline_parallel"]["requires_batch_divisible_by_microbatches"] is True
+    assert catalog["moss_image"]["pipeline_parallel"]["requires_batch_divisible_by_microbatches"] is True
     assert catalog["z_image"]["pipeline_parallel"]["trainer_wired"] is False
+    assert get_model_family_spec("krea2_raw").attention.forbids_xformers_flag is False
+    assert get_model_family_spec("z_image").attention.forbids_xformers_flag is True
+    assert get_model_family_spec("qwen_image_2_1").attention.forbids_xformers_flag is True
+    assert get_model_family_spec("moss_image").attention.forbids_xformers_flag is True

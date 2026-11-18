@@ -72,7 +72,7 @@ export const FALLBACK_MODEL_FAMILIES = Object.freeze([
             runtime_backend: 'torch_pipelining_1f1b',
             trainer_wired: true,
             supports_stage_block_swap: false,
-            requires_batch_divisible_by_microbatches: false,
+            requires_batch_divisible_by_microbatches: true,
             block_container: 'blocks',
             default_num_blocks: 28,
             known_num_blocks: [28, 40],
