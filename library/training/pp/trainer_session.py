@@ -170,7 +170,10 @@ def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape
 
     import torch.distributed as dist
 
-    from library.training.optimizers import get_optimizer
+    from library.models.moss_image.pipeline_parallel import (
+        moss_stage_adapter_modules,
+        release_moss_foreign_submodules,
+    )
     from library.training.pp.contract import PipelineRuntimeConfig
     from library.training.pp.moss_runtime import build_moss_pipeline_runtime
 
@@ -197,14 +200,16 @@ def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape
         optimizer_factory=_stage_optimizer_factory(args),
         max_grad_norm=getattr(args, "max_grad_norm", None),
     )
-    from library.models.moss_image.pipeline_parallel import moss_stage_adapter_modules
-
     keep = {id(module) for module in moss_stage_adapter_modules(network, runtime.layout)}
     for module in getattr(network, "unet_loras", []) or []:
         if id(module) not in keep:
             module.to("cpu")
+    release_moss_foreign_submodules(unet, is_first=runtime.layout.is_first)
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=device
+    )
+    _move_surviving_stage_tensors_to_device(
+        unet, runtime, network, rank=rank, device=device
     )
     return runtime
 
@@ -289,6 +294,41 @@ def _release_foreign_stage_weights(model, layout, *, network, device) -> None:
         torch.cuda.empty_cache()
 
 
+def _move_surviving_stage_tensors_to_device(
+    unet, runtime, network, *, rank: int, device: torch.device
+) -> int:
+    """Move only surviving stage-owned base tensors to ``device`` and verify zero CPU leftovers."""
+
+    moved = 0
+    if device.type != "cpu":
+        for tensor in list(unet.parameters()) + list(unet.buffers()):
+            if tensor.device.type == "cpu":
+                tensor.data = tensor.data.to(device)
+                moved += 1
+        for tensor in list(runtime.stage_module.parameters()) + list(
+            runtime.stage_module.buffers()
+        ):
+            if tensor.device.type == "cpu":
+                tensor.data = tensor.data.to(device)
+                moved += 1
+        owned_param_ids = {id(t) for t in runtime.stage_module.trainable_parameters()}
+        leftovers = [
+            f"base:{n}" for n, t in unet.named_parameters() if t.device.type == "cpu"
+        ] + [
+            f"adapter:{n}"
+            for n, t in network.named_parameters()
+            if id(t) in owned_param_ids and t.requires_grad and t.device.type == "cpu"
+        ]
+        if leftovers:
+            raise PipelineParallelError(
+                CODE_STAGE_CONTRACT,
+                f"rank {rank} still holds CPU tensors after the stage move "
+                f"({len(leftovers)} found, first few: {leftovers[:8]}); a cpu weight "
+                "here surfaces as an ATen device mismatch inside forward",
+            )
+    return moved
+
+
 def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shape, max_text_tokens=None, dtype=None):
     """Build this rank's Anima stage-local runtime (library-level, wired).
 
@@ -301,6 +341,10 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
     import torch.distributed as dist
 
     from library.training.pp.contract import PipelineRuntimeConfig
+    from library.training.pp.placement import (
+        release_anima_foreign_submodules,
+        stage_adapter_modules,
+    )
     from library.training.pp.runtime import build_anima_pipeline_runtime
 
     network.to(device=accelerator.device)
@@ -324,46 +368,18 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
     )
     # The base was loaded on CPU for the PP slice.  Release the foreign blocks /
     # submodules FIRST, then move whatever survived: after the release the model
-    # only holds this rank's weights, so no name guessing is involved.  A
-    # hand-written allow-list missed a module and surfaced as the ATen addmm
-    # error "mat1 is on cuda:0, different from other tensors on cpu" (a cpu bias).
-    from library.training.pp.placement import stage_adapter_modules
-
+    # only holds this rank's weights, so no name guessing is involved.
     keep = {id(module) for module in stage_adapter_modules(network, runtime.layout)}
     for module in getattr(network, "unet_loras", []) or []:
         if id(module) not in keep:
             module.to("cpu")
+    release_anima_foreign_submodules(unet, is_first=runtime.layout.is_first)
     _release_foreign_stage_weights(
         unet, runtime.layout, network=network, device=accelerator.device
     )
-    moved = 0
-    if accelerator.device.type != "cpu":
-        for tensor in list(unet.parameters()) + list(unet.buffers()):
-            if tensor.device.type == "cpu":
-                tensor.data = tensor.data.to(accelerator.device)
-                moved += 1
-        for tensor in list(runtime.stage_module.parameters()) + list(runtime.stage_module.buffers()):
-            if tensor.device.type == "cpu":
-                tensor.data = tensor.data.to(accelerator.device)
-                moved += 1
-        owned_param_ids = {id(t) for t in runtime.stage_module.trainable_parameters()}
-        # NOTE: the base model is deliberately not a registered submodule of the
-        # stage (``object.__setattr__`` keeps stage.to() from walking 25 GB), so any
-        # check must walk ``unet`` directly -- asking the stage silently sees nothing.
-        leftovers = [
-            f"base:{n}" for n, t in unet.named_parameters() if t.device.type == "cpu"
-        ] + [
-            f"adapter:{n}"
-            for n, t in network.named_parameters()
-            if id(t) in owned_param_ids and t.requires_grad and t.device.type == "cpu"
-        ]
-        if leftovers:
-            raise PipelineParallelError(
-                CODE_STAGE_CONTRACT,
-                f"rank {rank} still holds CPU tensors after the stage move "
-                f"({len(leftovers)} found, first few: {leftovers[:8]}); a cpu weight "
-                "here surfaces as an ATen device mismatch inside forward",
-            )
+    moved = _move_surviving_stage_tensors_to_device(
+        unet, runtime, network, rank=rank, device=accelerator.device
+    )
     print(f"[pp] rank={rank} stage ready, moved {moved} tensors", flush=True)
     return runtime
 

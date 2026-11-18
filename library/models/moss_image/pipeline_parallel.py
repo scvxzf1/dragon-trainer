@@ -359,12 +359,13 @@ class _MossStageBase(nn.Module):
         from .math import time_sinusoid
 
         model = self._model
-        device = model.video_embedder.weight.device
+        time_first = model.time_embedding[0].weight
+        device = time_first.device
         times = torch.as_tensor(timesteps, device=device, dtype=torch.float32).reshape(-1)
         times = times.expand(batch)  # production forward does the same expand
         embedding = time_sinusoid(times, model.config.freq_dim, device)
         return model.time_embedding(
-            embedding.to(model.time_embedding[0].weight.dtype)
+            embedding.to(time_first.dtype)
         ).float()
 
 
@@ -680,6 +681,32 @@ def build_moss_stage_module(
     return layout, module
 
 
+_MOSS_FIRST_ONLY_SUBMODULES = (
+    "video_embedder",
+    "text_embedder",
+    "shared_block_modulation",
+)
+_MOSS_LAST_ONLY_SUBMODULES = (
+    "final_norm_video",
+    "video_head_modulation",
+    "final_linear_video",
+)
+
+
+def release_moss_foreign_submodules(
+    model: nn.Module, *, is_first: bool
+) -> tuple[str, ...]:
+    """Drop pre-layer / post-layer submodules this MOSS PP stage does not own."""
+
+    dropped: list[str] = []
+    names = _MOSS_LAST_ONLY_SUBMODULES if is_first else _MOSS_FIRST_ONLY_SUBMODULES
+    for name in names:
+        if getattr(model, name, None) is not None:
+            setattr(model, name, None)
+            dropped.append(name)
+    return tuple(dropped)
+
+
 def _model_dtype(model) -> torch.dtype:
     for parameter in model.parameters():
         if parameter.is_floating_point():
@@ -698,6 +725,7 @@ __all__ = [
     "build_moss_stage_module",
     "moss_adapter_block_index",
     "moss_stage_adapter_modules",
+    "release_moss_foreign_submodules",
     "resolve_wire_capacity",
     "split_moss_batch",
     "validate_moss_latent_shape",

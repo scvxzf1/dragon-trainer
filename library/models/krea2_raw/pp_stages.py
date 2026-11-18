@@ -36,6 +36,7 @@ pipeline boundary needs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import re
 import torch
@@ -108,6 +109,7 @@ def krea2_forward_first(
     context: Tensor,
     pos: Tensor,
     mask: Tensor,
+    freqs: Tensor | None = None,
 ) -> Krea2StageState:
     """Run ``model.forward`` up to (and including) the leading block range."""
 
@@ -144,10 +146,12 @@ def krea2_forward_first(
     if fold > 0:
         combined = F.pad(combined, (0, 0, 0, fold))
         mask = F.pad(mask, (0, fold), value=False)
-        pos = F.pad(pos, (0, 0, 0, fold))
+        if freqs is None:
+            pos = F.pad(pos, (0, 0, 0, fold))
 
     mask4d = _mask(mask)
-    freqs = model.posemb(pos)
+    if freqs is None:
+        freqs = model.posemb(pos)
     hidden = _run_block_range(blocks, combined, tvec, freqs, mask4d)
     return Krea2StageState(
         hidden=hidden,
@@ -365,16 +369,66 @@ class _Krea2StageBase(nn.Module):
         return torch.autocast(device_type=device.type, dtype=torch.float16)
 
 
+    def _resolve_cached_freqs(
+        self,
+        *,
+        batch: int,
+        txtlen: int,
+        latent_hw: tuple[int, int],
+        patch: int,
+        device: torch.device,
+    ) -> Tensor:
+        cache = getattr(self, "_freqs_cache", None)
+        if cache is None:
+            cache = {}
+            object.__setattr__(self, "_freqs_cache", cache)
+        key = (int(batch), int(txtlen), int(latent_hw[0]), int(latent_hw[1]), int(patch), device)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        from library.models.krea2_raw.family import _cached_krea2_pos_and_imgmask
+
+        pos, _ = _cached_krea2_pos_and_imgmask(
+            int(batch),
+            int(latent_hw[0]) // int(patch),
+            int(latent_hw[1]) // int(patch),
+            int(txtlen),
+            device,
+        )
+        fold = (-int(pos.shape[1])) % 256
+        if fold > 0:
+            pos = F.pad(pos, (0, 0, 0, fold))
+        with torch.no_grad():
+            freqs = self.model.posemb(pos).detach()
+        if len(cache) >= 8:
+            cache.pop(next(iter(cache)))
+        cache[key] = freqs
+        return freqs
+
+
 class Krea2FirstStage(_Krea2StageBase):
     """Input/text fusion + timestep projection + the leading block range."""
 
     def __init__(
-        self, *, max_text_tokens: int, img_tokens: int, patch: int = 2, **kwargs
+        self,
+        *,
+        max_text_tokens: int,
+        img_tokens: int,
+        patch: int = 2,
+        latent_hw: tuple[int, int] | None = None,
+        local_freqs: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         object.__setattr__(self, "_max_text_tokens", int(max_text_tokens))
         object.__setattr__(self, "_img_tokens", int(img_tokens))
         object.__setattr__(self, "_patch", int(patch))
+        object.__setattr__(
+            self,
+            "_latent_hw",
+            None if latent_hw is None else (int(latent_hw[0]), int(latent_hw[1])),
+        )
+        object.__setattr__(self, "_local_freqs", bool(local_freqs))
 
     @property
     def max_text_tokens(self) -> int:
@@ -383,6 +437,10 @@ class Krea2FirstStage(_Krea2StageBase):
     @property
     def img_tokens(self) -> int:
         return self._img_tokens  # type: ignore[attr-defined]
+
+    @property
+    def local_freqs(self) -> bool:
+        return bool(self._local_freqs)  # type: ignore[attr-defined]
 
     @property
     def token_cap(self) -> int:
@@ -396,26 +454,28 @@ class Krea2FirstStage(_Krea2StageBase):
         context: Tensor,
         mask: Tensor | None = None,
         **_shared_kwargs,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """Take the *5D latent* (the ``forward_for_loss`` contract) and patchify.
-
-        Patchification lives here rather than in the runtime so both pipeline
-        ranks receive exactly the same kwargs -- pipelining splits kwargs the
-        same way on every rank, and an empty kwargs set on the trailing rank
-        makes it subscript ``None``.
-        """
+    ) -> tuple[Tensor, ...]:
+        """Take the *5D latent* (the ``forward_for_loss`` contract) and patchify."""
 
         from library.models.krea2_raw.family import prepare_img_tokens
 
         latents_4d = latents.squeeze(2)
-        batch = int(latents_4d.shape[0])
+        batch, _, height, width = latents_4d.shape
         txtlen = int(context.shape[1])
         if mask is None:
             txtmask = torch.ones(batch, txtlen, dtype=torch.bool, device=latents_4d.device)
         else:
             txtmask = mask if mask.dtype == torch.bool else mask > 0.5
+        patch = int(self._patch)
         img_tokens, pos, joint_mask = prepare_img_tokens(
-            latents_4d, txtlen, int(self._patch), txtmask
+            latents_4d, txtlen, patch, txtmask
+        )
+        freqs = self._resolve_cached_freqs(
+            batch=batch,
+            txtlen=txtlen,
+            latent_hw=(int(height), int(width)),
+            patch=patch,
+            device=latents_4d.device,
         )
         with self._autocast():
             state = krea2_forward_first(
@@ -426,16 +486,15 @@ class Krea2FirstStage(_Krea2StageBase):
                 context=context,
                 pos=pos,
                 mask=joint_mask,
+                freqs=freqs,
             )
-        # The wire is a fixed list of tensors; the boolean mask travels as
-        # float32-encoded 0/1 so every slot has a stable dtype/shape.
-        #
-        # Everything except ``hidden`` is declared frozen in
-        # KREA2_BOUNDARY_FROZEN_INDICES, so it must *really* be detached:
-        # ``tvec = model.tproj(t)`` and ``tembed = model.tmlp(...)`` carry
-        # gradients whenever their own weights are trainable, and [[torch
-        # pipelining]] rejects a frozen slot that arrives carrying gradients
-        # ("[1] for chunk 0 has gradients ...").
+        if self.local_freqs:
+            return (
+                state.hidden,
+                state.tvec.detach(),
+                state.mask.to(torch.float32),
+                state.tembed.detach(),
+            )
         return (
             state.hidden,
             state.tvec.detach(),
@@ -448,33 +507,61 @@ class Krea2FirstStage(_Krea2StageBase):
 class Krea2LastStage(_Krea2StageBase):
     """The trailing block range + final layer + the image text-slice."""
 
-    def __init__(self, *, max_text_tokens: int, img_tokens: int, **kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        max_text_tokens: int,
+        img_tokens: int,
+        patch: int = 2,
+        latent_hw: tuple[int, int] | None = None,
+        local_freqs: bool = False,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         object.__setattr__(self, "_max_text_tokens", int(max_text_tokens))
         object.__setattr__(self, "_img_tokens", int(img_tokens))
+        object.__setattr__(self, "_patch", int(patch))
+        object.__setattr__(
+            self,
+            "_latent_hw",
+            None if latent_hw is None else (int(latent_hw[0]), int(latent_hw[1])),
+        )
+        object.__setattr__(self, "_local_freqs", bool(local_freqs))
+
+    @property
+    def local_freqs(self) -> bool:
+        return bool(self._local_freqs)  # type: ignore[attr-defined]
 
     def forward(
         self,
         hidden: Tensor,
         tvec: Tensor,
-        freqs: Tensor,
-        mask_float: Tensor,
-        tembed: Tensor,
+        *wire_tail: Tensor,
         **_shared_kwargs,
     ) -> Tensor:
-        # ``_shared_kwargs`` absorbs the kwargs the schedule hands to *every*
-        # stage (``timesteps``/``context``/``mask``); only the leading stage
-        # consumes them.  The wire mask slot is named ``mask_float`` on purpose
-        # so it cannot collide with a ``mask`` kwarg.
-        #
-        # The frozen slots are detached on the *receiving* side too: the blocks
-        # consume ``tvec``/``freqs``, so without this their gradients flow back
-        # into a slot the pipeline already declared gradient-free and torch
-        # aborts with "expecting to send gradients to stage None".
+        if len(wire_tail) == 2:
+            mask_float, tembed = wire_tail
+            latent_hw = self._latent_hw  # type: ignore[attr-defined]
+            if latent_hw is None:
+                raise RuntimeError("Krea2LastStage with local_freqs requires latent_hw")
+            freqs = self._resolve_cached_freqs(
+                batch=int(hidden.shape[0]),
+                txtlen=int(self._max_text_tokens),
+                latent_hw=latent_hw,
+                patch=int(self._patch),
+                device=hidden.device,
+            )
+        elif len(wire_tail) == 3:
+            freqs, mask_float, tembed = wire_tail
+            freqs = freqs.detach()
+        else:
+            raise ValueError(
+                f"Krea2LastStage expected 4 or 5 wire tensors; got {2 + len(wire_tail)}"
+            )
         state = Krea2StageState(
             hidden=hidden,
             tvec=tvec.detach(),
-            freqs=freqs.detach(),
+            freqs=freqs,
             mask=mask_float > 0.5,
             tembed=tembed.detach(),
             txtlen=self._max_text_tokens,  # type: ignore[attr-defined]
@@ -484,133 +571,288 @@ class Krea2LastStage(_Krea2StageBase):
             return krea2_forward_last(self.model, self.blocks, state)
 
 
-class _OffloadAfterBackward(torch.autograd.Function):
-    """Offload a swappable block's base weights once its gradient reaches x.
+class _SwappedBlockSlot:
+    """Contiguous pinned-CPU master slabs and parameter slice table for one block."""
 
-    Under Schedule1F1B with 2 microbatches a rank runs F(mb0) -> F(mb1) ->
-    B(mb0) -> B(mb1), so a stateful prefetching offloader (which assumes the
-    last forward is immediately followed by the last backward) breaks on
-    F(mb1).  This hook is stateless: the checkpoint's recompute of ``_forward``
-    loads the weights, and they are released only when every operator inside
-    that block has finished back-propagating -- signalled by the gradient
-    arriving at the block's input activation.
-    """
+    def __init__(self, block: nn.Module, *, global_index: int, pin: bool) -> None:
+        self.block = block
+        self.global_index = int(global_index)
+        by_dtype: dict[torch.dtype, list[nn.Parameter]] = {}
+        for param in block.parameters():
+            if param.requires_grad:
+                continue
+            by_dtype.setdefault(param.dtype, []).append(param)
+
+        self.pinned_slabs: dict[torch.dtype, Tensor] = {}
+        self.specs: list[tuple[nn.Parameter, torch.dtype, int, tuple[int, ...], Tensor]] = []
+        for dt, params in by_dtype.items():
+            total = sum(p.numel() for p in params)
+            slab = torch.empty(total, dtype=dt, device="cpu", pin_memory=pin)
+            offset = 0
+            for param in params:
+                numel = param.numel()
+                shape = tuple(param.shape)
+                cpu_view = slab.narrow(0, offset, numel).view(shape)
+                cpu_view.copy_(param.data.detach(), non_blocking=False)
+                param._cpu_pinned = cpu_view  # type: ignore[attr-defined]
+                param.data = cpu_view
+                self.specs.append((param, dt, offset, shape, cpu_view))
+                offset += numel
+            self.pinned_slabs[dt] = slab
+
+
+class _AsyncStageBlockSwapper:
+    """Ping-pong H2D prefetcher on a dedicated CUDA ``copy_stream``."""
+
+    def __init__(self, slots: list[_SwappedBlockSlot], device: torch.device) -> None:
+        self.slots = slots
+        self.device = torch.device(device)
+        all_ckpt = all(
+            bool(getattr(s.block, "gradient_checkpointing", False)) for s in slots
+        )
+        # Checkpointed blocks discard saved tensors during outer forward and
+        # recompute one block at a time during backward, so 2 ping-pong slots
+        # bound GPU residency for any num_swap; non-checkpointed blocks must
+        # retain one slot per swapped block until backward unwinds them.
+        self.ring_size = (
+            max(1, min(2, len(slots))) if all_ckpt else max(1, len(slots))
+        )
+        self.is_cuda = self.device.type == "cuda"
+        self.copy_stream = torch.cuda.Stream(device=self.device) if self.is_cuda else None
+        self.max_elems: dict[torch.dtype, int] = {}
+        for slot in slots:
+            for dt, pslab in slot.pinned_slabs.items():
+                self.max_elems[dt] = max(self.max_elems.get(dt, 0), int(pslab.numel()))
+        self.ring_slabs: list[dict[torch.dtype, Tensor] | None] = [None] * self.ring_size
+        self.ring_owner: list[int | None] = [None] * self.ring_size
+        self.ring_ready: list[torch.cuda.Event | None] = [None] * self.ring_size
+        self.ring_done: list[torch.cuda.Event | None] = [None] * self.ring_size
+
+    def prefetch(self, slot_pos: int) -> None:
+        if not self.is_cuda or not (0 <= slot_pos < len(self.slots)):
+            return
+        r = slot_pos % self.ring_size
+        if self.ring_owner[r] == slot_pos and self.ring_slabs[r] is not None:
+            return
+        slot = self.slots[slot_pos]
+        assert self.copy_stream is not None
+        slabs = self.ring_slabs[r]
+        if slabs is None:
+            # Allocate on compute_stream so freed ring slabs return directly to
+            # compute_stream's CUDACachingAllocator pool (zero dual-pool bloat).
+            compute_stream = torch.cuda.current_stream(self.device)
+            slabs = {
+                dt: torch.empty(n, dtype=dt, device=self.device)
+                for dt, n in self.max_elems.items()
+            }
+            self.ring_slabs[r] = slabs
+            alloc_ev = torch.cuda.Event()
+            alloc_ev.record(compute_stream)
+            self.copy_stream.wait_event(alloc_ev)
+        done_ev = self.ring_done[r]
+        if done_ev is not None:
+            self.copy_stream.wait_event(done_ev)
+        with torch.cuda.stream(self.copy_stream):
+            for dt, pslab in slot.pinned_slabs.items():
+                slabs[dt].narrow(0, 0, pslab.numel()).copy_(pslab, non_blocking=True)
+            ready_ev = torch.cuda.Event()
+            ready_ev.record(self.copy_stream)
+        self.ring_owner[r] = slot_pos
+        self.ring_ready[r] = ready_ev
+
+    def bind_and_prefetch_next(
+        self, slot_pos: int, *, next_slot_pos: int | None
+    ) -> None:
+        if not self.is_cuda:
+            return
+        r = slot_pos % self.ring_size
+        if self.ring_owner[r] != slot_pos or self.ring_slabs[r] is None:
+            self.prefetch(slot_pos)
+        compute_stream = torch.cuda.current_stream(self.device)
+        ready_ev = self.ring_ready[r]
+        if ready_ev is not None:
+            compute_stream.wait_event(ready_ev)
+            self.ring_ready[r] = None
+        slabs = self.ring_slabs[r]
+        assert slabs is not None
+        slot = self.slots[slot_pos]
+        for param, dt, offset, shape, _cpu_view in slot.specs:
+            param.data = slabs[dt].narrow(0, offset, math.prod(shape)).view(shape)
+        if (
+            next_slot_pos is not None
+            and 0 <= next_slot_pos < len(self.slots)
+            and (next_slot_pos % self.ring_size) != r
+        ):
+            self.prefetch(next_slot_pos)
+
+    def release(self, slot_pos: int, *, drain_pool: bool) -> None:
+        slot = self.slots[slot_pos]
+        for param, _dt, _offset, _shape, cpu_view in slot.specs:
+            param.data = cpu_view
+        if not self.is_cuda:
+            return
+        r = slot_pos % self.ring_size
+        compute_stream = torch.cuda.current_stream(self.device)
+        done_ev = torch.cuda.Event()
+        done_ev.record(compute_stream)
+        self.ring_done[r] = done_ev
+        if drain_pool:
+            for idx in range(self.ring_size):
+                slabs = self.ring_slabs[idx]
+                if slabs is not None:
+                    for slab in slabs.values():
+                        slab.record_stream(compute_stream)
+                    self.ring_slabs[idx] = None
+                self.ring_owner[idx] = None
+                self.ring_ready[idx] = None
+
+
+class _OffloadAfterBackward(torch.autograd.Function):
+    """Release a swapped block's GPU slot once backward reaches its input ``x``."""
 
     @staticmethod
-    def forward(ctx, x: Tensor, block) -> Tensor:  # noqa: D102 - autograd API
-        ctx.block = block
+    def forward(ctx, x: Tensor, swapper: _AsyncStageBlockSwapper, slot_pos: int) -> Tensor:
+        ctx.swapper = swapper
+        ctx.slot_pos = int(slot_pos)
         return x
 
     @staticmethod
-    def backward(ctx, grad_x: Tensor):  # noqa: D102 - autograd API
-        block = ctx.block
-        for parameter in block.parameters():
-            pinned = getattr(parameter, "_cpu_pinned", None)
-            if pinned is not None:
-                parameter.data = pinned
-        return grad_x, None
+    def backward(ctx, grad_x: Tensor):
+        ctx.swapper.release(ctx.slot_pos, drain_pool=(ctx.slot_pos == 0))
+        return grad_x, None, None
+
+
+class _PrefetchOnBackwardEntry(torch.autograd.Function):
+    """Kick off H2D prefetch of ``last_slot`` as soon as backward enters the block after it."""
+
+    @staticmethod
+    def forward(ctx, y: Tensor, swapper: _AsyncStageBlockSwapper, slot_pos: int) -> Tensor:
+        ctx.swapper = swapper
+        ctx.slot_pos = int(slot_pos)
+        return y
+
+    @staticmethod
+    def backward(ctx, grad_y: Tensor):
+        ctx.swapper.prefetch(ctx.slot_pos)
+        return grad_y, None, None
 
 
 def enable_stage_block_swap(stage_blocks, device, num_swap: int = 2) -> list[int]:
-    """Swap the base weights of the first ``num_swap`` non-leading blocks.
+    """Swap the base weights of the first ``num_swap`` non-leading stage blocks.
 
-    Each Krea-2 block's frozen fp16 base is 809 MiB while its LoRA lives on the
-    network object (not in ``block.parameters()``), so offloading the block's
-    parameters releases exactly the base weights and leaves every trainable
-    adapter tensor, gradient and optimizer state on the GPU.
-
-    Starts at index 1 so the activation entering a swapped block already passed
-    the previous block, i.e. ``x.requires_grad`` is guaranteed True and the
-    offload hook fires.
-
-    Returns the swapped block indices for logging.
+    Packs each swapped block's frozen parameters into a contiguous pinned CPU
+    slab and streams them through a 2-slot GPU staging ring on a dedicated CUDA
+    ``copy_stream``, overlapping H2D DMA with neighbor block compute and
+    draining both staging slots to 0 bytes outside the swapped block range.
     """
 
-    # ``stage_blocks`` is the *whole* model's block list; only the blocks this
-    # rank actually kept on the device belong to its stage (the rest were
-    # released by release_foreign_submodules and never moved here).  Selecting
-    # by position alone picked blocks 1..4 on the trailing rank too -- those
-    # live on the leading rank, so offloading them freed 0 MiB and the swap did
-    # nothing exactly where it was needed.
+    target_device = torch.device(device)
     owned = [
         (index, block)
         for index, block in enumerate(stage_blocks)
-        if all(p.device.type == device.type for p in block.parameters())
+        if any(True for _ in block.parameters())
+        and all(
+            p.device.type == target_device.type
+            for p in block.parameters()
+            if not p.requires_grad
+        )
     ]
-    blocks = [block for _, block in owned]
-    swapped: list[int] = []
-    # Start at the second owned block: the activation entering the first one may
-    # still be the stage input, whose requires_grad the offload hook relies on.
-    for position, (global_index, block) in enumerate(owned[1 : 1 + num_swap], start=1):
-        pinned_resident = False
-        for parameter in block.parameters():
-            if not hasattr(parameter, "_cpu_pinned"):
-                parameter._cpu_pinned = (
-                    parameter.data.detach().to("cpu", non_blocking=False).pin_memory()
-                )
-            parameter.data = parameter._cpu_pinned
-            pinned_resident = True
-        if not pinned_resident:
-            continue
+    if len(owned) <= 1 or num_swap <= 0:
+        return []
 
+    pin = target_device.type == "cuda"
+    slots: list[_SwappedBlockSlot] = []
+    for global_index, block in owned[1 : 1 + int(num_swap)]:
+        slot = _SwappedBlockSlot(block, global_index=global_index, pin=pin)
+        if slot.specs:
+            slots.append(slot)
+    if not slots:
+        return []
+
+    swapper = _AsyncStageBlockSwapper(slots, target_device)
+    last_slot_pos = len(slots) - 1
+
+    # Trigger forward H2D prefetch of slot 0 while the leading resident block computes.
+    lead_block = owned[0][1]
+    lead_orig_forward = lead_block.forward
+
+    def _lead_forward(*args, _orig=lead_orig_forward, _s=swapper, **kwargs):
+        _s.prefetch(0)
+        return _orig(*args, **kwargs)
+
+    lead_block.forward = _lead_forward
+
+    # Trigger backward H2D prefetch of the last swapped block when backward enters
+    # the first resident block immediately following the swapped range.
+    trailing_resident_idx = 1 + len(slots)
+    if trailing_resident_idx < len(owned):
+        trail_block = owned[trailing_resident_idx][1]
+        trail_orig_forward = trail_block.forward
+
+        def _trail_forward(*args, _orig=trail_orig_forward, _s=swapper, _last=last_slot_pos, **kwargs):
+            out = _orig(*args, **kwargs)
+            if torch.is_grad_enabled() and isinstance(out, Tensor) and out.requires_grad:
+                out = _PrefetchOnBackwardEntry.apply(out, _s, _last)
+            return out
+
+        trail_block.forward = _trail_forward
+
+    swapped: list[int] = []
+    for slot_pos, slot in enumerate(slots):
+        block = slot.block
         original_forward = block.forward
         original_inner = block._forward
         block._in_outer_forward = False
+        block._swap_index = slot.global_index
+        block._stage_swapper = swapper
 
-        block._swap_index = global_index
-
-        def _load(b=block):
-            for parameter in b.parameters():
-                pinned = getattr(parameter, "_cpu_pinned", None)
-                if pinned is not None and parameter.data.device.type == "cpu":
-                    # A fresh buffer, not a view of the pinned copy: the pinned
-                    # tensor keeps its own cpu storage and this one is what the
-                    # autograd graph will reference for this pass.
-                    gpu_buf = torch.empty_like(pinned, device=device)
-                    gpu_buf.copy_(pinned, non_blocking=True)
-                    parameter._gpu_active = gpu_buf
-                    parameter.data = gpu_buf
-
-        def _offload(b=block):
-            for parameter in b.parameters():
-                pinned = getattr(parameter, "_cpu_pinned", None)
-                gpu_buf = getattr(parameter, "_gpu_active", None)
-                if pinned is not None:
-                    parameter.data = pinned
-                if gpu_buf is not None:
-                    # Repointing ``.data`` is not enough: any transposed view
-                    # saved by a linear's backward (``weight.t()``) keeps a
-                    # strong reference to the same StorageImpl, so the 809 MiB
-                    # stays resident even though no parameter points at it.
-                    # Shrinking the storage is the FSDP way to actually hand the
-                    # block back, and the recompute path re-creates the buffer
-                    # from the pinned copy anyway.
-                    try:
-                        gpu_buf.untyped_storage().resize_(0)
-                    except RuntimeError:
-                        pass
-                    parameter._gpu_active = None
-
-        def _wrapped_forward(*args, _orig=original_forward, _b=block, _l=_load, _o=_offload, **kwargs):
+        def _wrapped_forward(
+            *args,
+            _orig=original_forward,
+            _b=block,
+            _s=swapper,
+            _pos=slot_pos,
+            _last=last_slot_pos,
+            **kwargs,
+        ):
+            retain_for_eager_bwd = bool(
+                torch.is_grad_enabled()
+                and not getattr(_b, "gradient_checkpointing", False)
+            )
             _b._in_outer_forward = True
-            _l()
+            _s.bind_and_prefetch_next(_pos, next_slot_pos=_pos + 1)
+            ok = False
             try:
-                return _orig(*args, **kwargs)
+                out = _orig(*args, **kwargs)
+                ok = True
+                return out
             finally:
                 _b._in_outer_forward = False
-                _o()
+                if not (ok and retain_for_eager_bwd):
+                    _s.release(_pos, drain_pool=(_pos == _last or not ok))
 
-        def _wrapped_inner(x, *args, _orig=original_inner, _b=block, _l=_load, **kwargs):
+        def _wrapped_inner(
+            x,
+            *args,
+            _orig=original_inner,
+            _b=block,
+            _s=swapper,
+            _pos=slot_pos,
+            **kwargs,
+        ):
             if not _b._in_outer_forward:
-                # Called by the checkpoint's recompute, not by the outer forward.
-                _l()
-                if x.requires_grad:
-                    x = _OffloadAfterBackward.apply(x, _b)
+                _s.bind_and_prefetch_next(_pos, next_slot_pos=_pos - 1)
+            # Attach in BOTH outer forward and recompute: under non-reentrant
+            # checkpointing (use_reentrant=False), outer forward constructs the
+            # real backward graph while recompute must execute the identical op
+            # sequence to satisfy saved-tensor hook replay.
+            if torch.is_grad_enabled() and isinstance(x, Tensor) and x.requires_grad:
+                x = _OffloadAfterBackward.apply(x, _s, _pos)
             return _orig(x, *args, **kwargs)
 
         block.forward = _wrapped_forward
         block._forward = _wrapped_inner
-        swapped.append(global_index)
+        swapped.append(slot.global_index)
     return swapped
 
 

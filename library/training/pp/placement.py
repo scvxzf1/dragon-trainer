@@ -294,6 +294,25 @@ def release_foreign_blocks(
     return (start, end)
 
 
+def release_anima_foreign_submodules(
+    model: nn.Module, *, is_first: bool
+) -> tuple[str, ...]:
+    """Drop pre-block / post-block submodules (and unused llm_adapter) for this stage."""
+
+    dropped: list[str] = []
+    names: list[str] = ["final_layer" if is_first else "x_embedder"]
+    llm_adapter = getattr(model, "llm_adapter", None)
+    if llm_adapter is not None and not any(
+        p.requires_grad for p in llm_adapter.parameters()
+    ):
+        names.append("llm_adapter")
+    for name in names:
+        if getattr(model, name, None) is not None:
+            setattr(model, name, None)
+            dropped.append(name)
+    return tuple(dropped)
+
+
 __all__ = [
     "REQUIRED_MODEL_ATTRIBUTES",
     "AnimaStageLayout",
@@ -303,6 +322,7 @@ __all__ = [
     "build_anima_stage_layout",
     "build_anima_stage_module",
     "layout_from_plan",
+    "release_anima_foreign_submodules",
     "release_foreign_blocks",
     "stage_adapter_modules",
 ]

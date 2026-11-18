@@ -38,13 +38,16 @@ from library.training.pp.errors import PipelineParallelError
 
 __all__ = [
     "KREA2_BOUNDARY_FROZEN_INDICES",
+    "KREA2_LOCAL_FREQS_FROZEN_INDICES",
     "Krea2WireSpec",
     "resolve_krea2_wire_spec",
     "krea2_boundary_metas",
 ]
 
-#: Wire slots that carry no gradient (everything except the residual stream).
+#: Wire slots that carry no gradient in legacy 5-slot probe mode.
 KREA2_BOUNDARY_FROZEN_INDICES: tuple[int, ...] = (1, 2, 3, 4)
+#: Wire slots that carry no gradient when ``freqs`` is cached locally (4-slot wire).
+KREA2_LOCAL_FREQS_FROZEN_INDICES: tuple[int, ...] = (1, 2, 3)
 
 #: Latent channels of Krea-2 (patchified into the token stream).
 KREA2_LATENT_CHANNELS = 16
@@ -157,18 +160,21 @@ def krea2_boundary_metas(
 
     dtype = policy.activation_dtype
     mb = wire.microbatch_batch_size
-    boundary = (
-        _meta((mb, wire.token_cap, wire.dim), dtype),
-        _meta((mb, 1, 6 * wire.dim), dtype),
-        # RoPE frequencies are produced by ``posemb`` in fp32 regardless of the
-        # activation dtype; declaring them fp16 here makes pipelining reject the
-        # real output.  Keep fp32 -- casting would change the numerics.
-        _meta(wire.freqs_shape, torch.float32),
-        # torch pipelining force-enables requires_grad on received tensors, so
-        # the boolean mask rides as float32 (exact for 0/1) instead of bool.
-        _meta((mb, wire.token_cap), torch.float32),
-        _meta((mb, 1, wire.dim), dtype),
-    )
+    if bool(getattr(stage, "local_freqs", False)):
+        boundary = (
+            _meta((mb, wire.token_cap, wire.dim), dtype),
+            _meta((mb, 1, 6 * wire.dim), dtype),
+            _meta((mb, wire.token_cap), torch.float32),
+            _meta((mb, 1, wire.dim), dtype),
+        )
+    else:
+        boundary = (
+            _meta((mb, wire.token_cap, wire.dim), dtype),
+            _meta((mb, 1, 6 * wire.dim), dtype),
+            _meta(wire.freqs_shape, torch.float32),
+            _meta((mb, wire.token_cap), torch.float32),
+            _meta((mb, 1, wire.dim), dtype),
+        )
     if stage.is_first:
         return (_meta(wire.microbatch_latent_shape, latent_dtype),), boundary
     # The trailing stage hands back the model's raw per-image output:
@@ -231,6 +237,7 @@ class Krea2StageLayout:
     stages: int
     block_range: tuple[int, int]
     num_blocks: int
+    local_freqs: bool = False
 
     @property
     def is_first(self) -> bool:
@@ -304,6 +311,7 @@ def build_krea2_stage_module(
     wire: Krea2WireSpec,
     network: Any = None,
     compute_policy: PpComputePolicy | None = None,
+    local_freqs: bool = True,
 ):
     """``(layout, stage_module)`` for this rank, trimmed to its own blocks."""
 
@@ -320,6 +328,7 @@ def build_krea2_stage_module(
         stages=int(stages),
         block_range=(int(block_range[0]), int(block_range[1])),
         num_blocks=len(blocks),
+        local_freqs=bool(local_freqs),
     )
     start, stop = layout.block_range
     sliced = list(blocks[start:stop])
@@ -368,6 +377,9 @@ def build_krea2_stage_module(
         ),
         max_text_tokens=wire.max_text_tokens,
         img_tokens=wire.img_tokens,
+        patch=wire.patch,
+        latent_hw=(int(wire.latent_shape[3]), int(wire.latent_shape[4])),
+        local_freqs=layout.local_freqs,
     )
     # The adapter lives on the network object, not inside the base module tree
     # (apply_to patches forward instead of swapping modules), so the stage needs
@@ -783,6 +795,11 @@ def build_krea2_pipeline_runtime(
             policy=policy,
             latent_dtype=policy.activation_dtype,
         )
+        frozen_indices = (
+            KREA2_LOCAL_FREQS_FROZEN_INDICES
+            if layout.local_freqs
+            else KREA2_BOUNDARY_FROZEN_INDICES
+        )
         stage = FrozenBoundaryPipelineStage(
             stage_module,
             int(rank),
@@ -791,12 +808,8 @@ def build_krea2_pipeline_runtime(
             input_args=tuple(input_args),
             output_args=tuple(output_args),
             group=group,
-            frozen_input_indices=(
-                () if layout.is_first else KREA2_BOUNDARY_FROZEN_INDICES
-            ),
-            frozen_output_indices=(
-                () if layout.is_last else KREA2_BOUNDARY_FROZEN_INDICES
-            ),
+            frozen_input_indices=() if layout.is_first else frozen_indices,
+            frozen_output_indices=() if layout.is_last else frozen_indices,
         )
     except Exception as exc:  # noqa: BLE001 - negotiated below, never rank-local
         build_error = (

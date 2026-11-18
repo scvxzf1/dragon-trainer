@@ -21,14 +21,20 @@ def load_vae(args, weight_dtype):
 
 def load_dit(trainer, args, weight_dtype, accelerator, text_encoders):
     from library.runtime.block_swap_controller import BlockSwapConfig
+    from library.training.pp.gate import pipeline_parallel_enabled
     from .block_swap import enable_moss_block_swap
     from .weights import load_moss_transformer
 
     swap = int(getattr(args, "blocks_to_swap", 0) or 0)
     trainer.is_swapping_blocks = bool(swap)
+    loading_device = (
+        "cpu"
+        if (swap or pipeline_parallel_enabled(args))
+        else accelerator.device
+    )
     model = load_moss_transformer(
         args.pretrained_model_name_or_path, dtype=weight_dtype,
-        device="cpu" if swap else accelerator.device,
+        device=loading_device,
     )
     model.set_attn_mode(getattr(args, "attn_mode", "torch"))
     if getattr(args, "gradient_checkpointing", False):
