@@ -30,6 +30,7 @@ def _write_moss_config(configs: Path, *, dit: str, qwen3: str, vae: str) -> None
         "\n".join(
             [
                 'model_family = "moss_image"',
+                'source_image_dir = "image_dataset/selected"',
                 f'pretrained_model_name_or_path = "{dit}"',
                 f'qwen3 = "{qwen3}"',
                 f'vae = "{vae}"',

@@ -436,3 +436,32 @@ def test_web_preflight_partial_whitelist_resolution_stays_a_warning(monkeypatch)
 
     assert [item[:2] for item in checks] == [("warning", "nf4_dir1")]
     assert "compute capability" in checks[0][2]
+
+
+def test_every_audited_compat_code_has_chinese_web_translation() -> None:
+    import re
+
+    from library.training.compat_matrix import (
+        ALWAYS_ERROR_CODES,
+        RELAXABLE_UNWIRED_CODES,
+        UNVERIFIED_C1_CODES,
+        TrainingCompatIssue,
+    )
+
+    cjk_re = re.compile(r"[\u4e00-\u9fff]")
+    all_codes = sorted(ALWAYS_ERROR_CODES | UNVERIFIED_C1_CODES | RELAXABLE_UNWIRED_CODES)
+    for code in [*all_codes, "moss_image_blocks_to_swap", "moss_image_int8_experimental"]:
+        item = TrainingCompatIssue(code=code, key="test_key", message="raw english detail")
+        translated = preflight_compat._compat_web_message(item)
+        assert cjk_re.search(translated), f"missing Chinese translation for code={code!r}: {translated!r}"
+
+
+def test_allow_policy_relaxed_warning_preserves_chinese_allow_marker() -> None:
+    compat = check_training_compat(
+        {"model_family": "z_image", "base_compute": "nf4"},
+        unverified_policy="allow",
+    )
+    issue = next(item for item in compat.warnings if item.code == "z_image_base_compute")
+    translated = preflight_compat._compat_web_message(issue)
+    assert "Z-Image" in translated
+    assert "compat_unverified_policy=allow" in translated

@@ -4,6 +4,7 @@ from collections.abc import Mapping
 import logging
 
 from library.config.normalize import is_flag_enabled
+from library.models.family_registry import get_model_family_spec
 
 
 logger = logging.getLogger(__name__)
@@ -39,23 +40,25 @@ def _dataset_rows(config):
 
 def check_moss_training_contract(out, config):
     """Append errors to the shared compatibility builder; never mutate settings."""
+    moss_spec = get_model_family_spec("moss_image")
+
     def reject(key, active, detail):
         if active:
             out.error(f"moss_image_{key}", key, f"MOSS-Image v1 {detail}")
 
     for key, default, accepted in (
-        ("mixed_precision", "bf16", {"bf16", "fp16", "no"}),
-        ("base_compute", "bf16", {"bf16"}),
+        ("mixed_precision", "bf16", set(moss_spec.quantization.mixed_precisions)),
+        ("base_compute", "bf16", set(moss_spec.quantization.runtime_base_compute)),
         ("moss_te_quantization", "nf4", {"nf4", "bf16"}),
-        ("attn_mode", "torch", {"torch", "sdpa"}),
-        ("selective_checkpoint", "off", {"off"}),
+        ("attn_mode", "torch", set(moss_spec.attention.accepted_modes)),
+        ("selective_checkpoint", "off", set(moss_spec.quantization.selective_checkpoint_modes)),
         ("adaptive_precision", "off", {"off"}),
         ("timestep_sampling", "uniform", {"uniform"}),
         ("weighting_scheme", "none", {"none"}),
         ("loss_type", "l2", {"l2"}),
         ("sampler", "default", {"default"}),
         ("sample_sampler", "euler", {"euler"}),
-        ("block_swap_transfer_dtype", "bf16", {"bf16", "int8"}),
+        ("block_swap_transfer_dtype", "bf16", set(moss_spec.quantization.block_swap_transfer_dtypes)),
         ("v100_flash_stability", "off", {"off"}),
     ):
         value = str(_get(config, key, default) or default).strip().lower()
@@ -122,9 +125,10 @@ def check_moss_training_contract(out, config):
     length = _number(_get(config, "max_token_length"), 4096)
     reject("max_token_length", not (1 <= length <= 4096 and length.is_integer()),
            "requires an integer max_token_length between 1 and 4096.")
+    max_swap = moss_spec.topology.max_blocks_to_swap
     swap = _number(_get(config, "blocks_to_swap"))
-    reject("blocks_to_swap", not (0 <= swap <= 40 and float(swap).is_integer()),
-           "requires an integer blocks_to_swap between 0 and 40.")
+    reject("blocks_to_swap", not (0 <= swap <= max_swap and float(swap).is_integer()),
+           f"requires an integer blocks_to_swap between 0 and {max_swap}.")
     rows = list(_dataset_rows(config))
     batches = [_get(config, "train_batch_size", 1), _get(config, "batch_size", 1)]
     batches.extend(row["batch_size"] for row in rows if "batch_size" in row)

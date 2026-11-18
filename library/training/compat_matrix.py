@@ -39,9 +39,10 @@ VALID_SELECTIVE_CHECKPOINTS = {
 }
 #: ``sdpa``/``cudnn``/``cudnn_sdpa`` 与 ``normalize_krea2_attention_mode`` 同口径
 #: 都是 ``torch`` 的别名（cli_entry 会把 sdpa 归一成 torch），预检必须放行。
-#: 保持与 library/models/krea2_raw/attention_backend.py 同源。
-KREA2_ATTN_MODES = {"", "torch", "flash", "sdpa", "cudnn", "cudnn_sdpa"}
-KREA2_SELECTIVE_CHECKPOINTS = {"off", "every_other"}
+#: 直接由 ``MODEL_FAMILY_REGISTRY`` 派生，消除多轨漂移。
+_KREA2_SPEC = get_model_family_spec("krea2_raw")
+KREA2_ATTN_MODES = {"", *_KREA2_SPEC.attention.accepted_modes}
+KREA2_SELECTIVE_CHECKPOINTS = set(_KREA2_SPEC.quantization.selective_checkpoint_modes)
 #: sm>=80 有原生 BF16 Tensor Core。``nf4_dir1`` / ``krea2_attn_fp16`` 只服务
 #: sm<80（sm70 V100、sm75 2080Ti/T4），与 ``set_dir1_enabled`` /
 #: ``set_krea2_attn_fp16`` 的运行时抛错条件一一对应。
@@ -67,11 +68,7 @@ _FP16_INNER_PATH_GATES: dict[str, dict[str, str]] = {
     },
 }
 #: ``attn_mode`` 与 cli_entry / normalize_krea2_attention_mode 同口径的别名。
-KREA2_ATTENTION_TORCH_ALIASES = {
-    "sdpa": "torch",
-    "cudnn": "torch",
-    "cudnn_sdpa": "torch",
-}
+KREA2_ATTENTION_TORCH_ALIASES = dict(_KREA2_SPEC.attention.mode_aliases)
 #: 让 ``krea2_attn_fp16`` 空转的非 bf16 计算精度（q.dtype != bfloat16）。
 NON_BF16_COMPUTE_PRECISIONS = {"fp16", "no", "fp32"}
 #: 会触发第 5 类告警的 inert 原因集合（flash 死开关 / 非 bf16 compute）。
@@ -906,12 +903,18 @@ def _check_qwen_image_2_1_contract(out: _CompatBuilder, config, *,
            "base_compute=bf16 (pre-quantized mixed-NF4 weights load under bf16)")
     forbid("adaptive_precision", str(_get(config, "adaptive_precision", "off") or "off").lower() != "off",
            f"{family} does not support adaptive precision")
+    qwen_spec = get_model_family_spec("qwen_image_2_1")
     mode = str(_get(config, "attn_mode", "torch") or "torch").lower()
-    forbid("attn_mode", mode not in {"torch", "sdpa", "native", "flash"} or _bool_value(_get(config, "xformers")),
-           f"{family} supports torch, sdpa and native (sdpa/native are torch "
-           "aliases) plus bf16 FlashAttention varlen")
-    forbid("blocks_to_swap", blocks_to_swap > 30,
-           f"{family} blocks_to_swap must be between 0 and 30")
+    forbid(
+        "attn_mode",
+        mode not in qwen_spec.attention.accepted_modes
+        or (qwen_spec.attention.forbids_xformers_flag and _bool_value(_get(config, "xformers"))),
+        f"{family} supports torch, sdpa and native (sdpa/native are torch "
+        "aliases) plus bf16 FlashAttention varlen",
+    )
+    max_qwen_swap = qwen_spec.topology.max_blocks_to_swap
+    forbid("blocks_to_swap", blocks_to_swap > max_qwen_swap,
+           f"{family} blocks_to_swap must be between 0 and {max_qwen_swap}")
     forbid("block_swap_checkpoint", blocks_to_swap > 0 and not _bool_value(_get(config, "gradient_checkpointing")),
            f"{family} block swap requires full gradient_checkpointing")
     forbid("compile_backend", torch_compile and str(_get(config, "dynamo_backend", "inductor") or "inductor") == "cudagraphs",
@@ -1341,8 +1344,9 @@ def check_training_compat(
                 message,
             )
         attn_mode = str(_get(config, "attn_mode", "flash") or "flash").strip().lower()
-        if attn_mode not in {"torch", "flash", "sdpa", "native"} or _bool_value(
-            _get(config, "xformers"), False
+        if attn_mode not in family_spec.attention.accepted_modes or (
+            family_spec.attention.forbids_xformers_flag
+            and _bool_value(_get(config, "xformers"), False)
         ):
             out.error(
                 "z_image_attention_mode",
@@ -1382,12 +1386,14 @@ def check_training_compat(
                 "torch_compile",
                 "Z-Image torch.compile has not been validated; keep torch_compile=false.",
             )
-        if blocks_to_swap > 28:
+        max_z_swap = family_spec.topology.max_blocks_to_swap
+        if blocks_to_swap > max_z_swap:
             out.error(
                 "z_image_block_swap_range",
                 "blocks_to_swap",
-                "Z-Image has 30 main layers and requires at least two resident layers; "
-                "use blocks_to_swap between 0 and 28.",
+                f"Z-Image has {family_spec.topology.default_num_blocks} main layers and "
+                "requires at least two resident layers; "
+                f"use blocks_to_swap between 0 and {max_z_swap}.",
             )
         if selective_checkpoint != "off":
             out.error(

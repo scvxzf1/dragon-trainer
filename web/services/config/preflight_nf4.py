@@ -6,7 +6,7 @@ from library.quantization.training import (
 )
 
 
-def check_mixed_nf4(cfg, path, add):
+def check_mixed_nf4(cfg, path, add, *, skip_experiment_policy_errors: bool = False):
     if cfg.get('model_family') not in FAMILIES or not path.is_file():
         return
     try:
@@ -14,7 +14,7 @@ def check_mixed_nf4(cfg, path, add):
         if manifest is None:
             if cfg.get('qwen_nf4_compile_experiment') is True:
                 add('error', 'qwen_nf4_compile_experiment',
-                    'Qwen NF4 compile experiment requires actual mixed NF4 weights', path)
+                    'Qwen NF4 编译实验要求基础模型为预量化 mixed-NF4 权重文件', path)
             return
         family = manifest['family']
         errors = mixed_nf4_training_errors(family, cfg, allow_compile=True)
@@ -27,7 +27,8 @@ def check_mixed_nf4(cfg, path, add):
         from library.quantization.qwen_nf4_compile_policy import qwen_nf4_compile_experiment_errors
         experiment_errors = qwen_nf4_compile_experiment_errors(family, cfg)
         if experiment_errors:
-            add('error', 'qwen_nf4_compile_experiment', '; '.join(experiment_errors), path)
+            if not skip_experiment_policy_errors:
+                add('error', 'qwen_nf4_compile_experiment', '; '.join(experiment_errors), path)
         elif not errors:
             add('warning', 'qwen_nf4_compile_experiment',
                 'Experimental Qwen NF4 compile: two-step AdamW, preview and full-state resume smoke passed; continuous/resume trajectory equivalence, other optimizers, long runs, speed, image quality and other hardware remain unverified', path)

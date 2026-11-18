@@ -505,7 +505,12 @@ def preflight_training_config(
         check_file("qwen3", "Qwen3 文本编码器", (".safetensors", ".pt", ".pth", ".bin"))
         check_file("vae", "VAE 模型", (".safetensors", ".pt", ".pth", ".ckpt"))
     if cfg.get("pretrained_model_name_or_path"):
-        check_mixed_nf4(cfg, _resolve_project_path(str(cfg["pretrained_model_name_or_path"])), add)
+        check_mixed_nf4(
+            cfg,
+            _resolve_project_path(str(cfg["pretrained_model_name_or_path"])),
+            add,
+            skip_experiment_policy_errors=True,
+        )
     _check_dataset_image_dirs(cfg, add)
     _check_network_weights(cfg, add, variant, preset, methods_subdir, config_file)
     dataset_config_path = _dataset_config_path_from_cfg(cfg)

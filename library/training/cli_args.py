@@ -1606,48 +1606,11 @@ def verify_training_args(args: argparse.Namespace):
         args.use_text_cache
     )
 
-    prior_weight = float(getattr(args, "prior_preservation_weight", 0.0) or 0.0)
-    inverted_mask_prior_weight = float(
-        getattr(args, "inverted_mask_prior_weight", 0.0) or 0.0
-    )
-    dop_enabled = bool((getattr(args, "diff_output_preservation_class", None) or "").strip())
-    blank_enabled = bool(getattr(args, "blank_prompt_preservation", False))
-    if prior_weight > 0.0 and not (blank_enabled or dop_enabled):
-        raise ValueError(
-            "prior_preservation_weight requires blank_prompt_preservation=true or "
-            "diff_output_preservation_class to select a prior-preservation mode."
-        )
-    if prior_weight > 0.0 and blank_enabled and dop_enabled:
-        raise ValueError(
-            "blank_prompt_preservation and diff_output_preservation_class are mutually exclusive."
-        )
-    if prior_weight > 0.0 and not getattr(args, "use_text_cache", False):
-        raise ValueError(
-            "prior preservation requires use_text_cache=true so prior text "
-            "conditions are cached before the text encoder is released."
-        )
-    if inverted_mask_prior_weight > 0.0 and not getattr(args, "use_text_cache", False):
-        raise ValueError(
-            "inverted_mask_prior requires use_text_cache=true so the base "
-            "reference forward can reuse cached text conditions."
-        )
-    if (
-        prior_weight > 0.0
-        and (blank_enabled or dop_enabled)
-        and not getattr(args, "cache_llm_adapter_outputs", False)
-    ):
-        raise ValueError(
-            "prior preservation requires cache_llm_adapter_outputs=true so training "
-            "batches carry max-padded crossattn_emb without re-running the text encoder."
-        )
-    if (
-        inverted_mask_prior_weight > 0.0
-        and not getattr(args, "cache_llm_adapter_outputs", False)
-    ):
-        raise ValueError(
-            "inverted_mask_prior requires cache_llm_adapter_outputs=true so training "
-            "batches carry max-padded crossattn_emb for the adapter-disabled base forward."
-        )
+    from library.training.regularization_compat import validate_no_dataset_regularization
+
+    reg_issues = validate_no_dataset_regularization(args)
+    if reg_issues:
+        raise ValueError(reg_issues[0].cli_message)
 
     if args.adaptive_noise_scale is not None and args.noise_offset is None:
         raise ValueError("adaptive_noise_scale requires noise_offset")
