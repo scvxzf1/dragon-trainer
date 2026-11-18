@@ -8,6 +8,7 @@ from typing import Optional, Union
 
 from library.datasets import DatasetGroup, MinimalDataset
 from library.env import resolve_model_family
+from library.models.family_registry import get_model_family_spec
 from library.runtime.offloading import (
     normalize_block_swap_restore_mode,
     normalize_block_swap_transfer_dtype,
@@ -244,11 +245,12 @@ def assert_training_extra_args(
                 f"mode={con_mode} index={con_index}"
             )
 
-    train_dataset_group.verify_bucket_reso_steps(
-        16
-    )  # WanVAE spatial downscale = 8 and patch size = 2
+    pixel_alignment = get_model_family_spec(
+        resolve_model_family(args)
+    ).latent_space.pixel_alignment
+    train_dataset_group.verify_bucket_reso_steps(pixel_alignment)
     if val_dataset_group is not None:
-        val_dataset_group.verify_bucket_reso_steps(16)
+        val_dataset_group.verify_bucket_reso_steps(pixel_alignment)
 
 
 def recheck_compat_after_precision_resolve(args) -> None:

@@ -62,18 +62,17 @@ def wired_pp_families() -> list[dict[str, Any]]:
     """PP 已接线族表（供前端置灰未接线的 PP 选项）。"""
 
     from library.models.family_registry import model_family_capability_catalog
-    from library.training.pp.gate import TRAINER_PP_WIRED_FAMILIES
 
     catalog = model_family_capability_catalog()
     families: list[dict[str, Any]] = []
     for item in catalog:
         pipeline = item.get("pipeline_parallel")
-        if not pipeline:
+        if not isinstance(pipeline, dict):
             continue
         families.append({
             "family": item["name"],
             "display_name": item["display_name"],
-            "wired": item["name"] in TRAINER_PP_WIRED_FAMILIES,
+            "wired": bool(pipeline.get("trainer_wired")),
             "runtime_backend": pipeline.get("runtime_backend"),
             "stages": list(pipeline.get("stages") or []),
             "schedules": list(pipeline.get("schedules") or []),
@@ -309,10 +308,29 @@ def diagnose_pp_dataset_readiness(cfg: dict[str, Any]) -> list[dict[str, str]]:
     return checks
 
 
-_WIRED_FAMILY_HINT = (
-    "当前模型族还没有接入流水线并行训练，请改用单卡或数据并行。"
-    "已接线的族：Anima、MOSS-Image、Krea-2；Z-Image / Qwen-Image 2.1 暂不支持。"
-)
+def _wired_family_hint() -> str:
+    from library.models.family_registry import MODEL_FAMILY_REGISTRY
+
+    wired = [
+        spec.display_name
+        for spec in MODEL_FAMILY_REGISTRY.values()
+        if spec.pipeline_parallel is not None and spec.pipeline_parallel.trainer_wired
+    ]
+    unwired = [
+        spec.display_name
+        for spec in MODEL_FAMILY_REGISTRY.values()
+        if spec.pipeline_parallel is None or not spec.pipeline_parallel.trainer_wired
+    ]
+    wired_text = "、".join(wired) if wired else "无"
+    unwired_text = " / ".join(unwired)
+    suffix = f"；{unwired_text} 暂不支持。" if unwired_text else "。"
+    return (
+        "当前模型族还没有接入流水线并行训练，请改用单卡或数据并行。"
+        f"已接线的族：{wired_text}{suffix}"
+    )
+
+
+_WIRED_FAMILY_HINT = _wired_family_hint()
 
 
 def _parse_topology_pairs(text: str) -> list[tuple[int, int, str]]:
@@ -432,7 +450,7 @@ def _classify_admission_failure(exc: BaseException) -> tuple[str, str, str, str]
         )
     code = str(getattr(exc, "code", "") or "")
     if code == "pp_trainer_path_unavailable":
-        return ("error", "trainer_path_unavailable", _WIRED_FAMILY_HINT, raw)
+        return ("error", "trainer_path_unavailable", _wired_family_hint(), raw)
     if code == "pp_runtime_unavailable":
         return (
             "error",

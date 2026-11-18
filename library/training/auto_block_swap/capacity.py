@@ -7,6 +7,7 @@ from itertools import chain
 from pathlib import Path
 
 from library.env import resolve_model_family
+from library.models.family_registry import MODEL_FAMILY_REGISTRY, get_model_family_spec
 
 
 class HostLimitReached(RuntimeError):
@@ -22,6 +23,9 @@ def model_swap_limit(block_count: int) -> int:
 def preload_model_capacity(args) -> dict:
     """Read local checkpoint metadata only; fail closed on unknown structure."""
     family = resolve_model_family(args)
+    spec = get_model_family_spec(family)
+    if not spec.topology.supports_adaptive_swap_capacity:
+        raise ValueError(f"Adaptive swap capacity does not support model_family={family!r}")
     path = getattr(args, "pretrained_model_name_or_path", None)
     if family == "anima":
         from library.anima.checkpoint import inspect_anima_checkpoint
@@ -43,7 +47,7 @@ def preload_model_capacity(args) -> dict:
         root = Path(path).expanduser()
         if root.is_file():
             validate_z_image_single_file(str(root), "transformer")
-            count = 30
+            count = spec.topology.default_num_blocks
         else:
             config = root / "transformer" / "config.json"
             if not config.is_file():
@@ -60,11 +64,10 @@ def preload_model_capacity(args) -> dict:
 
 
 def loaded_blocks(model, family: str):
-    if family in {"anima", "krea2_raw"}:
-        return model.blocks
-    if family == "z_image":
-        return model.layers
-    raise ValueError(f"Adaptive swap capacity does not support model_family={family!r}")
+    spec = MODEL_FAMILY_REGISTRY.get(family)
+    if spec is None or not spec.topology.supports_adaptive_swap_capacity:
+        raise ValueError(f"Adaptive swap capacity does not support model_family={family!r}")
+    return getattr(model, spec.topology.block_container)
 
 
 def loaded_model_limit(model, family: str) -> int:

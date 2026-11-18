@@ -1,13 +1,42 @@
 """Exact main-block MLP policy; never select arbitrary matching linears."""
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+
+from library.models.family_registry import MODEL_FAMILY_REGISTRY
+
 POLICY = 'main-mlp-nf4-v1'
 ALL_LINEAR_POLICY = 'all-linear-nf4-v1'
-FAMILIES = {
-    'krea2_raw': ('blocks', 'mlp', ('gate', 'up', 'down')),
-    'z_image': ('layers', 'feed_forward', ('w1', 'w2', 'w3')),
-    'qwen_image_2_1': ('transformer_blocks', 'img_mlp', ('gate_layer', 'proj', 'out')),
-}
+
+
+class _RegistryMixedNf4Families(Mapping[str, tuple[str, str, tuple[str, ...]]]):
+    def _items(self) -> dict[str, tuple[str, str, tuple[str, ...]]]:
+        return {
+            name: (
+                spec.topology.block_container,
+                spec.topology.mixed_nf4_mlp_spec[0],
+                spec.topology.mixed_nf4_mlp_spec[1],
+            )
+            for name, spec in MODEL_FAMILY_REGISTRY.items()
+            if spec.topology.mixed_nf4_mlp_spec is not None
+        }
+
+    def __getitem__(self, key: str) -> tuple[str, str, tuple[str, ...]]:
+        return self._items()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._items())
+
+    def __len__(self) -> int:
+        return len(self._items())
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return self._items() == dict(other)
+        return NotImplemented
+
+
+FAMILIES: Mapping[str, tuple[str, str, tuple[str, ...]]] = _RegistryMixedNf4Families()
 
 
 def policy_paths(family, count):
@@ -41,7 +70,8 @@ def model_paths(model, family, policy=POLICY):
     if family not in FAMILIES:
         raise ValueError('Unsupported mixed NF4 family')
     if policy == ALL_LINEAR_POLICY:
-        if family != 'qwen_image_2_1':
+        spec = MODEL_FAMILY_REGISTRY.get(family)
+        if spec is None or not spec.topology.supports_all_linear_nf4:
             raise ValueError('All-linear NF4 policy is supported only for qwen_image_2_1')
         paths = model_linear_paths(model)
         from bitsandbytes.nn import Linear4bit, Params4bit

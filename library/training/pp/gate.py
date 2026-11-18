@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from library.models.family_registry import (
+    MODEL_FAMILY_REGISTRY,
     PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
     get_model_family_spec,
     normalize_registered_family,
@@ -202,9 +203,15 @@ def pipeline_parallel_runtime_issue(
 
 #: Families whose *trainer-level* PP path is wired into
 #: ``train_session._run_training_session`` (dedicated PP session dispatch).
-#: The DDP-interior guards (:func:`require_trainer_topology`) keep refusing
-#: every family -- a wired family is dispatched *before* those code paths run.
-TRAINER_PP_WIRED_FAMILIES = frozenset({"moss_image", "anima", "krea2_raw"})
+#: Derived from ``MODEL_FAMILY_REGISTRY`` so capability discovery and runtime
+#: admission cannot drift apart.  The DDP-interior guards
+#: (:func:`require_trainer_topology`) keep refusing every family -- a wired
+#: family is dispatched *before* those code paths run.
+TRAINER_PP_WIRED_FAMILIES = frozenset(
+    name
+    for name, spec in MODEL_FAMILY_REGISTRY.items()
+    if spec.pipeline_parallel is not None and spec.pipeline_parallel.trainer_wired
+)
 
 
 def trainer_pp_wired(config: Mapping[str, Any] | object) -> bool:
@@ -213,8 +220,11 @@ def trainer_pp_wired(config: Mapping[str, Any] | object) -> bool:
     if not pipeline_parallel_enabled(config):
         return False
     family, backend = family_runtime_backend(config)
+    spec = MODEL_FAMILY_REGISTRY.get(family)
+    pipeline = spec.pipeline_parallel if spec is not None else None
     return (
-        family in TRAINER_PP_WIRED_FAMILIES
+        pipeline is not None
+        and pipeline.trainer_wired
         and backend == PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B
     )
 

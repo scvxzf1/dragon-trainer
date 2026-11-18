@@ -40,6 +40,7 @@ class LatentSpaceSpec:
     normalization: str = "anima_mean_std"
     scaling_factor: float | None = None
     shift_factor: float | None = None
+    pixel_alignment_override: int | None = None
 
     def __post_init__(self) -> None:
         if self.vae_spatial_compression <= 0:
@@ -61,6 +62,11 @@ class LatentSpaceSpec:
     def pixel_stride(self) -> int:
         """One DiT patch token covers ``pixel_stride`` source pixels per side."""
         return self.vae_spatial_compression * self.patch_spatial
+
+    @property
+    def pixel_alignment(self) -> int:
+        """Required source-image pixel divisibility (e.g. 32px for Qwen 2x2 slots)."""
+        return int(self.pixel_alignment_override or self.pixel_stride)
 
     @property
     def patch_embed_in_channels(self) -> int:
@@ -130,6 +136,7 @@ QWEN_IMAGE_21_F16C64_P1 = LatentSpaceSpec(
     patch_spatial=1,
     cache_suffix="_qwen_image_2_1.npz",
     normalization="qwen_image_2_1_mean_std",
+    pixel_alignment_override=32,
 )
 
 MOSS_IMAGE_F16C128_P1 = LatentSpaceSpec(

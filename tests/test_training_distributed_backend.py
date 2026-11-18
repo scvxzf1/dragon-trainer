@@ -110,8 +110,10 @@ def test_hardware_diagnosis_is_pp_only():
 
 def test_wired_pp_families_marks_wired_and_unwired():
     families = {item["family"]: item for item in dist.wired_pp_families()}
+    assert families["anima"]["wired"] is True
+    assert families["krea2_raw"]["wired"] is True
     assert families["moss_image"]["wired"] is True
-    assert families["krea2_raw"]["wired"] is False
+    assert families["z_image"]["wired"] is False
     assert families["moss_image"]["stages"]
 
 
@@ -310,8 +312,29 @@ def test_diagnose_pp_config_uses_the_family_aware_admission():
     assert "pp_config_invalid" in refused[0]["detail"]
 
 
-def test_diagnose_pp_config_explains_an_unwired_family_in_plain_words():
-    cfg = dict(_PP_CFG, model_family="krea2_raw")
+def test_diagnose_pp_config_explains_an_unwired_family_in_plain_words(monkeypatch):
+    from dataclasses import replace
+
+    from library.models.family_registry import (
+        MODEL_FAMILY_REGISTRY,
+        PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
+    )
+
+    z_spec = MODEL_FAMILY_REGISTRY["z_image"]
+    assert z_spec.pipeline_parallel is not None
+    monkeypatch.setitem(
+        MODEL_FAMILY_REGISTRY,
+        "z_image",
+        replace(
+            z_spec,
+            pipeline_parallel=replace(
+                z_spec.pipeline_parallel,
+                runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
+                trainer_wired=False,
+            ),
+        ),
+    )
+    cfg = dict(_PP_CFG, model_family="z_image")
     checks = dist.diagnose_pp_config(cfg, 2)
     unwired = [check for check in checks if check["key"] == "trainer_path_unavailable"]
     assert unwired, checks

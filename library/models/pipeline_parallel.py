@@ -177,7 +177,7 @@ def validate_pipeline_parallel_config(
     # preflight / compat layer rejects it before any worker or NCCL starts, and
     # because every family's PipelineRuntimeConfig.from_config() funnels through
     # this function as well.
-    if normalized.blocks_to_swap and canonical != "krea2_raw":
+    if normalized.blocks_to_swap and not pipeline_spec.supports_stage_block_swap:
         raise ValueError(
             "pipeline_parallel_blocks_to_swap is only implemented for "
             f"krea2/krea2_raw, but model_family={canonical!r} sets it to "

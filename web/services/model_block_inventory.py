@@ -9,17 +9,10 @@ from pathlib import Path
 import re
 
 from library.env import anima_home
-from library.models.family_registry import normalize_registered_family
+from library.models.family_registry import get_model_family_spec
 from web.services import path_safety
 
 ROOT = anima_home()
-_PREFIXES = {
-    "anima": "blocks",
-    "krea2_raw": "blocks",
-    "z_image": "layers",
-    "moss_image": "layers",
-    "qwen_image_2_1": "transformer_blocks",
-}
 _MAX_HEADER_BYTES = 64 * 1024 * 1024
 
 
@@ -76,7 +69,8 @@ def _weight_files(path: Path) -> list[Path]:
 
 
 def inspect_model_blocks(model_family: str, model_path: str) -> dict[str, object]:
-    family = normalize_registered_family(model_family)
+    spec = get_model_family_spec(model_family)
+    family = spec.name
     raw = path_safety.normalize_user_path_value(os.path.expandvars(model_path)).strip()
     if not raw:
         raise ValueError("请先填写基础模型路径")
@@ -85,7 +79,7 @@ def inspect_model_blocks(model_family: str, model_path: str) -> dict[str, object
     path = path_safety.resolve_display_path(str(Path(raw).expanduser()), root=ROOT)
     assert path is not None
     files = _weight_files(path)
-    prefix = _PREFIXES[family]
+    prefix = spec.topology.block_container
     # Comfy checkpoints may wrap the same DiT keys in model.diffusion_model.
     pattern = re.compile(rf"^(?:net\.|model\.diffusion_model\.)?{prefix}\.(\d+)\.")
     indices = {int(match.group(1)) for file in files for key in _keys(file)
@@ -96,5 +90,5 @@ def inspect_model_blocks(model_family: str, model_path: str) -> dict[str, object
     if len(indices) != count:
         raise ValueError("权重 block 索引必须从 0 开始且连续，无法确定实际层数")
     return {"ok": True, "model_family": family, "block_count": count,
-            "max_swap": max(0, count - 2), "source": "safetensors_header",
+            "max_swap": spec.topology.swap_limit_for(count), "source": "safetensors_header",
             "file_count": len(files)}

@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, TypeVar
 
+from library.models.capability_specs import (
+    AttentionCapabilitySpec,
+    CompileCapabilitySpec,
+    QuantizationCapabilitySpec,
+    TopologyCapabilitySpec,
+)
 from library.models.latent_space import (
     ANIMA_F8C16_P2,
     Z_IMAGE_F8C16_P2,
@@ -53,10 +59,25 @@ class PipelineParallelFamilySpec:
     supported_splits: frozenset[str]
     stage_zero_block_offset: int = 0
     runtime_backend: str | None = None
+    trainer_wired: bool = False
+    supports_stage_block_swap: bool = False
+    requires_batch_divisible_by_microbatches: bool = False
 
     @property
     def runtime_available(self) -> bool:
         return self.runtime_backend is not None
+
+
+_DEFAULT_TOPOLOGY = TopologyCapabilitySpec(
+    block_container="blocks",
+    default_num_blocks=28,
+    known_num_blocks=frozenset({28}),
+)
+_DEFAULT_ATTENTION = AttentionCapabilitySpec(
+    canonical_modes=frozenset({"torch", "sdpa"}),
+)
+_DEFAULT_COMPILE = CompileCapabilitySpec(supported=False)
+_DEFAULT_QUANTIZATION = QuantizationCapabilitySpec()
 
 
 @dataclass(frozen=True)
@@ -82,6 +103,10 @@ class ModelFamilySpec:
     training_task_key: str | None = None
     supported_preview_tasks: frozenset[str] = frozenset({"t2i"})
     max_preview_references: int = 0
+    topology: TopologyCapabilitySpec = _DEFAULT_TOPOLOGY
+    attention: AttentionCapabilitySpec = _DEFAULT_ATTENTION
+    compile_spec: CompileCapabilitySpec = _DEFAULT_COMPILE
+    quantization: QuantizationCapabilitySpec = _DEFAULT_QUANTIZATION
 
 
 MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
@@ -107,6 +132,45 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         image_test_flow_shift_default=1.0,
         automatic_flow_shift=False,
         supports_anima_selective_lora=True,
+        topology=TopologyCapabilitySpec(
+            block_container="blocks",
+            default_num_blocks=28,
+            known_num_blocks=frozenset({28, 40}),
+            supports_adaptive_swap_capacity=True,
+        ),
+        attention=AttentionCapabilitySpec(
+            canonical_modes=frozenset(
+                {"flash", "torch", "mem_efficient", "sageattn", "flex", "xformers", "sdpa"}
+            ),
+        ),
+        compile_spec=CompileCapabilitySpec(
+            supported=True,
+            inductor_modes=frozenset(
+                {"default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"}
+            ),
+            supports_dynamic_seq=True,
+            supports_seq_bands=True,
+            allows_cudagraphs=True,
+        ),
+        quantization=QuantizationCapabilitySpec(
+            runtime_base_compute=frozenset({"bf16", "w8a16_convrot", "w8a8_convrot"}),
+            mixed_precisions=frozenset({"bf16", "fp16", "no"}),
+            block_swap_transfer_dtypes=frozenset({"bf16", "fp8_e4m3", "int8"}),
+            selective_checkpoint_modes=frozenset(
+                {
+                    "off",
+                    "adapter_aware",
+                    "every_other",
+                    "mlp_only",
+                    "mlp_layer1_only",
+                    "peak_blocks_adapter_aware",
+                    "peak_blocks_mlp",
+                    "peak_blocks_mlp_layer1",
+                }
+            ),
+            supports_checkpoint_offload=True,
+            supports_v100_flash_stability=True,
+        ),
         pipeline_parallel=PipelineParallelFamilySpec(
             block_container="blocks",
             default_num_blocks=28,
@@ -116,6 +180,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             supported_splits=frozenset({"balanced"}),
             # Stage-local 1F1B PP runtime (``library/training/pp``).
             runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
+            trainer_wired=True,
         ),
     ),
     "krea2_raw": ModelFamilySpec(
@@ -139,6 +204,33 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         image_test_flow_shift_default=3.0,
         automatic_flow_shift=True,
         supports_anima_selective_lora=False,
+        topology=TopologyCapabilitySpec(
+            block_container="blocks",
+            default_num_blocks=28,
+            known_num_blocks=frozenset({28}),
+            supports_adaptive_swap_capacity=True,
+            mixed_nf4_mlp_spec=("mlp", ("gate", "up", "down")),
+        ),
+        attention=AttentionCapabilitySpec(
+            canonical_modes=frozenset({"torch", "flash"}),
+            mode_aliases={"sdpa": "torch", "cudnn": "torch", "cudnn_sdpa": "torch"},
+            forbids_xformers_flag=True,
+        ),
+        compile_spec=CompileCapabilitySpec(
+            supported=True,
+            inductor_modes=frozenset({"default"}),
+            supports_dynamic_seq=False,
+            supports_seq_bands=False,
+            allows_cudagraphs=False,
+        ),
+        quantization=QuantizationCapabilitySpec(
+            runtime_base_compute=frozenset({"bf16", "nf4", "w8a16_convrot", "w8a8_convrot"}),
+            mixed_precisions=frozenset({"bf16", "fp16", "no"}),
+            block_swap_transfer_dtypes=frozenset({"bf16", "fp8_e4m3", "int8"}),
+            selective_checkpoint_modes=frozenset({"off", "every_other"}),
+            supports_checkpoint_offload=False,
+            supports_v100_flash_stability=False,
+        ),
         pipeline_parallel=PipelineParallelFamilySpec(
             block_container="blocks",
             default_num_blocks=28,
@@ -151,6 +243,9 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             # and is verified end to end on 2xV100 (forward, backward, AdamW,
             # multi-step numerical alignment vs a single-card reference arm).
             runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
+            trainer_wired=True,
+            supports_stage_block_swap=True,
+            requires_batch_divisible_by_microbatches=True,
         ),
     ),
     "z_image": ModelFamilySpec(
@@ -174,6 +269,27 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         image_test_flow_shift_default=6.0,
         automatic_flow_shift=False,
         supports_anima_selective_lora=False,
+        topology=TopologyCapabilitySpec(
+            block_container="layers",
+            default_num_blocks=30,
+            known_num_blocks=frozenset({30}),
+            supports_adaptive_swap_capacity=True,
+            mixed_nf4_mlp_spec=("feed_forward", ("w1", "w2", "w3")),
+        ),
+        attention=AttentionCapabilitySpec(
+            canonical_modes=frozenset({"torch", "flash"}),
+            mode_aliases={"sdpa": "torch", "native": "torch"},
+            forbids_xformers_flag=True,
+        ),
+        compile_spec=CompileCapabilitySpec(supported=False),
+        quantization=QuantizationCapabilitySpec(
+            runtime_base_compute=frozenset({"bf16"}),
+            mixed_precisions=frozenset({"bf16", "fp16", "no"}),
+            block_swap_transfer_dtypes=frozenset({"bf16", "fp8_e4m3", "int8"}),
+            selective_checkpoint_modes=frozenset({"off"}),
+            supports_checkpoint_offload=False,
+            supports_v100_flash_stability=False,
+        ),
         pipeline_parallel=PipelineParallelFamilySpec(
             block_container="layers",
             default_num_blocks=30,
@@ -208,6 +324,33 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         image_test_flow_shift_default=1.0,
         automatic_flow_shift=True,
         supports_anima_selective_lora=False,
+        topology=TopologyCapabilitySpec(
+            block_container="transformer_blocks",
+            default_num_blocks=32,
+            known_num_blocks=frozenset({32}),
+            mixed_nf4_mlp_spec=("img_mlp", ("gate_layer", "proj", "out")),
+            supports_all_linear_nf4=True,
+        ),
+        attention=AttentionCapabilitySpec(
+            canonical_modes=frozenset({"torch", "flash"}),
+            mode_aliases={"sdpa": "torch", "native": "torch"},
+            forbids_xformers_flag=True,
+        ),
+        compile_spec=CompileCapabilitySpec(
+            supported=True,
+            inductor_modes=frozenset({"default"}),
+            supports_dynamic_seq=True,
+            supports_seq_bands=False,
+            allows_cudagraphs=False,
+        ),
+        quantization=QuantizationCapabilitySpec(
+            runtime_base_compute=frozenset({"bf16"}),
+            mixed_precisions=frozenset({"bf16", "fp16", "no"}),
+            block_swap_transfer_dtypes=frozenset({"bf16", "fp8_e4m3", "int8"}),
+            selective_checkpoint_modes=frozenset({"off"}),
+            supports_checkpoint_offload=False,
+            supports_v100_flash_stability=False,
+        ),
         pipeline_parallel=None,
     ),
     "moss_image": ModelFamilySpec(
@@ -231,6 +374,25 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         image_test_flow_shift_default=5.0,
         automatic_flow_shift=False,
         supports_anima_selective_lora=False,
+        topology=TopologyCapabilitySpec(
+            block_container="layers",
+            default_num_blocks=42,
+            known_num_blocks=frozenset({42}),
+        ),
+        attention=AttentionCapabilitySpec(
+            canonical_modes=frozenset({"torch"}),
+            mode_aliases={"sdpa": "torch"},
+            forbids_xformers_flag=True,
+        ),
+        compile_spec=CompileCapabilitySpec(supported=False),
+        quantization=QuantizationCapabilitySpec(
+            runtime_base_compute=frozenset({"bf16"}),
+            mixed_precisions=frozenset({"bf16", "fp16", "no"}),
+            block_swap_transfer_dtypes=frozenset({"bf16", "int8"}),
+            selective_checkpoint_modes=frozenset({"off"}),
+            supports_checkpoint_offload=False,
+            supports_v100_flash_stability=False,
+        ),
         pipeline_parallel=PipelineParallelFamilySpec(
             block_container="layers",
             default_num_blocks=42,
@@ -244,6 +406,8 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             # shared identifier, so the family switch and the compatibility
             # gate cannot drift apart.  No separate availability flag exists.
             runtime_backend=PIPELINE_PARALLEL_RUNTIME_BACKEND_1F1B,
+            trainer_wired=True,
+            requires_batch_divisible_by_microbatches=True,
         ),
     ),
 }
@@ -291,6 +455,11 @@ def model_family_capability_catalog() -> tuple[dict[str, object], ...]:
                 "configurable": True,
                 "runtime_available": pipeline.runtime_available,
                 "runtime_backend": pipeline.runtime_backend,
+                "trainer_wired": pipeline.trainer_wired,
+                "supports_stage_block_swap": pipeline.supports_stage_block_swap,
+                "requires_batch_divisible_by_microbatches": (
+                    pipeline.requires_batch_divisible_by_microbatches
+                ),
                 "block_container": pipeline.block_container,
                 "default_num_blocks": pipeline.default_num_blocks,
                 "known_num_blocks": sorted(pipeline.known_num_blocks),
@@ -304,8 +473,12 @@ def model_family_capability_catalog() -> tuple[dict[str, object], ...]:
                 "display_name": spec.display_name,
                 "aliases": sorted(spec.aliases),
                 "latent_cache_suffix": spec.latent_space.cache_suffix,
+                "pixel_alignment": spec.latent_space.pixel_alignment,
                 "text_cache_suffix": spec.text_cache.suffix,
                 "text_cache_schema": spec.text_cache.schema,
+                "block_container": spec.topology.block_container,
+                "default_num_blocks": spec.topology.default_num_blocks,
+                "max_blocks_to_swap": spec.topology.max_blocks_to_swap,
                 "supported_network_specs": (
                     sorted(spec.supported_network_specs)
                     if spec.supported_network_specs is not None
@@ -317,6 +490,7 @@ def model_family_capability_catalog() -> tuple[dict[str, object], ...]:
                 "supported_preview_tasks": sorted(spec.supported_preview_tasks),
                 "max_preview_references": spec.max_preview_references,
                 "supported_attention_modes": sorted(spec.supported_attention_modes),
+                "supported_attention_aliases": dict(spec.attention.mode_aliases),
                 "pipeline_parallel": pipeline_payload,
             }
         )

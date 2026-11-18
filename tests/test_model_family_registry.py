@@ -209,3 +209,50 @@ def test_krea_cache_rejects_malformed_tensor_layout(tmp_path) -> None:
     assert not strategy.is_disk_cached_outputs_expected(str(cache_path))
     with pytest.raises(ValueError, match="invalid Krea text cache tensor layout"):
         strategy.load_outputs_npz(str(cache_path))
+
+
+def test_family_registry_and_capability_specs_stay_torch_free() -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; "
+        "import library.models.capability_specs; "
+        "from library.models.family_registry import model_family_capability_catalog; "
+        "catalog = model_family_capability_catalog(); "
+        "assert len(catalog) >= 5; "
+        "assert 'torch' not in sys.modules, sorted(m for m in sys.modules if m.startswith('torch'))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+
+def test_ssot_capability_consumers_match_registry() -> None:
+    from library.models.family_registry import model_family_capability_catalog
+    from library.quantization import policy as quant_policy
+    from library.training.pp.gate import TRAINER_PP_WIRED_FAMILIES
+    from library.training.pp.trainer_adapters import ADAPTERS
+
+    assert TRAINER_PP_WIRED_FAMILIES == frozenset(ADAPTERS)
+    assert quant_policy.FAMILIES == {
+        "krea2_raw": ("blocks", "mlp", ("gate", "up", "down")),
+        "z_image": ("layers", "feed_forward", ("w1", "w2", "w3")),
+        "qwen_image_2_1": ("transformer_blocks", "img_mlp", ("gate_layer", "proj", "out")),
+    }
+
+    catalog = {item["name"]: item for item in model_family_capability_catalog()}
+    assert catalog["anima"]["max_blocks_to_swap"] == 26
+    assert catalog["krea2_raw"]["max_blocks_to_swap"] == 26
+    assert catalog["z_image"]["max_blocks_to_swap"] == 28
+    assert catalog["qwen_image_2_1"]["max_blocks_to_swap"] == 30
+    assert catalog["moss_image"]["max_blocks_to_swap"] == 40
+    assert catalog["qwen_image_2_1"]["pixel_alignment"] == 32
+    assert catalog["anima"]["pixel_alignment"] == 16
+    assert catalog["krea2_raw"]["pipeline_parallel"]["supports_stage_block_swap"] is True
+    assert catalog["anima"]["pipeline_parallel"]["supports_stage_block_swap"] is False
+    assert catalog["z_image"]["pipeline_parallel"]["trainer_wired"] is False
