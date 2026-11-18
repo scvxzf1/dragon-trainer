@@ -58,6 +58,22 @@ def _attention(q, k, v, rope, heads):
     return F.scaled_dot_product_attention(q.to(v.dtype), k.to(v.dtype), v).transpose(1, 2).flatten(2)
 
 
+def _attention_packed(q, k, v, rope, heads, spans):
+    shape = (*q.shape[:2], heads, q.shape[-1] // heads)
+    q_rot = _rotate(q.reshape(shape), rope).transpose(1, 2).to(v.dtype)
+    k_rot = _rotate(k.reshape(shape), rope).transpose(1, 2).to(v.dtype)
+    v_heads = v.reshape(shape).transpose(1, 2)
+    parts = [
+        F.scaled_dot_product_attention(
+            q_rot[:, :, start:end, :],
+            k_rot[:, :, start:end, :],
+            v_heads[:, :, start:end, :],
+        )
+        for start, end in spans
+    ]
+    return torch.cat(parts, dim=2).transpose(1, 2).flatten(2)
+
+
 class _TextBlock(nn.Module):
     def __init__(self, dim, ffn_dim, heads):
         super().__init__()
@@ -115,6 +131,13 @@ class _Block(nn.Module):
             return checkpoint(self._forward, x, rope, modulation, use_reentrant=False)
         return self._forward(x, rope, modulation)
 
+    def forward_packed(self, x, rope, modulation, spans):
+        if self.gradient_checkpointing and torch.is_grad_enabled():
+            return checkpoint(
+                self._forward_packed, x, rope, modulation, spans, use_reentrant=False
+            )
+        return self._forward_packed(x, rope, modulation, spans)
+
     def _forward(self, x, rope, modulation):
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
@@ -126,6 +149,116 @@ class _Block(nn.Module):
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self.proj['ffn_up_gate'](y.to(dtype)).chunk(2, -1)
         return x + self.proj['ffn_down'](_situ(hidden, gate)) * gate_f[:, None]
+
+    def _forward_packed(self, x, rope, modulation, spans):
+        shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
+        normed1 = self.norm1(x)
+        y = torch.cat(
+            [
+                normed1[:, s:e] * (1 + scale_a[i : i + 1, None]) + shift_a[i : i + 1, None]
+                for i, (s, e) in enumerate(spans)
+            ],
+            dim=1,
+        )
+        dtype = self.proj['q'].weight.dtype
+        y = y.to(dtype)
+        q = self.q_norm(self.proj['q'](y).unflatten(-1, (self.heads, -1))).flatten(2)
+        k = self.k_norm(self.proj['k'](y).unflatten(-1, (self.heads, -1))).flatten(2)
+        v = self.proj['v'](y)
+        attn_out = _attention_packed(q, k, v, rope, self.heads, spans)
+        proj_o = self.proj['o'](attn_out)
+        x = x + torch.cat(
+            [proj_o[:, s:e] * gate_a[i : i + 1, None] for i, (s, e) in enumerate(spans)],
+            dim=1,
+        )
+        normed2 = self.norm2(x)
+        y = torch.cat(
+            [
+                normed2[:, s:e] * (1 + scale_f[i : i + 1, None]) + shift_f[i : i + 1, None]
+                for i, (s, e) in enumerate(spans)
+            ],
+            dim=1,
+        )
+        hidden, gate = self.proj['ffn_up_gate'](y.to(dtype)).chunk(2, -1)
+        ffn_out = self.proj['ffn_down'](_situ(hidden, gate))
+        return x + torch.cat(
+            [ffn_out[:, s:e] * gate_f[i : i + 1, None] for i, (s, e) in enumerate(spans)],
+            dim=1,
+        )
+
+
+def run_moss_block_sequence(
+    layers,
+    samples: list[torch.Tensor],
+    ropes: list[torch.Tensor],
+    modulation: torch.Tensor,
+    *,
+    skip_layers=frozenset(),
+    offloader=None,
+    blocks_to_swap: int = 0,
+) -> list[torch.Tensor]:
+    """Run ``layers`` outer-most over ``samples`` (unlocks ``batch > 1`` swap & GPU GEMM fusion)."""
+    batch = len(samples)
+    if batch == 1:
+        x = samples[0]
+        rope = ropes[0]
+        for layer_index, layer in enumerate(layers):
+            if blocks_to_swap:
+                offloader.wait_for_block(layer_index)
+            if layer_index not in skip_layers:
+                x = layer(x, rope, modulation)
+            if blocks_to_swap:
+                offloader.submit_move_blocks(layers, layer_index)
+        return [x]
+
+    if samples[0].device.type != "cuda":
+        # Preserve bitwise-exact fp32 CPU per-sample numerics while still
+        # stepping the block-swap ring once per layer across the batch.
+        cur = list(samples)
+        for layer_index, layer in enumerate(layers):
+            if blocks_to_swap:
+                offloader.wait_for_block(layer_index)
+            if layer_index not in skip_layers:
+                for index in range(batch):
+                    cur[index] = layer(
+                        cur[index], ropes[index], modulation[index : index + 1]
+                    )
+            if blocks_to_swap:
+                offloader.submit_move_blocks(layers, layer_index)
+        return cur
+
+    first_len = int(samples[0].shape[1])
+    if all(int(sample.shape[1]) == first_len for sample in samples):
+        x_batched = torch.cat(samples, dim=0)
+        rope = ropes[0]
+        for layer_index, layer in enumerate(layers):
+            if blocks_to_swap:
+                offloader.wait_for_block(layer_index)
+            if layer_index not in skip_layers:
+                x_batched = layer(x_batched, rope, modulation)
+            if blocks_to_swap:
+                offloader.submit_move_blocks(layers, layer_index)
+        return list(x_batched.split(1, dim=0))
+
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for sample in samples:
+        next_cursor = cursor + int(sample.shape[1])
+        spans.append((cursor, next_cursor))
+        cursor = next_cursor
+    span_tuple = tuple(spans)
+    x_packed = torch.cat(samples, dim=1)
+    rope_packed = torch.cat(ropes, dim=1)
+    for layer_index, layer in enumerate(layers):
+        if blocks_to_swap:
+            offloader.wait_for_block(layer_index)
+        if layer_index not in skip_layers:
+            x_packed = layer.forward_packed(
+                x_packed, rope_packed, modulation, span_tuple
+            )
+        if blocks_to_swap:
+            offloader.submit_move_blocks(layers, layer_index)
+    return [x_packed[:, start:end] for start, end in span_tuple]
 
 
 class _RoPE(nn.Module):

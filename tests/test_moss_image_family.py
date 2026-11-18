@@ -277,3 +277,91 @@ def test_cfg_swap_ring_keeps_both_branches_complete(tiny_model, skip):
     assert offloader.prepares == 2  # Enter inference, restore training; no per-forward prepare.
     assert offloader.events == list(range(3)) * 4
     assert offloader.forward_only is False
+
+
+def test_batch_gt_1_block_swap_ring_and_compat_contract(tiny_model):
+    from library.training.compat_matrix import check_training_compat
+
+    offloader = _LogicalSwap(len(tiny_model.layers))
+    tiny_model.offloader, tiny_model.blocks_to_swap = offloader, 1
+    tiny_model.enable_gradient_checkpointing()
+    offloader.prepare_block_devices_before_forward(tiny_model.layers)
+
+    z = torch.randn(2, 128, 2, 2, requires_grad=True)
+    text = torch.randn(2, 4, 8)
+    mask = torch.tensor([[1, 1, 0, 0], [0, 1, 1, 1]], dtype=torch.bool)
+    times = torch.tensor([250.0, 750.0])
+
+    out = tiny_model(z, times, text, mask).sample
+    out.square().mean().backward()
+    assert out.shape == (2, 128, 2, 2)
+    assert z.grad is not None and torch.isfinite(z.grad).all()
+    # Layer-outer execution visits each block once for the whole batch=2 forward.
+    assert offloader.events == list(range(len(tiny_model.layers)))
+
+    report = check_training_compat(
+        {
+            "model_family": "moss_image",
+            "mixed_precision": "bf16",
+            "gradient_checkpointing": True,
+            "network_train_unet_only": True,
+            "use_vae_cache": True,
+            "use_text_cache": True,
+            "blocks_to_swap": 12,
+            "train_batch_size": 2,
+            "datasets": [{"batch_size": 2}],
+        }
+    )
+    assert not any(
+        issue.code == "moss_image_train_batch_size"
+        for issue in (*report.errors, *report.warnings)
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for packed/batched MOSS test")
+def test_cuda_packed_and_batched_moss_matches_single_sample_and_swaps(tiny_model):
+    device = torch.device("cuda")
+    model = deepcopy(tiny_model).to(device=device, dtype=torch.float32)
+    model.enable_gradient_checkpointing()
+
+    z = torch.randn(2, 128, 2, 3, device=device, requires_grad=True)
+    text = torch.randn(2, 4, 8, device=device)
+    mask_varlen = torch.tensor(
+        [[1, 1, 0, 0], [0, 1, 1, 1]], device=device, dtype=torch.bool
+    )
+    text_poisoned = text.clone()
+    text_poisoned[~mask_varlen] = float("nan")
+    times = torch.tensor([125.0, 875.0], device=device)
+
+    out_packed = model(z, times, text_poisoned, mask_varlen).sample
+    with torch.no_grad():
+        ref0 = model(z[0:1], times[0:1], text[0:1, mask_varlen[0]]).sample
+        ref1 = model(z[1:2], times[1:2], text[1:2, mask_varlen[1]]).sample
+    torch.testing.assert_close(
+        out_packed, torch.cat([ref0, ref1], dim=0), rtol=1e-4, atol=1e-4
+    )
+    out_packed.square().mean().backward()
+    assert z.grad is not None and torch.isfinite(z.grad).all()
+
+    z.grad = None
+    mask_eq = torch.tensor(
+        [[1, 1, 0, 0], [0, 1, 0, 1]], device=device, dtype=torch.bool
+    )
+    out_eq = model(z, times, text, mask_eq).sample
+    with torch.no_grad():
+        eq0 = model(z[0:1], times[0:1], text[0:1, mask_eq[0]]).sample
+        eq1 = model(z[1:2], times[1:2], text[1:2, mask_eq[1]]).sample
+    torch.testing.assert_close(
+        out_eq, torch.cat([eq0, eq1], dim=0), rtol=1e-4, atol=1e-4
+    )
+
+    swap_model = deepcopy(tiny_model).to(dtype=torch.float16)
+    swap_model.enable_gradient_checkpointing()
+    swap_model.enable_block_swap(1, device)
+    swap_model.move_to_device_except_swap_blocks(device)
+    swap_model.prepare_block_swap_before_forward()
+    z16 = z.detach().to(torch.float16).requires_grad_(True)
+    t16 = text.to(torch.float16)
+    out_swap = swap_model(z16, times, t16, mask_varlen).sample
+    out_swap.float().square().mean().backward()
+    assert z16.grad is not None and torch.isfinite(z16.grad).all()

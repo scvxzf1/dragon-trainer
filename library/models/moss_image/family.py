@@ -28,8 +28,12 @@ def sample_moss_flow(latents, *, generator=None):
     the same order as before, so the non-PP path is unchanged.
     """
 
-    noise = torch.randn(
-        latents.shape, generator=generator, device=latents.device, dtype=latents.dtype
+    noise = (
+        torch.randn_like(latents)
+        if generator is None
+        else torch.randn(
+            latents.shape, generator=generator, device=latents.device, dtype=latents.dtype
+        )
     )
     sigmas = uniform_grid_sigmas(
         latents.shape[0], device=latents.device, generator=generator

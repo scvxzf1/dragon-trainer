@@ -254,8 +254,7 @@ def assert_moss_stage_capabilities(model) -> None:
         raise PipelineParallelError(
             CODE_STAGE_CONTRACT,
             f"pipeline_parallel cannot own a block-swap model (blocks_to_swap="
-            f"{swap}); MOSS block swap also forces batch_size=1, which the "
-            "pipeline wire cannot serve",
+            f"{swap}); disable blocks_to_swap when enabling MOSS PP",
         )
     text_embedder = getattr(model, "text_embedder", None)
     if text_embedder is None or not hasattr(text_embedder, "blocks"):
@@ -429,9 +428,28 @@ class MossFirstStage(_MossStageBase):
         # so lengths ride the wire as float32 (exact for token counts) and are
         # converted back to ints on use.
         lengths = torch.zeros(batch, dtype=torch.float32, device=latents.device)
+        from .math import run_moss_block_sequence
+
         image_tokens = height * width
-        for index in range(batch):
-            length = int(text_mask[index].sum().item())
+        mask_bool = text_mask if text_mask.dtype == torch.bool else text_mask.bool()
+        length_list = mask_bool.sum(dim=1).detach().to(device="cpu").tolist()
+        samples: list[Tensor] = []
+        ropes: list[Tensor] = []
+        rope_cache: dict[int, Tensor] = {}
+        if batch > 1 and latents.device.type == "cuda":
+            videos_all = model.video_embedder(
+                latents.flatten(2).transpose(1, 2).to(video_dtype).contiguous()
+            )
+            videos = list(videos_all.split(1, dim=0))
+        else:
+            videos = [
+                model.video_embedder(
+                    latents[index : index + 1].flatten(2).transpose(1, 2).to(video_dtype).contiguous()
+                )
+                for index in range(batch)
+            ]
+        for index, raw_len in enumerate(length_list):
+            length = int(raw_len)
             if length < 1:
                 raise PipelineParallelError(
                     CODE_STAGE_CONTRACT,
@@ -439,25 +457,29 @@ class MossFirstStage(_MossStageBase):
                     f"(sample {index} has none); the production MOSS forward "
                     "rejects the same case",
                 )
-            context = text_hiddens[index:index + 1, text_mask[index].bool()]
-            video = latents[index:index + 1].flatten(2).transpose(1, 2)
-            video = model.video_embedder(
-                video.to(video_dtype).contiguous()
-            )
-            rope = model.rope(height, width, length, latents.device).to(video.dtype)
+            context = text_hiddens[index : index + 1, mask_bool[index]]
+            video = videos[index]
+            rope = rope_cache.get(length)
+            if rope is None:
+                rope = model.rope(height, width, length, latents.device).to(video.dtype)
+                rope_cache[length] = rope
             text = model.text_embedder(context, rope[:, image_tokens:])
-            sample = torch.cat((video, text), 1)
-            sample = _run_sample_layers(
-                self._block_stage, sample, rope, mod[index:index + 1]
-            )
+            samples.append(torch.cat((video, text), 1))
+            ropes.append(rope)
+            lengths[index] = length
+
+        samples = run_moss_block_sequence(
+            self._block_stage.blocks, samples, ropes, mod
+        )
+        for index, (sample, raw_len) in enumerate(zip(samples, length_list)):
+            length = int(raw_len)
             if sample.shape[1] != image_tokens + length:
                 raise PipelineParallelError(
                     CODE_STAGE_CONTRACT,
                     f"stage 0 produced {sample.shape[1]} joint tokens, expected "
                     f"{image_tokens + length}",
                 )
-            hidden[index:index + 1, :image_tokens + length] = sample
-            lengths[index] = length
+            hidden[index : index + 1, : image_tokens + length] = sample
         return hidden, lengths, mod.detach()
 
 
@@ -505,10 +527,15 @@ class MossLastStage(_MossStageBase):
                 model.video_head_modulation.weight.dtype
             )
         ).view(batch, 2, -1)
+        from .math import run_moss_block_sequence
+
         modulation = modulation.detach()
-        outputs = []
-        for index in range(batch):
-            length = int(lengths[index].item())
+        length_list = lengths.detach().to(device="cpu").tolist()
+        samples: list[Tensor] = []
+        ropes: list[Tensor] = []
+        rope_cache: dict[int, Tensor] = {}
+        for index, raw_len in enumerate(length_list):
+            length = int(raw_len)
             if length < 1 or self.image_tokens + length > token_cap:
                 raise PipelineParallelError(
                     CODE_STAGE_CONTRACT,
@@ -516,23 +543,40 @@ class MossLastStage(_MossStageBase):
                     f"[1, {token_cap - self.image_tokens}]; the wire metadata "
                     "and the built capacity disagree",
                 )
-            sample = hidden[index:index + 1, :self.image_tokens + length]
-            # The production forward casts RoPE to the activation dtype of the
-            # tokens it rotates; the boundary dtype *is* the pipeline's compute
-            # dtype, so both spellings agree -- stated explicitly here so the
-            # stage cannot drift from ``_RoPE`` semantics.
-            rope = model.rope(
-                self.height, self.width, length, sample.device
-            ).to(self.activation_dtype)
-            sample = _run_sample_layers(
-                self._block_stage, sample, rope, modulation[index:index + 1]
+            sample = hidden[index : index + 1, : self.image_tokens + length]
+            rope = rope_cache.get(length)
+            if rope is None:
+                rope = model.rope(
+                    self.height, self.width, length, sample.device
+                ).to(self.activation_dtype)
+                rope_cache[length] = rope
+            samples.append(sample)
+            ropes.append(rope)
+
+        samples = run_moss_block_sequence(
+            self._block_stage.blocks, samples, ropes, modulation
+        )
+        if batch > 1 and hidden.device.type == "cuda":
+            video_out = torch.cat([s[:, : self.image_tokens] for s in samples], dim=0)
+            video_out = model.final_norm_video(
+                video_out.to(model.final_norm_video.weight.dtype)
             )
+            video_out = video_out * (1 + head[:, 1, None]) + head[:, 0, None]
+            video_out = model.final_linear_video(
+                video_out.to(model.final_linear_video.weight.dtype)
+            )
+            return video_out.transpose(1, 2).reshape(
+                batch, -1, self.height, self.width
+            )
+
+        outputs = []
+        for index, sample in enumerate(samples):
             x = model.final_norm_video(
-                sample[:, :self.image_tokens].to(
+                sample[:, : self.image_tokens].to(
                     model.final_norm_video.weight.dtype
                 )
             )
-            x = x * (1 + head[index:index + 1, 1, None]) + head[index:index + 1, 0, None]
+            x = x * (1 + head[index : index + 1, 1, None]) + head[index : index + 1, 0, None]
             x = model.final_linear_video(
                 x.to(model.final_linear_video.weight.dtype)
             )
@@ -563,7 +607,9 @@ def _validate_text_wire(text_hiddens: Tensor, text_mask: Tensor, batch: int,
             f"text_mask must be [B, {max_text_tokens}] matching text_hiddens, got "
             f"{tuple(text_mask.shape)}",
         )
-    if not torch.all((text_mask == 0) | (text_mask == 1)):
+    if text_mask.dtype != torch.bool and not torch.all(
+        (text_mask == 0) | (text_mask == 1)
+    ):
         raise PipelineParallelError(
             CODE_SHAPE_CONTRACT,
             "text_mask must be a binary [B, slots] mask; non-binary values would "

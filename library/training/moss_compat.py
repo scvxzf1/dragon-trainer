@@ -130,10 +130,6 @@ def check_moss_training_contract(out, config):
     reject("blocks_to_swap", not (0 <= swap <= max_swap and float(swap).is_integer()),
            f"requires an integer blocks_to_swap between 0 and {max_swap}.")
     rows = list(_dataset_rows(config))
-    batches = [_get(config, "train_batch_size", 1), _get(config, "batch_size", 1)]
-    batches.extend(row["batch_size"] for row in rows if "batch_size" in row)
-    reject("train_batch_size", swap > 0 and any(_number(value) != 1 for value in batches),
-           "block swap requires batch size 1, including every dataset override.")
     for key in ("caption_dropout_rate", "caption_tag_dropout_rate", "caption_dropout_every_n_epochs"):
         reject(key, _number(_get(config, key)) != 0 or
                any(_number(row.get(key)) != 0 for row in rows), f"requires {key}=0 at every dataset level.")
