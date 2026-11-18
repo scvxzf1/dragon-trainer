@@ -62,14 +62,14 @@
   min-width: 34px;
   padding: 0;
 }
-@media (min-width: 801px) and (max-width: 1350px) {
+@media (min-width: 801px) and (max-width: 1024px) {
   .training-command-bar > .compact-tool:not(.primary-command) {
     width: 34px;
     min-width: 34px;
     padding-inline: 0;
     justify-content: center;
   }
-  .training-command-bar > .compact-tool:not(.primary-command) span {
+  .training-command-bar > .compact-tool:not(.primary-command) > span:not(.training-preview-icon) {
     display: none;
   }
 }

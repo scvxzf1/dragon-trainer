@@ -413,9 +413,14 @@
   min-height: 34px;
   padding: 0 8px;
   color: var(--ink);
-  background: var(--surface);
+  background-color: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 4px;
+}
+.training-edit-fields select {
+  padding-right: 32px;
+  -webkit-appearance: none;
+  appearance: none;
 }
 .training-edit-fields input[type="checkbox"] {
   width: 18px;

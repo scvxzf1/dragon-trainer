@@ -1,15 +1,30 @@
 .training-resource-groups {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   padding: 12px;
   min-width: 0;
 }
 .training-config-page .training-resource-group {
   min-width: 0;
   border: 1px solid rgb(226 232 240 / 80%);
-  border-radius: 12px;
+  border-radius: 10px;
   background: rgb(248 250 252 / 70%);
   overflow: hidden;
+}
+/* De-nest tiny 1-2 field core sections so single fields do not sit inside triple boxes. */
+.training-config-page .training-resource-group[data-compact-group="true"] {
+  border-color: transparent;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding-bottom: 4px;
+}
+.training-config-page .training-resource-group[data-compact-group="true"] h3 button {
+  min-height: 34px;
+  padding: 4px 4px 2px;
+}
+.training-config-page .training-resource-group[data-compact-group="true"] .training-edit-fields {
+  padding: 6px 0 8px;
 }
 .training-resource-group h3 { margin: 0; }
 .training-config-page .training-resource-group h3 button {
@@ -18,8 +33,8 @@
   flex-wrap: wrap;
   gap: 8px 10px;
   width: 100%;
-  min-height: 48px;
-  padding: 12px;
+  min-height: 44px;
+  padding: 10px 12px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -43,11 +58,12 @@
   align-items: center;
   gap: 7px;
   min-width: 0;
+  font-weight: 600;
 }
 .training-resource-group .resource-title > svg { color: #64748b; }
 .training-resource-group .resource-meta {
   display: flex;
-  flex: 1 1 220px;
+  flex: 1 1 200px;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
@@ -58,7 +74,7 @@
 }
 .resource-summary-badge,
 .resource-chip {
-  padding: 3px 8px;
+  padding: 2px 8px;
   border-radius: 999px;
   line-height: 1.5;
 }
@@ -78,9 +94,62 @@
 }
 .resource-own-count { color: #2563eb; background: #eff6ff; border-color: #dbeafe; }
 .training-config-page .training-resource-group > div { padding: 0; }
+
+/* Inline dependent child subpanel under an active parent control */
+.training-dependent-panel {
+  margin: 0 2px 2px 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+.training-dependent-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* Secondary drawer for inactive conditional children & low-frequency defaults */
+.training-advanced-drawer {
+  border-top: 1px dashed var(--line);
+  margin: 0 12px 10px;
+  padding-top: 6px;
+}
+.training-config-page .training-advanced-drawer-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  justify-content: flex-start;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: none;
+}
+.training-config-page .training-advanced-drawer-toggle:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+.training-advanced-drawer-body .training-edit-fields {
+  padding: 8px 0 2px;
+}
+
 :root[data-theme="dark"] .training-config-page .training-resource-group {
   background: var(--surface-subtle);
   border-color: var(--line);
+}
+:root[data-theme="dark"] .training-config-page .training-resource-group[data-compact-group="true"] {
+  background: transparent;
+  border-color: transparent;
+  border-bottom-color: var(--line);
 }
 :root[data-theme="dark"] .training-config-page .training-resource-group h3 button:hover {
   background: var(--surface);

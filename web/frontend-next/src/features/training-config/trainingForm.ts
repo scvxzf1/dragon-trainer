@@ -29,8 +29,9 @@ export const TRAINING_FIELDS: TrainingFieldSpec[] = [
     label: "模型族",
     group: "input",
     kind: "select",
-    options: ["anima", "krea2_raw", "z_image", "qwen_image_2_1"],
+    options: ["moss_image", "anima", "krea2_raw", "z_image", "qwen_image_2_1"],
     optionLabels: {
+      moss_image: "MOSS-Image",
       anima: "Anima",
       krea2_raw: "Krea-2 Raw",
       z_image: "Z-Image",
@@ -126,7 +127,18 @@ export const TRAINING_FIELDS: TrainingFieldSpec[] = [
     group: "input",
     kind: "boolean",
   },
-  { key: "network_module", label: "网络模块", group: "method", kind: "text" },
+  {
+    key: "network_module",
+    label: "网络模块",
+    group: "method",
+    kind: "select",
+    options: [
+      "networks.lora_anima",
+      "networks.methods.ip_adapter",
+      "networks.methods.easycontrol",
+      "networks.methods.soft_tokens",
+    ],
+  },
   {
     key: "network_dim",
     label: "LoRA rank",

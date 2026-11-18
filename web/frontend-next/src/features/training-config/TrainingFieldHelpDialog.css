@@ -17,6 +17,8 @@
   width: min(720px, 100%);
   max-height: min(86vh, 820px);
   overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--line-strong);

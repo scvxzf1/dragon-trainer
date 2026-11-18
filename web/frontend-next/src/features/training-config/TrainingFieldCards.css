@@ -87,6 +87,7 @@
 }
 .training-config-page .training-field-card .training-field-help[data-help-display] {
   display: block;
+  margin-top: auto;
   min-width: 0;
   max-width: 100%;
   color: var(--muted);

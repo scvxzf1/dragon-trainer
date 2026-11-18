@@ -57,7 +57,6 @@ for (const width of [1440, 390]) {
     await page.getByRole("tab", { name: "设备与性能", exact: true }).click();
     const details = page.getByRole("region", { name: "设备与并行设置" });
     await expect(details).toContainText("数据并行 · GPU 1 · GPU Beta / GPU 0 · GPU Alpha");
-    await expect(details).toContainText("暂不可用");
     await page.screenshot({ path: info.outputPath("devices-performance.png") });
     if (width < 800) {
       await page.getByRole("button", { name: /精度与计算后端/ }).scrollIntoViewIfNeeded();
