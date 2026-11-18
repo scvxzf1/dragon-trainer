@@ -8,7 +8,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from library.runtime.convrot.fused import fused_enabled, fused_w8a16_forward
+from library.runtime.convrot.fused import (
+    _cuda_default_tc_dtype,
+    fused_enabled,
+    fused_w8a16_forward,
+)
 from library.runtime.convrot.quant import (
     dequantize_weight,
     get_dequant_scratch,
@@ -135,7 +139,7 @@ def w8a16_forward_from_buffers(
     compute_dtype = (
         x.dtype
         if x.is_floating_point() and x.dtype in (torch.float16, torch.bfloat16)
-        else torch.bfloat16
+        else _cuda_default_tc_dtype(x.device)
         if x.device.type == "cuda"
         else torch.float32
     )

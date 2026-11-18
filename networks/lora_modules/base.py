@@ -283,19 +283,29 @@ class BaseLoRAModule(torch.nn.Module):
             return org_forwarded
 
         work = self._rank_compute_dtype(org_forwarded)
+        up_module = getattr(self, "lora_up", None)
+        can_scale_in_bottleneck = getattr(up_module, "bias", None) is None
         with self._rank_autocast_context(x, work):
             lx = _chunked_down(self, x, work)
             lx = self._gate(lx, work)
             if self.dropout is not None:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
             lx, scale = self._apply_rank_dropout(lx)
-            lx = _chunked_up(self, lx.to(work), work, org_forwarded.dtype)
+            lx = lx.to(work)
+            if can_scale_in_bottleneck:
+                # Scale inside the rank-r bottleneck before expanding to
+                # [B, L, out_features]: avoids two full-output fp16 temporaries
+                # and extra MulBackward0 graph state (~237 MiB saved per MLP).
+                lx = lx * (self.multiplier * scale)
+            lx = _chunked_up(self, lx, work, org_forwarded.dtype)
         # Cast to the base output's dtype *immediately*.  ``work`` is fp32 for a
         # fp32-master adapter, so ``lx`` is [B, L, out_features] fp32; the caller
         # casts right after anyway, but by then the allocation is already made --
         # measured as a 272 MiB single request (= 4352x16384x4) against 136 MiB
         # in fp16, which is what OOM'd a 16 GB card at the tail of the MLP.
         lx = lx.to(org_forwarded.dtype)
+        if can_scale_in_bottleneck:
+            return org_forwarded + lx
         return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:

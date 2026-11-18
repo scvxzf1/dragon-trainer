@@ -162,6 +162,53 @@ def quantize_weight_per_channel(weight: torch.Tensor) -> tuple[torch.Tensor, tor
     return quantized, scale
 
 
+class _Int8FrozenLinearFn(torch.autograd.Function):
+    """Dequantize frozen int8 weights on the fly without retaining FP16/BF16 W in autograd."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        quantized_weight: torch.Tensor,
+        scale: torch.Tensor,
+    ) -> torch.Tensor:
+        q = (
+            quantized_weight
+            if quantized_weight.device == x.device
+            else quantized_weight.to(device=x.device)
+        )
+        s = (
+            scale
+            if scale.device == x.device and scale.dtype == torch.float32
+            else scale.to(device=x.device, dtype=torch.float32)
+        )
+        restored = q.to(torch.float32) * s[:, None]
+        work_dtype = x.dtype if x.is_floating_point() else restored.dtype
+        ctx.quantized_weight = quantized_weight
+        ctx.scale = scale
+        ctx.x_dtype = x.dtype
+        return F.linear(x, restored.to(dtype=work_dtype), None)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        if not ctx.needs_input_grad[0]:
+            return None, None, None
+        q = ctx.quantized_weight
+        s = ctx.scale
+        if q.device != grad_output.device:
+            q = q.to(device=grad_output.device)
+        if s.device != grad_output.device or s.dtype != torch.float32:
+            s = s.to(device=grad_output.device, dtype=torch.float32)
+        work_dtype = (
+            grad_output.dtype if grad_output.is_floating_point() else torch.float32
+        )
+        restored = (q.to(torch.float32) * s[:, None]).to(dtype=work_dtype)
+        grad_x = grad_output.matmul(restored)
+        if grad_x.dtype != ctx.x_dtype:
+            grad_x = grad_x.to(dtype=ctx.x_dtype)
+        return grad_x, None, None
+
+
 class Int8FrozenLinear(nn.Module):
     """Store a frozen Linear weight as int8 + per-output-channel scale."""
 
@@ -198,6 +245,8 @@ class Int8FrozenLinear(nn.Module):
         return weight.to(dtype) if dtype is not None else weight
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if torch.is_grad_enabled() and x.requires_grad:
+            return _Int8FrozenLinearFn.apply(x, self.quantized_weight, self.scale)
         weight = self.dequantized_weight(dtype=x.dtype if x.is_floating_point() else None)
         return F.linear(x, weight, None)
 
@@ -317,9 +366,17 @@ def patch_lora_frozen_base_forwards_with_int8(
             )
 
         def _int8_base_forward(x: torch.Tensor, *, _lora=lora) -> torch.Tensor:
-            q = _lora._int8_base_quantized_weight.to(device=x.device)
-            s = _lora._int8_base_scale.to(device=x.device, dtype=torch.float32)
-            restored = q.to(torch.float32) * s[:, None]
+            q = _lora._int8_base_quantized_weight
+            s = _lora._int8_base_scale
+            if torch.is_grad_enabled() and x.requires_grad:
+                return _Int8FrozenLinearFn.apply(x, q, s)
+            q_dev = q if q.device == x.device else q.to(device=x.device)
+            s_dev = (
+                s
+                if s.device == x.device and s.dtype == torch.float32
+                else s.to(device=x.device, dtype=torch.float32)
+            )
+            restored = q_dev.to(torch.float32) * s_dev[:, None]
             dtype = x.dtype if x.is_floating_point() else restored.dtype
             return F.linear(x, restored.to(dtype=dtype), None)
 

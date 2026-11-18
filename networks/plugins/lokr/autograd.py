@@ -36,7 +36,9 @@ _LOKR_GROUPED_DELTA_BACKWARD_BACKENDS = frozenset(
         "triton_grad_w1_w2_grad_x",
     }
 )
-_MIN_TRITON_CC = (7, 5)
+# Pre-Ampere GPUs (SM70/SM75) lack TF32 tensor cores, so vectorized chunked
+# cuBLAS GEMM is ~6x faster and ~100 MiB leaner than SIMT FP32 Triton tl.dot.
+_MIN_TRITON_CC = (8, 0)
 _LOKR_ENABLE_BACKWARD_PHASE_RANGES = False
 _LOKR_BACKWARD_PHASE_NAMES = (
     "recompute_projected",
@@ -174,6 +176,7 @@ if triton is not None:  # pragma: no branch - definition only when Triton import
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
         FACTOR: tl.constexpr,
+        USE_IEEE: tl.constexpr = False,
     ):
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
@@ -209,7 +212,13 @@ if triton is not None:  # pragma: no branch - definition only when Triton import
                     mask=mask_n[:, None] & mask_k[None, :],
                     other=0.0,
                 ).to(tl.float32)
-                acc += tl.dot(x_block, tl.trans(w2_block)) * coeff
+                if USE_IEEE:
+                    acc += (
+                        tl.dot(x_block, tl.trans(w2_block), input_precision="ieee")
+                        * coeff
+                    )
+                else:
+                    acc += tl.dot(x_block, tl.trans(w2_block)) * coeff
 
         gate = tl.load(gate_ptr).to(tl.float32)
         base_ptrs = (
@@ -496,28 +505,28 @@ def _lokr_add_grouped_delta_forward_eager(
 ):
     x_view = x.reshape(-1, factor, in_dim)
     result_view = base.reshape(-1, factor, out_dim)
-    w1_float = w1.float()
-    w2_t = w2.float().transpose(0, 1)
     gate = gate_scale.float().reshape(-1)[0]
-    chunk_rows = _projection_chunk_rows(in_dim, out_dim, chunk_bytes)
+    w1_t = (w1.float() * gate).transpose(0, 1).contiguous()
+    w2_t = w2.float().transpose(0, 1)
+    # Each row holds ``factor`` slices of (in_dim + out_dim) fp32 intermediates.
+    chunk_rows = max(
+        1, _projection_chunk_rows(factor * in_dim, factor * out_dim, chunk_bytes)
+    )
 
-    for out_start in range(0, factor, group_size):
-        out_count = min(group_size, factor - out_start)
-        out_slice = slice(out_start, out_start + out_count)
-        for row_start in range(0, x_view.shape[0], chunk_rows):
-            row_end = min(row_start + chunk_rows, x_view.shape[0])
-            result_chunk = result_view[row_start:row_end, out_slice, :]
-            for in_factor in range(factor):
-                x_slice = x_view[row_start:row_end, in_factor, :].float()
-                projected = x_slice.matmul(w2_t)
-                coeffs = w1_float[out_slice, in_factor]
-                result_chunk.add_(
-                    (
-                        projected.unsqueeze(1)
-                        * coeffs.view(1, out_count, 1)
-                        * gate
-                    ).to(result_chunk.dtype)
-                )
+    for row_start in range(0, x_view.shape[0], chunk_rows):
+        row_end = min(row_start + chunk_rows, x_view.shape[0])
+        rn = row_end - row_start
+        # Compute x @ w2.T once per row chunk via batched GEMM instead of
+        # repeating it ceil(factor / group_size) * factor times in Python.
+        projected = (
+            x_view[row_start:row_end]
+            .float()
+            .reshape(rn * factor, in_dim)
+            .matmul(w2_t)
+            .reshape(rn, factor, out_dim)
+        )
+        mixed = projected.permute(0, 2, 1).matmul(w1_t).permute(0, 2, 1)
+        result_view[row_start:row_end].add_(mixed.to(result_view.dtype))
     return base
 
 
@@ -538,6 +547,10 @@ def _launch_lokr_grouped_delta_triton(
     block_n = 32 if out_dim >= 32 else 16
     block_k = 32 if in_dim >= 32 else 16
     num_warps = 8 if block_m == 32 and block_n == 32 else 4
+    use_ieee = (
+        base.device.type == "cuda"
+        and torch.cuda.get_device_capability(base.device) < (8, 0)
+    )
     grid = (
         triton.cdiv(rows, block_m),
         triton.cdiv(out_dim, block_n),
@@ -560,6 +573,7 @@ def _launch_lokr_grouped_delta_triton(
         BLOCK_N=block_n,
         BLOCK_K=block_k,
         FACTOR=factor,
+        USE_IEEE=use_ieee,
         num_warps=num_warps,
         num_stages=2,
     )
@@ -799,15 +813,68 @@ def _lokr_add_grouped_delta_backward(
             dtype=torch.float32,
         )
 
-    for out_start in range(0, factor, group_size):
-        out_count = min(group_size, factor - out_start)
-        out_slice = slice(out_start, out_start + out_count)
-        for row_start in range(0, x_view.shape[0], chunk_rows):
-            row_end = min(row_start + chunk_rows, x_view.shape[0])
-            grad = (grad_view[row_start:row_end, out_slice, :].float() * gate).contiguous()
-            x_chunk = x_view[row_start:row_end]
-            mixed = None
-            if use_triton_grad_w2_mixed:
+    if not use_triton_grad_w2_mixed:
+        # Vectorized chunked GEMM backward for CPU / pre-Ampere CUDA (e.g. V100)
+        # and explicit eager mode: computes x @ w2.T once per row chunk instead
+        # of repeating it across out_groups * factor Python iterations.
+        vec_chunk_rows = max(
+            1, _projection_chunk_rows(factor * in_dim, factor * out_dim, chunk_bytes)
+        )
+        for row_start in range(0, x_view.shape[0], vec_chunk_rows):
+            row_end = min(row_start + vec_chunk_rows, x_view.shape[0])
+            rn = row_end - row_start
+            x_chunk_f = x_view[row_start:row_end].float()
+            grad_chunk_f = grad_view[row_start:row_end].float() * gate
+
+            with _lokr_record_function("recompute_projected"):
+                projected = (
+                    x_chunk_f.reshape(rn * factor, in_dim)
+                    .matmul(w2_t)
+                    .reshape(rn, factor, out_dim)
+                )
+
+            with _lokr_record_function("grad_w1_reduce"):
+                grad_w1.add_(
+                    grad_chunk_f.permute(1, 0, 2)
+                    .reshape(factor, rn * out_dim)
+                    .matmul(
+                        projected.permute(1, 0, 2)
+                        .reshape(factor, rn * out_dim)
+                        .transpose(0, 1)
+                    )
+                )
+
+            with _lokr_record_function("grad_w2_reduce"):
+                grad_projected = (
+                    grad_chunk_f.permute(0, 2, 1)
+                    .matmul(w1_float)
+                    .permute(0, 2, 1)
+                    .reshape(rn * factor, out_dim)
+                )
+                grad_w2.add_(
+                    grad_projected.transpose(0, 1).matmul(
+                        x_chunk_f.reshape(rn * factor, in_dim)
+                    )
+                )
+
+            if grad_x is not None:
+                with _lokr_record_function("grad_x_writeback"):
+                    grad_x[row_start:row_end].copy_(
+                        grad_projected.matmul(w2_float)
+                        .reshape(rn, factor, in_dim)
+                        .to(x.dtype)
+                    )
+    else:
+        for out_start in range(0, factor, group_size):
+            out_count = min(group_size, factor - out_start)
+            out_slice = slice(out_start, out_start + out_count)
+            for row_start in range(0, x_view.shape[0], chunk_rows):
+                row_end = min(row_start + chunk_rows, x_view.shape[0])
+                grad = (
+                    grad_view[row_start:row_end, out_slice, :].float() * gate
+                ).contiguous()
+                x_chunk = x_view[row_start:row_end]
+                mixed = None
                 with _lokr_record_function("grad_w2_reduce"):
                     mixed = _launch_lokr_grouped_delta_grad_w2_mix_triton(
                         grad,
@@ -825,7 +892,7 @@ def _lokr_add_grouped_delta_backward(
                             out_dim,
                         )
                     )
-                if use_triton_grad_w2_grad_x:
+                if use_triton_grad_w2_grad_x or use_triton_grad_w1_w2_grad_x:
                     with _lokr_record_function("grad_x_writeback"):
                         grad_x[row_start:row_end].add_(
                             _reduce_lokr_grad_x_from_mixed(
@@ -837,62 +904,42 @@ def _lokr_add_grouped_delta_backward(
                                 x.dtype,
                             )
                         )
-                elif use_triton_grad_w1_w2_grad_x:
-                    with _lokr_record_function("grad_x_writeback"):
-                        grad_x[row_start:row_end].add_(
-                            _reduce_lokr_grad_x_from_mixed(
-                                mixed,
+                if use_triton_grad_w1_w2_grad_x:
+                    with _lokr_record_function("grad_w1_reduce"):
+                        grad_w1_contribution, grad_w1_partial_buffer = (
+                            reduce_lokr_grad_w1_triton(
+                                grad,
+                                x_chunk,
                                 w2_float,
                                 factor,
                                 in_dim,
                                 out_dim,
-                                x.dtype,
+                                partial_buffer=grad_w1_partial_buffer,
                             )
                         )
-            if use_triton_grad_w1_w2_grad_x:
-                with _lokr_record_function("grad_w1_reduce"):
-                    grad_w1_contribution, grad_w1_partial_buffer = (
-                        reduce_lokr_grad_w1_triton(
-                            grad,
-                            x_chunk,
-                            w2_float,
-                            factor,
-                            in_dim,
-                            out_dim,
-                            partial_buffer=grad_w1_partial_buffer,
+                        grad_w1[out_slice, :].add_(grad_w1_contribution)
+                    continue
+                for in_factor in range(factor):
+                    x_slice = x_chunk[:, in_factor, :].float()
+                    with _lokr_record_function("recompute_projected"):
+                        projected = x_slice.matmul(w2_t)
+
+                    with _lokr_record_function("grad_w1_reduce"):
+                        grad_w1[out_slice, in_factor].add_(
+                            torch.einsum("ngo,no->g", grad, projected)
                         )
-                    )
-                    grad_w1[out_slice, :].add_(grad_w1_contribution)
-                continue
-            for in_factor in range(factor):
-                x_slice = x_chunk[:, in_factor, :].float()
-                with _lokr_record_function("recompute_projected"):
-                    projected = x_slice.matmul(w2_t)
 
-                with _lokr_record_function("grad_w1_reduce"):
-                    grad_w1[out_slice, in_factor].add_(
-                        torch.einsum("ngo,no->g", grad, projected)
-                    )
-
-                coeffs = w1_float[out_slice, in_factor]
-                if use_triton_grad_w2_mixed:
-                    grad_projected = None
-                else:
-                    with _lokr_record_function("grad_w2_reduce"):
-                        grad_projected = torch.einsum("g,ngo->no", coeffs, grad)
-                        grad_w2.add_(grad_projected.transpose(0, 1).matmul(x_slice))
-
-                if (
-                    grad_x is not None
-                    and not use_triton_grad_w2_grad_x
-                    and not use_triton_grad_w1_w2_grad_x
-                ):
-                    with _lokr_record_function("grad_x_writeback"):
-                        if grad_projected is None:
+                    if (
+                        grad_x is not None
+                        and not use_triton_grad_w2_grad_x
+                        and not use_triton_grad_w1_w2_grad_x
+                    ):
+                        coeffs = w1_float[out_slice, in_factor]
+                        with _lokr_record_function("grad_x_writeback"):
                             grad_projected = torch.einsum("g,ngo->no", coeffs, grad)
-                        grad_x[row_start:row_end, in_factor, :].add_(
-                            grad_projected.matmul(w2_float).to(x.dtype)
-                        )
+                            grad_x[row_start:row_end, in_factor, :].add_(
+                                grad_projected.matmul(w2_float).to(x.dtype)
+                            )
     if grad_x is None:
         with _lokr_record_function("grad_x_writeback"):
             grad_x = _launch_lokr_grouped_delta_grad_x_triton(
@@ -918,19 +965,30 @@ class LoKrProjectFn(torch.autograd.Function):
         factor = int(factor)
         in_dim = int(in_dim)
         out_dim = int(out_dim)
-        x_float = x.float()
-        leading_shape = x_float.shape[:-1]
-        x_view = x_float.reshape(-1, factor, in_dim)
-        w1_float = w1.float()
-        w2_float = w2.float()
-        w2_t = w2_float.transpose(0, 1)
-        mixed = x_float.new_empty((x_view.shape[0], factor, out_dim))
-        for out_factor in range(factor):
-            out_slice = mixed[:, out_factor, :]
-            out_slice.zero_()
-            for in_factor in range(factor):
-                projected = x_view[:, in_factor, :].matmul(w2_t)
-                out_slice.add_(projected * w1_float[out_factor, in_factor])
+        leading_shape = x.shape[:-1]
+        x_view = x.reshape(-1, factor, in_dim)
+        rows = x_view.shape[0]
+        w1_t = w1.float().transpose(0, 1).contiguous()
+        w2_t = w2.float().transpose(0, 1)
+        chunk_rows = max(
+            1, _projection_chunk_rows(factor * in_dim, factor * out_dim)
+        )
+        mixed = torch.empty(
+            (rows, factor, out_dim), device=x.device, dtype=torch.float32
+        )
+        for row_start in range(0, rows, chunk_rows):
+            row_end = min(row_start + chunk_rows, rows)
+            rn = row_end - row_start
+            projected = (
+                x_view[row_start:row_end]
+                .float()
+                .reshape(rn * factor, in_dim)
+                .matmul(w2_t)
+                .reshape(rn, factor, out_dim)
+            )
+            mixed[row_start:row_end] = (
+                projected.permute(0, 2, 1).matmul(w1_t).permute(0, 2, 1)
+            )
         ctx.save_for_backward(x, w1, w2)
         ctx.factor = factor
         ctx.in_dim = in_dim
@@ -945,30 +1003,60 @@ class LoKrProjectFn(torch.autograd.Function):
         in_dim = ctx.in_dim
         out_dim = ctx.out_dim
 
-        x_float = x.float().reshape(-1, factor, in_dim)
+        x_view = x.reshape(-1, factor, in_dim)
+        rows = x_view.shape[0]
         w1_float = w1.float()
         w2_float = w2.float()
-        grad = grad_out.float().reshape(-1, factor, out_dim)
+        w2_t = w2_float.transpose(0, 1)
+        grad_view = grad_out.reshape(-1, factor, out_dim)
 
-        # Recompute one factor slice at a time instead of saving the forward
-        # intermediate or expanding a full Kronecker weight.
-        grad_w1 = w1_float.new_empty(w1_float.shape)
+        chunk_rows = max(
+            1, _projection_chunk_rows(factor * in_dim, factor * out_dim)
+        )
+        grad_w1 = w1_float.new_zeros(w1_float.shape)
         grad_w2 = w2_float.new_zeros(w2_float.shape)
-        grad_x = x_float.new_empty(x_float.shape)
-        for in_factor in range(factor):
-            x_slice = x_float[:, in_factor, :]
-            projected = x_slice.matmul(w2_float.transpose(0, 1))
-            grad_w1[:, in_factor] = torch.einsum("nao,no->a", grad, projected)
-
-            grad_projected = torch.einsum(
-                "a,nao->no", w1_float[:, in_factor], grad
+        grad_x = torch.empty(
+            (rows, factor, in_dim), device=x.device, dtype=x.dtype
+        )
+        for row_start in range(0, rows, chunk_rows):
+            row_end = min(row_start + chunk_rows, rows)
+            rn = row_end - row_start
+            x_chunk_f = x_view[row_start:row_end].float()
+            grad_chunk_f = grad_view[row_start:row_end].float()
+            projected = (
+                x_chunk_f.reshape(rn * factor, in_dim)
+                .matmul(w2_t)
+                .reshape(rn, factor, out_dim)
             )
-            grad_w2.add_(grad_projected.transpose(0, 1).matmul(x_slice))
-            grad_x[:, in_factor, :] = grad_projected.matmul(w2_float)
+            grad_w1.add_(
+                grad_chunk_f.permute(1, 0, 2)
+                .reshape(factor, rn * out_dim)
+                .matmul(
+                    projected.permute(1, 0, 2)
+                    .reshape(factor, rn * out_dim)
+                    .transpose(0, 1)
+                )
+            )
+            grad_projected = (
+                grad_chunk_f.permute(0, 2, 1)
+                .matmul(w1_float)
+                .permute(0, 2, 1)
+                .reshape(rn * factor, out_dim)
+            )
+            grad_w2.add_(
+                grad_projected.transpose(0, 1).matmul(
+                    x_chunk_f.reshape(rn * factor, in_dim)
+                )
+            )
+            grad_x[row_start:row_end] = (
+                grad_projected.matmul(w2_float)
+                .reshape(rn, factor, in_dim)
+                .to(x.dtype)
+            )
         grad_x = grad_x.reshape(*ctx.leading_shape, factor * in_dim)
 
         return (
-            grad_x.to(x.dtype),
+            grad_x,
             grad_w1.to(w1.dtype),
             grad_w2.to(w2.dtype),
             None,

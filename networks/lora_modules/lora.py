@@ -111,8 +111,10 @@ class LoRAModule(BaseLoRAModule):
 
     def _eval_delta(self, x, org_forwarded):
         x_lora = self._rebalance(x)
-        lx = self.lora_up(self.lora_down(x_lora))
-        return lx * self.multiplier * self.scale
+        down_out = self.lora_down(x_lora)
+        if getattr(self.lora_up, "bias", None) is None:
+            return self.lora_up(down_out * (self.multiplier * self.scale))
+        return self.lora_up(down_out) * self.multiplier * self.scale
 
     def get_weight(self, multiplier=None):
         """Return the LoRA delta as a tensor matching org_module.weight shape."""

@@ -100,7 +100,8 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, A, B, out=None, bias=None, quant_state=None):
+    def forward(ctx, A, B, out=None, bias=None, quant_state=None, out_dtype=None):
+        target_dtype = A.dtype if out_dtype is None else out_dtype
         ctx.is_empty = A.numel() == 0
         ctx.state = quant_state
         ctx.dtype_A = A.dtype
@@ -108,7 +109,11 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
         ctx.tensors = (None, B)
         if ctx.is_empty:
             shape = quant_state.shape
-            return torch.empty(A.shape[:-1] + tuple(shape[1:]), dtype=A.dtype, device=A.device)
+            return torch.empty(
+                A.shape[:-1] + tuple(shape[1:]),
+                dtype=target_dtype,
+                device=A.device,
+            )
         w = dequant_fp16(B, quant_state)
         # 前向不需要缩放：激活量级 O(1e-2~1e0)，本来就在 fp16 正规区。
         # bias 必须一起转 fp16，否则 F.linear 内部 matmul 报 dtype 不匹配。
@@ -116,21 +121,16 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
         # F.linear 的 fp16 输入静默转回 bf16 执行，于是整个 dir1 白做——GEMM
         # 仍然落到 sm70 的 MAGMA 软件路径（实测 27.3s/步，占 78%）。
         # 这段内部计算是纯 fp16 的，必须在 autocast 外执行。
+        a16 = A if A.dtype == torch.float16 else A.to(torch.float16)
+        b16 = None if bias is None else (bias if bias.dtype == torch.float16 else bias.to(torch.float16))
         with torch.autocast(device_type="cuda", enabled=False):
-            output = torch.nn.functional.linear(
-                A.to(torch.float16),
-                w.t(),
-                None if bias is None else bias.to(torch.float16),
-            )
-        if output.dtype != torch.float16:
-            output = output.to(torch.float16)
-
-        return output.to(ctx.dtype_A)
+            output = torch.nn.functional.linear(a16, w.t(), b16)
+        return output if output.dtype == target_dtype else output.to(target_dtype)
 
     @staticmethod
     def backward(ctx, grad_output):
         if ctx.is_empty:
-            return torch.zeros_like(ctx.tensors[1]), None, None, None, None
+            return torch.zeros_like(ctx.tensors[1]), None, None, None, None, None
         from ._scaled_cast import scaled_cast
 
         _, B = ctx.tensors
@@ -149,7 +149,7 @@ class _Dir1MatMul4Bit(torch.autograd.Function):
         grad_bias = None
         if ctx.bias is not None and ctx.needs_input_grad[3]:
             grad_bias = grad_output.sum(0, dtype=ctx.bias.dtype)
-        return grad_A, None, None, grad_bias, None
+        return grad_A, None, None, grad_bias, None, None
 
 
 class BF16AutocastLinear4bit(Linear4bit):
@@ -189,12 +189,20 @@ class BF16AutocastLinear4bit(Linear4bit):
         if not self.compute_type_is_set:
             self.set_compute_type(x)
             self.compute_type_is_set = True
-        inp_dtype = x.dtype
-        if self.compute_dtype is not None:
-            x = x.to(self.compute_dtype)
-        bias = None if self.bias is None else self.bias.to(self.compute_dtype)
-        out = _Dir1MatMul4Bit.apply(x, self.weight.t(), None, bias, quant_state)
-        return out.to(inp_dtype)
+        out_dtype = x.dtype
+        if (
+            x.dtype in (torch.float32, torch.float16)
+            and self.compute_dtype == torch.bfloat16
+            and torch.is_autocast_enabled("cuda")
+            and torch.get_autocast_dtype("cuda") == torch.bfloat16
+        ):
+            out_dtype = torch.bfloat16
+        # Pass x directly so fp32 inputs cast once (fp32 -> fp16) without losing
+        # 3 mantissa bits via an intermediate bf16 round-trip, and emit out_dtype
+        # directly without leaking 2x larger fp32 activations under bf16 autocast.
+        return _Dir1MatMul4Bit.apply(
+            x, self.weight.t(), None, self.bias, quant_state, out_dtype
+        )
 
 def _valid_nested_code(code) -> bool:
     from bitsandbytes.functional import create_dynamic_map

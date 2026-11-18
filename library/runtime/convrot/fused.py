@@ -83,12 +83,22 @@ def can_use_weight_int8pack_mm(
     return True
 
 
+def _cuda_default_tc_dtype(device: torch.device) -> torch.dtype:
+    """Return native Tensor Core half dtype (bf16 on SM80+, fp16 on SM70/75)."""
+    try:
+        if torch.cuda.get_device_capability(device)[0] < 8:
+            return torch.float16
+    except Exception:
+        pass
+    return torch.bfloat16
+
+
 def _resolve_compute_dtype(x: torch.Tensor) -> torch.dtype:
-    """Prefer act dtype for TC; CUDA non-half inputs fall back to bf16."""
+    """Prefer act dtype for TC; CUDA non-half inputs use native TC half dtype."""
     if x.is_floating_point() and x.dtype in (torch.float16, torch.bfloat16):
         return x.dtype
     if x.device.type == "cuda":
-        return torch.bfloat16
+        return _cuda_default_tc_dtype(x.device)
     return torch.float32
 
 
@@ -119,8 +129,8 @@ def _w8a16_linear_core(
     # bf16/fp16 Tensor Cores. Forcing fp32 here was the main W8A16 tax on 3080.
     compute_dtype = flat.dtype if flat.is_floating_point() else torch.float32
     if compute_dtype == torch.float32 and flat.device.type == "cuda":
-        # Host often promotes to fp32; fall back to bf16 TC when available.
-        compute_dtype = torch.bfloat16
+        # Host often promotes to fp32; pick bf16 TC on SM80+ and fp16 TC on SM70/75.
+        compute_dtype = _cuda_default_tc_dtype(flat.device)
 
     if use_pack:
         try:

@@ -94,11 +94,11 @@ class _PreFp16SDPA(torch.autograd.Function):
         ctx.dtype = q.dtype
         # sm70 的 memory-efficient 内核对非连续输入直接 "No available kernel"
         # 并静默回退 MATH（O(N²) 显存）。RMSNorm/rearrange 之后 v 常常是非连续的，
-        # 这里统一转连续，成本只有一次 O(n) 拷贝。
+        # 单次 to(..., memory_format=contiguous_format) 同时完成转精度与连续化。
         return (
-            q.to(torch.float16).contiguous(),
-            k.to(torch.float16).contiguous(),
-            v.to(torch.float16).contiguous(),
+            q.to(dtype=torch.float16, memory_format=torch.contiguous_format),
+            k.to(dtype=torch.float16, memory_format=torch.contiguous_format),
+            v.to(dtype=torch.float16, memory_format=torch.contiguous_format),
         )
 
     @staticmethod
@@ -106,11 +106,13 @@ class _PreFp16SDPA(torch.autograd.Function):
         shift = ctx.state.get("shift")
         if shift is None:  # 前向没产生梯度（推理/no_grad）：不做缩放
             return dq16.to(ctx.dtype), dk16.to(ctx.dtype), dv16.to(ctx.dtype), None
+        from library.quantization._scaled_cast import scaled_cast
+
         neg = -shift
         return (
-            torch.ldexp(dq16.float(), neg).to(ctx.dtype),
-            torch.ldexp(dk16.float(), neg).to(ctx.dtype),
-            torch.ldexp(dv16.float(), neg).to(ctx.dtype),
+            scaled_cast(dq16, neg, ctx.dtype),
+            scaled_cast(dk16, neg, ctx.dtype),
+            scaled_cast(dv16, neg, ctx.dtype),
             None,
         )
 
@@ -125,12 +127,14 @@ class _PostFp16SDPA(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out):
+        from library.quantization._scaled_cast import scaled_cast
+
         # dO 是深层 1e-8 量级的 bf16 梯度：裸转 fp16 会 subnormal/归零。
         # 取 amax 的二进制指数做 2 的整数次幂平移，尾数一位不丢。
         exp = torch.frexp(grad_out.abs().max())[1]
         shift = torch.clamp(-exp, min=-126, max=126)
         ctx.state["shift"] = shift
-        return torch.ldexp(grad_out.float(), shift).to(torch.float16), None, None
+        return scaled_cast(grad_out, shift, torch.float16), None, None
 
 
 def normalize_krea2_attention_mode(value: object) -> str:
@@ -427,8 +431,10 @@ def _fp16_attention(
             out16 = F.scaled_dot_product_attention(
                 q16, k16, v16, attn_mask=mask, scale=scale, enable_gqa=gqa
             )
-    output = _PostFp16SDPA.apply(out16, state, q.dtype)
-    return rearrange(output, "B H L D -> B L (H D)")
+    # Cutlass EFFICIENT_ATTENTION natively emits (B, L, H, D).transpose(1, 2),
+    # so transpose(1, 2).reshape(B, L, H*D) is zero-copy before _PostFp16SDPA.
+    out16_blhd = out16.transpose(1, 2).reshape(out16.shape[0], out16.shape[2], -1)
+    return _PostFp16SDPA.apply(out16_blhd, state, q.dtype)
 
 
 @torch.compiler.disable(recursive=True)

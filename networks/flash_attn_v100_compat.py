@@ -340,20 +340,94 @@ class _V100FlashAttnFunc(torch.autograd.Function):
         is_grad_enabled,
     ):
         is_grad = is_grad_enabled and any(x.requires_grad for x in (q, k, v))
+        head_size = q.shape[-1]
+        pad_size = (-head_size) % 8
+        scale = head_size**-0.5 if softmax_scale is None else softmax_scale
+        window_left, window_right = window_size
+
+        # Zero-copy BLHD fast path: flash_attn_v100's dense entry requires BHLD,
+        # forcing 4 forward + 4 backward full-tensor permute+contiguous copies,
+        # whereas its varlen kernel natively consumes contiguous (total, H, D).
+        if (
+            not return_softmax
+            and pad_size == 0
+            and q.is_contiguous()
+            and k.is_contiguous()
+            and v.is_contiguous()
+        ):
+            batch, seq_len_q, nheads_q, _ = q.shape
+            seq_len_k = k.shape[1]
+            nheads_k = k.shape[2]
+            q_flat = q.reshape(batch * seq_len_q, nheads_q, head_size)
+            k_flat = k.reshape(batch * seq_len_k, nheads_k, head_size)
+            v_flat = v.reshape(batch * seq_len_k, nheads_k, head_size)
+            cu_seqlens_q = (
+                torch.arange(batch + 1, device=q.device, dtype=torch.int32)
+                * seq_len_q
+            )
+            cu_seqlens_k = (
+                cu_seqlens_q
+                if seq_len_k == seq_len_q
+                else (
+                    torch.arange(batch + 1, device=k.device, dtype=torch.int32)
+                    * seq_len_k
+                )
+            )
+            out_flat, lse, _softmax, rng_state = _varlen_fwd(
+                q_flat,
+                k_flat,
+                v_flat,
+                cu_seqlens_q,
+                cu_seqlens_k,
+                None,
+                alibi_slopes,
+                seq_len_q,
+                seq_len_k,
+                dropout_p,
+                scale,
+                causal,
+                window_left,
+                window_right,
+                softcap,
+                False,
+            )
+            result = out_flat.reshape(batch, seq_len_q, nheads_q, head_size)
+            if is_grad:
+                ctx.save_for_backward(
+                    q_flat,
+                    k_flat,
+                    v_flat,
+                    out_flat,
+                    lse,
+                    cu_seqlens_q,
+                    cu_seqlens_k,
+                    rng_state,
+                )
+                ctx.use_varlen = True
+                ctx.q_shape = q.shape
+                ctx.k_shape = k.shape
+                ctx.v_shape = v.shape
+                ctx.max_seqlen_q = seq_len_q
+                ctx.max_seqlen_k = seq_len_k
+                ctx.dropout_p = dropout_p
+                ctx.softmax_scale = scale
+                ctx.causal = causal
+                ctx.window_size = window_size
+                ctx.softcap = softcap
+                ctx.alibi_slopes = alibi_slopes
+                ctx.deterministic = deterministic
+            return result
+
         q = q.permute(0, 2, 1, 3)
         k = k.permute(0, 2, 1, 3)
         v = v.permute(0, 2, 1, 3)
 
-        head_size = q.shape[-1]
-        pad_size = (-head_size) % 8
         if pad_size:
             q = F.pad(q, (0, pad_size))
             k = F.pad(k, (0, pad_size))
             v = F.pad(v, (0, pad_size))
         q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
 
-        scale = head_size**-0.5 if softmax_scale is None else softmax_scale
-        window_left, window_right = window_size
         out, lse, softmax, rng_state = _dense_fwd(
             q,
             k,
@@ -371,6 +445,7 @@ class _V100FlashAttnFunc(torch.autograd.Function):
 
         if is_grad:
             ctx.save_for_backward(q, k, v, out, lse, rng_state)
+            ctx.use_varlen = False
             ctx.dropout_p = dropout_p
             ctx.softmax_scale = scale
             ctx.causal = causal
@@ -385,6 +460,54 @@ class _V100FlashAttnFunc(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dout, *unused_grads):
+        if getattr(ctx, "use_varlen", False):
+            (
+                q_flat,
+                k_flat,
+                v_flat,
+                out_flat,
+                lse,
+                cu_seqlens_q,
+                cu_seqlens_k,
+                rng_state,
+            ) = ctx.saved_tensors
+            dout_flat = dout.contiguous().reshape_as(out_flat)
+            dq_flat, dk_flat, dv_flat = _varlen_bwd(
+                dout_flat,
+                q_flat,
+                k_flat,
+                v_flat,
+                out_flat,
+                lse,
+                cu_seqlens_q,
+                cu_seqlens_k,
+                ctx.alibi_slopes,
+                ctx.max_seqlen_q,
+                ctx.max_seqlen_k,
+                ctx.dropout_p,
+                ctx.softmax_scale,
+                ctx.causal,
+                ctx.window_size[0],
+                ctx.window_size[1],
+                ctx.softcap,
+                ctx.deterministic,
+                rng_state,
+            )
+            return (
+                dq_flat.reshape(ctx.q_shape),
+                dk_flat.reshape(ctx.k_shape),
+                dv_flat.reshape(ctx.v_shape),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
         q, k, v, out, lse, rng_state = ctx.saved_tensors
         if ctx.pad_size:
             dout = F.pad(dout, (0, ctx.pad_size))

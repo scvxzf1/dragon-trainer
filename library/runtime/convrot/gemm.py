@@ -49,10 +49,16 @@ def can_use_torch_int_mm(
         return False
     if not hasattr(torch, "_int_mm"):
         return False
+    try:
+        if torch.cuda.get_device_capability(device) < (6, 1):
+            return False
+    except Exception:
+        return False
     if m < _INT_MM_MIN_M:
         return False
-    # Heuristic: cublasLt path is picky on tiny dims; require reasonable K/N.
-    if k < 16 or n < 16:
+    # cuBLASLt int8 DP4A/IMMA requires 8-aligned K/N and >=16 dims; pre-filtering
+    # avoids throwing and catching a C++ RuntimeError on every Linear call.
+    if k < 16 or n < 16 or (k % 8) != 0 or (n % 8) != 0:
         return False
     return True
 
