@@ -49,7 +49,7 @@ def install_training_block_projections(args, model: nn.Module, network) -> tuple
     from library.models.qwen_image_2_1.packed_qkv import (
         _check_install_timing, _validate_attention, install_qwen_image_2_1_packed_qkv,
     )
-    from networks.lora_modules.lora import LoRAModule
+    from networks.lora_modules.base import BaseLoRAModule
 
     blocks = _check_install_timing(model)
     if saved_blocks:
@@ -69,8 +69,10 @@ def install_training_block_projections(args, model: nn.Module, network) -> tuple
     if mode in {"mlp", "all"} and offloader is not None and not hasattr(offloader, "_cpu_weight_masters"):
         raise RuntimeError("install fused MLPs before inspectable block-swap CPU masters")
     loras = getattr(network, "unet_loras", None)
-    if not isinstance(loras, (list, tuple)) or not loras or any(type(lora) is not LoRAModule for lora in loras):
-        raise TypeError("qwen_fused_projections requires applied plain unet LoRA modules")
+    if not isinstance(loras, (list, tuple)) or not loras or any(
+        not isinstance(lora, BaseLoRAModule) for lora in loras
+    ):
+        raise TypeError("qwen_fused_projections requires applied LoRA-family modules")
     if getattr(network, "text_encoder_loras", ()):
         raise ValueError("qwen_fused_projections does not support text-encoder LoRA")
     by_projection = {id(lora.org_module_ref[0]): lora for lora in loras}

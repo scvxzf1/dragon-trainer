@@ -11,13 +11,13 @@ from typing import Optional
 import torch
 
 from library.training.preview_lifecycle import preview_lifecycle
+from library.training.preview_lifecycle import apply_preview_router_conditioning
 from library.datasets.buckets import snap_sample_size
 from library.models.z_image.family import forward_for_loss, prepare_prompt_embeds
 from library.runtime.accelerator import prepare_dtype
 from library.runtime.device import clean_memory_on_device
 from library.training.sample_preview_common import (
-    failed_on_any_process,
-    is_cuda_oom,
+    finish_preview_batch,
     load_prompts,
     should_sample,
 )
@@ -158,23 +158,53 @@ def generate_z_image(
     scheduler.set_timesteps(sample_steps, device=device)
 
     use_cfg = guidance_scale > 0 and uncond_embeds is not None
-    for timestep in scheduler.timesteps:
+    for index, timestep in enumerate(scheduler.timesteps):
         sigma = (timestep.float() / 1000.0).reshape(1)
         if use_cfg:
-            model_input = latents.to(dtype=dtype).repeat(2, 1, 1, 1).unsqueeze(2)
-            velocity = (
+            preview_network = getattr(dit, "_preview_network", None)
+            apply_preview_router_conditioning(
+                preview_network,
+                latents,
+                sigma,
+                step_index=index,
+                crossattn_emb=cond_embeds[0].unsqueeze(0),
+            )
+            positive = (
                 forward_for_loss(
                     dit,
-                    model_input,
-                    cond_embeds + uncond_embeds,
-                    sigma.repeat(2),
+                    latents.to(dtype=dtype).unsqueeze(2),
+                    cond_embeds,
+                    sigma,
                 )
                 .squeeze(2)
                 .float()
             )
-            positive, negative = velocity.chunk(2)
+            apply_preview_router_conditioning(
+                preview_network,
+                latents,
+                sigma,
+                step_index=index,
+                crossattn_emb=uncond_embeds[0].unsqueeze(0),
+            )
+            negative = (
+                forward_for_loss(
+                    dit,
+                    latents.to(dtype=dtype).unsqueeze(2),
+                    uncond_embeds,
+                    sigma,
+                )
+                .squeeze(2)
+                .float()
+            )
             velocity = positive + guidance_scale * (positive - negative)
         else:
+            apply_preview_router_conditioning(
+                getattr(dit, "_preview_network", None),
+                latents,
+                sigma,
+                step_index=index,
+                crossattn_emb=cond_embeds[0].unsqueeze(0),
+            )
             velocity = (
                 forward_for_loss(
                     dit,
@@ -314,8 +344,7 @@ def sample_images(
     if text_encoder is not None:
         text_encoder = accelerator.unwrap_model(text_encoder)
     net = accelerator.unwrap_model(network) if network is not None else None
-    sample_error: Optional[Exception] = None
-    try:
+    def run_local():
         with preview_lifecycle(
             dit, net, disable_block_swap=getattr(args, "disable_block_swap_for_eval", False)
         ):
@@ -337,28 +366,17 @@ def sample_images(
                         sample_prompts_te_outputs,
                         prompt_replacement,
                     )
-    except Exception as exc:
-        sample_error = exc
-    if sample_error is not None and is_cuda_oom(sample_error):
-        clean_memory_on_device(accelerator.device)
-    if failed_on_any_process(accelerator, sample_error is not None, num_processes):
-        if sample_error is not None:
-            raise sample_error
-        raise RuntimeError("Z-Image sample generation failed on another process")
 
-    from library.anima.training import decode_samples_for_live_preview
-
-    accelerator.wait_for_everyone()
-    decode_error = None
-    try:
-        if getattr(accelerator, "is_main_process", True):
-            decode_samples_for_live_preview(accelerator, args, vae, dit=dit, network=net)
-    except Exception as exc:
-        decode_error = exc
-    from library.training.preview_decode import raise_decode_failure
-
-    raise_decode_failure(accelerator, decode_error, num_processes)
-    accelerator.wait_for_everyone()
+    finish_preview_batch(
+        accelerator,
+        args,
+        processes=num_processes,
+        run_local=run_local,
+        failure_message="Z-Image sample generation failed on another process",
+        vae=vae,
+        dit=dit,
+        network=net,
+    )
 
 
 def decode_pending_samples(accelerator, args, vae) -> None:

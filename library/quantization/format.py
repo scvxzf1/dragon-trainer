@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from safetensors import safe_open
 from .constants import STATE_KEYS
-from .policy import ALL_LINEAR_POLICY, FAMILIES, POLICY, policy_paths
+from .policy import ANIMA_SELECTIVE_POLICY, ALL_LINEAR_POLICY, FAMILIES, POLICY, policy_paths
 
 MANIFEST_KEY = 'diffusion.mixed_nf4.manifest'
 DTYPES = {'bfloat16': 'BF16', 'float32': 'F32', 'int64': 'I64', 'int32': 'I32',
@@ -15,12 +15,16 @@ DTYPES = {'bfloat16': 'BF16', 'float32': 'F32', 'int64': 'I64', 'int32': 'I32',
 def _validate_manifest(m, family):
     fields = {'version', 'family', 'policy', 'compute_dtype', 'blocksize', 'double_quant',
               'modules', 'source_tensors', 'source_sha256', 'bitsandbytes_version'}
-    if not isinstance(m, dict) or set(m) != fields:
+    if not isinstance(m, dict) or not set(m).issubset(fields | {'prefix'}) or not fields.issubset(m):
         raise ValueError('Invalid mixed NF4 manifest fields')
+    prefix = m.get('prefix', '')
+    if not isinstance(prefix, str) or (prefix and not prefix.endswith('.')):
+        raise ValueError('Invalid mixed NF4 tensor prefix')
     if (type(m['version']) is not int or m['version'] != 1 or m['family'] not in FAMILIES
             or (family is not None and m['family'] != family)
-            or m['policy'] not in (POLICY, ALL_LINEAR_POLICY)
+            or m['policy'] not in (POLICY, ANIMA_SELECTIVE_POLICY, ALL_LINEAR_POLICY)
             or (m['policy'] == ALL_LINEAR_POLICY and m['family'] != 'qwen_image_2_1')
+            or (m['policy'] == ANIMA_SELECTIVE_POLICY and m['family'] != 'anima')
             or m['compute_dtype'] != 'bfloat16' or type(m['blocksize']) is not int
             or m['blocksize'] != 64 or m['double_quant'] is not True
             or not isinstance(m['source_sha256'], str)
@@ -48,22 +52,32 @@ def _validate_manifest(m, family):
     if len(set(m['modules'])) != len(m['modules']):
         raise ValueError('Mixed NF4 policy modules must be unique')
     root = FAMILIES[m['family']][0]
-    ids = {key.split('.')[1] for key in inventory if key.startswith(root + '.')}
-    if m['policy'] == POLICY:
+    normalized_keys = {
+        key.removeprefix(prefix) if prefix else key for key in inventory
+    }
+    ids = {
+        key.split('.')[1] for key in normalized_keys if key.startswith(root + '.')
+    }
+    if m['policy'] in (POLICY, ANIMA_SELECTIVE_POLICY):
         if not ids or ids != {str(i) for i in range(len(ids))}:
             raise ValueError('Incomplete mixed NF4 main block inventory')
-        if m['modules'] != policy_paths(m['family'], len(ids)):
+        policy_candidates = policy_paths(m['family'], len(ids), m['policy'])
+        available_targets = [
+            path for path in policy_candidates
+            if prefix + path + '.weight' in inventory
+        ]
+        if m['modules'] != available_targets:
             raise ValueError('Incomplete mixed NF4 policy modules')
     else:
         candidates = [
-            key.removesuffix('.weight') for key, entry in inventory.items()
-            if key.endswith('.weight') and len(entry['shape']) == 2
+            key.removeprefix(prefix).removesuffix('.weight') for key, entry in inventory.items()
+            if key.startswith(prefix) and key.endswith('.weight') and len(entry['shape']) == 2
             and entry['dtype'] == 'bfloat16'
         ]
         if m['modules'] != sorted(candidates) or len(candidates) != len(set(candidates)):
             raise ValueError('Incomplete all-linear NF4 policy modules')
     for path in m['modules']:
-        entry = inventory.get(path + '.weight', {})
+        entry = inventory.get(prefix + path + '.weight', {})
         shape = entry.get('shape', [])
         if (len(shape) != 2 or any(d % 64 for d in shape) or entry.get('dtype') != 'bfloat16'):
             raise ValueError(f'Invalid mixed NF4 policy shape: {path}')
@@ -97,8 +111,9 @@ def inspect_mixed_nf4(path, *, family=None):
             m = _validate_manifest(json.loads(raw), family)
         except (TypeError, KeyError, IndexError, ValueError) as exc:
             raise ValueError(f'Invalid mixed NF4 manifest: {exc}') from exc
+        prefix = m.get('prefix', '')
         expected = set(m['source_tensors'])
-        targets = {p + '.weight' for p in m['modules']}
+        targets = {prefix + p + '.weight' for p in m['modules']}
         for key in targets:
             expected.update(key + '.' + s for s in STATE_KEYS)
         if keys != expected:
@@ -125,3 +140,30 @@ def inspect_mixed_nf4(path, *, family=None):
             if meta.get_dtype() != 'U8' or len(shape) != 1 or not 0 < shape[0] <= 65536:
                 raise ValueError(f'Invalid NF4 packed metadata header: {key}')
         return m
+
+
+def validate_mixed_nf4_payload(path, *, family=None, manifest=None):
+    """Validate serialized NF4 qstate contents after header inspection.
+
+    Header inspection deliberately avoids importing bitsandbytes.  Conversion
+    and verification tools that already opt into the optional runtime can use
+    this second step to validate the packed quantization metadata itself.  The
+    function is shared by every family, including Anima's legacy-aware loader.
+    """
+    if manifest is None:
+        manifest = inspect_mixed_nf4(path, family=family)
+    if manifest is None:
+        return None
+    from .nf4 import quant_state
+
+    prefix = manifest.get('prefix', '')
+    with safe_open(str(path), framework='pt', device='cpu') as f:
+        for module_path in manifest['modules']:
+            key = prefix + module_path + '.weight'
+            shape = manifest['source_tensors'][key]['shape']
+            state = {
+                key + '.' + suffix: f.get_tensor(key + '.' + suffix)
+                for suffix in STATE_KEYS
+            }
+            quant_state(state, key, shape)
+    return manifest

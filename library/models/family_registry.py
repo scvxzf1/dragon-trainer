@@ -137,6 +137,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
             default_num_blocks=28,
             known_num_blocks=frozenset({28, 40}),
             supports_adaptive_swap_capacity=True,
+            mixed_nf4_mlp_spec=("mlp", ("layer1", "layer2")),
         ),
         attention=AttentionCapabilitySpec(
             canonical_modes=frozenset(
@@ -560,6 +561,14 @@ def dispatch_model_family(
             f"{operation} family handlers are incomplete ({'; '.join(details)})"
         )
     return handlers[canonical]
+
+
+def get_family_plugin(family):
+    """Lazily load a family plugin without importing runtime implementations."""
+
+    from library.models.family_plugins import get_family_plugin as _get_family_plugin
+
+    return _get_family_plugin(family)
 
 
 def validate_text_cache_metadata(

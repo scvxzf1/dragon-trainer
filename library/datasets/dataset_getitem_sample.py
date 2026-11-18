@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from library.datasets.image_utils import trim_and_resize_if_required
+from library.models.family_registry import get_model_family_spec
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,17 @@ def _maybe_downsample_mask_to_latent(
         .squeeze(0)
         .squeeze(0)
     )
+
+
+def _latent_target_size(latents: torch.Tensor, model_family: str) -> tuple[int, int]:
+    """Convert cached latent spatial dimensions to source pixel dimensions."""
+    height, width = (int(d) for d in latents.shape[-2:])
+    compression = get_model_family_spec(
+        model_family
+    ).latent_space.vae_spatial_compression
+    return width * compression, height * compression
+
+
 def load_visual_sample(dataset, image_info, subset, flipped: bool):
     """Load image/latents/alpha/crop metadata for one training sample."""
     if image_info.latents is not None:
@@ -166,7 +178,7 @@ def load_visual_sample(dataset, image_info, subset, flipped: bool):
     target_size = (
         (image.shape[2], image.shape[1])
         if image is not None
-        else (latents.shape[2] * 8, latents.shape[1] * 8)
+        else _latent_target_size(latents, subset.model_family)
     )
 
     if not flipped:

@@ -82,3 +82,52 @@ def is_cuda_oom(exc: BaseException) -> bool:
     return isinstance(exc, torch.cuda.OutOfMemoryError) or (
         "out of memory" in str(exc).lower()
     )
+
+
+def finish_preview_batch(
+    accelerator,
+    args,
+    *,
+    processes: int,
+    run_local,
+    failure_message: str,
+    vae,
+    dit=None,
+    network=None,
+    decode=None,
+    failure_check=None,
+) -> None:
+    """Coordinate local preview, rank failure, decode, and barriers."""
+    check_failure = failure_check or failed_on_any_process
+    sample_error: Optional[Exception] = None
+    try:
+        result = run_local()
+        if isinstance(result, Exception):
+            sample_error = result
+    except Exception as exc:
+        sample_error = exc
+    if sample_error is not None and is_cuda_oom(sample_error):
+        from library.runtime.device import clean_memory_on_device
+
+        clean_memory_on_device(accelerator.device)
+    if check_failure(accelerator, sample_error is not None, processes):
+        if sample_error is not None:
+            raise sample_error
+        raise RuntimeError(failure_message)
+
+    if decode is None:
+        from library.anima.training import decode_samples_for_live_preview
+
+        decode = decode_samples_for_live_preview
+    accelerator.wait_for_everyone()
+    decode_error: Optional[Exception] = None
+    try:
+        if getattr(accelerator, "is_main_process", True):
+            decode(accelerator, args, vae, dit=dit, network=network)
+    except Exception as exc:
+        decode_error = exc
+    if check_failure(accelerator, decode_error is not None, processes):
+        if decode_error is not None:
+            raise decode_error
+        raise RuntimeError("Training preview decode failed on another process")
+    accelerator.wait_for_everyone()

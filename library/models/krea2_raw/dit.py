@@ -293,7 +293,10 @@ class SwiGLU(torch.nn.Module):
         # Pin the dtype at the chunk entry.  With chunk(2) a fp16 gate/up output
         # is 2176*16384*2 = 68 MiB, while fp32 is 136 MiB -- the exact size the
         # backward OOM asked for, i.e. the chunk math was running in fp32.
-        hidden = hidden.to(self.gate.weight.dtype)
+        compute_dtype = getattr(self.gate, "compute_dtype", None)
+        if compute_dtype is None:
+            compute_dtype = self.gate.weight.dtype
+        hidden = hidden.to(compute_dtype)
         return self.down(F.silu(self.gate(hidden)) * self.up(hidden))
 
     def forward(self, x: Tensor) -> Tensor:
@@ -314,7 +317,7 @@ class SwiGLU(torch.nn.Module):
         checkpointing = (
             _PP_MLP_CKPT
             and self.gradient_checkpointing
-            and self.training
+            and getattr(self, "training", False)
             and torch.is_grad_enabled()
             and x.requires_grad
         )
@@ -582,7 +585,7 @@ class SingleStreamBlock(nn.Module):
         if (
             not _PP_SIMPLIFY
             and torch.is_grad_enabled()
-            and self.training
+            and getattr(self, "training", False)
             and self.gradient_checkpointing
             and x.requires_grad
         ):

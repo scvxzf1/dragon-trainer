@@ -3,7 +3,7 @@
 状态：实验，2026-10-03。三个新增模型族的格式、加载与 CUDA 小模型训练验收通过；
 尚未转换这三族的完整权重，也未做真实数据集热训练、采样质量或显存收益对照。
 
-相关代码：`library/quantization/`、三个模型族的 `weights.py`、
+相关代码：`library/quantization/`、各模型族的 `weights.py`、
 `scripts/quantization/convert_mixed_nf4.py`。
 
 ## 策略与现有配置
@@ -25,7 +25,7 @@
 各族后续的层敏感度、量化误差与长期质量需要分别评估。
 
 > **第 5 模型族 `moss_image` 与 `--nf4_dir1` 边界说明：**
-> - **`moss_image` 不在主干 mixed-NF4 范围内**：`convert_mixed_nf4.py` 仅转换 `krea2_raw`、`z_image`、`qwen_image_2_1`（Anima 沿用独立固定策略）；MOSS-Image 仅在文本编码器离线缓存阶段支持 NF4（`_moss_image_te_nf4.safetensors`），主干 DiT 不提供 mixed-NF4 转换或加载。
+> - **`moss_image` 不在主干 mixed-NF4 范围内**：`convert_mixed_nf4.py` 支持 `anima`、`krea2_raw`、`z_image`、`qwen_image_2_1`；MOSS-Image 仅在文本编码器离线缓存阶段支持 NF4（`_moss_image_te_nf4.safetensors`），主干 DiT 不提供 mixed-NF4 转换或加载。
 > - **`nf4_dir1` 与 mixed-NF4 的边界**：`--nf4_dir1`（搭配 `krea2_attn_fp16`，见 `configs/methods/krea2_lora_nf4_fp16.toml`）仅对 `model_family = "krea2_raw"` 且 `base_compute = "nf4"` 的全 Linear NF4 路径生效（面向 sm70/sm75 卡的内层 FP16 Tensor Core 恢复）；通过 `pretrained_model_name_or_path` 自动识别的主干 MLP mixed-NF4 保持 `base_compute = "bf16"`，不消费 `--nf4_dir1`。
 
 `BF16AutocastLinear4bit` 共享Anima已验证的autocast修复，避免BF16运算后的输出
@@ -45,9 +45,30 @@ canonical keys，packed字节不会进入普通dense拆分逻辑。
   --output /path/krea2-mixed-nf4.safetensors --threads 4
 ```
 
-`--family` 还可取 `z_image`、`qwen_image_2_1`。转换在CPU加载完整普通模型，逐矩阵
+`--family` 还可取 `anima`、`z_image`、`qwen_image_2_1`。Anima 通过同一入口调用
+固定 selective MLP canonical converter；Anima 也接受统一入口的 `--threads`。其它族转换在CPU加载完整普通模型，逐矩阵
 量化并保存新文件，需要足够主机内存同时容纳源模型和输出payload；不是流式低内存
 转换器。不会下载模型，不覆盖源文件或已有目标，发布采用同目录临时文件与原子无覆盖链接。
+
+Anima 的旧专用入口 `scripts/anima/quantize_mixed_nf4.py` 继续保留，用于兼容已有
+自动化脚本和进度输出；新任务统一使用 `scripts/quantization/convert_mixed_nf4.py`。
+两个入口都发布同一个 `diffusion.mixed_nf4.manifest` canonical 格式。统一入口的
+`--verify-only` 不加载模型、不改写 artifact，并以 JSON 输出验证结果：
+
+```bash
+.venv/bin/python scripts/quantization/convert_mixed_nf4.py \
+  --family anima --source /path/anima-bf16.safetensors \
+  --output /path/anima-mixed-nf4.safetensors --threads 4
+.venv/bin/python scripts/quantization/convert_mixed_nf4.py \
+  --family anima --output /path/anima-mixed-nf4.safetensors --verify-only
+```
+
+已发布的 canonical artifact 可以不加载模型直接验证：
+
+```bash
+.venv/bin/python scripts/quantization/convert_mixed_nf4.py \
+  --family anima --output /path/mixed.safetensors --verify-only
+```
 
 新metadata `diffusion.mixed_nf4.manifest` 包含family、版本、固定策略、完整源张量
 库存、源SHA256、计算精度及bnb版本。加载器以实际模型结构校验全部key、shape、

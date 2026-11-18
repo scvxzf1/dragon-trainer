@@ -118,3 +118,65 @@ def iter_split_groups(
             seen.append(shared_prefix)
         for shared_prefix in seen:
             yield shared_prefix, spec
+
+
+def defuse_qkv_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    *,
+    variant: str | None = None,
+) -> None:
+    """Split runtime-fused attention adapter keys into on-disk components.
+
+    The tensor algebra remains owned by each adapter variant. This function is
+    the single save-side dispatch point so callers do not need to maintain a
+    second inventory of variant-specific QKV writers. ``variant`` is optional
+    for compatibility; when omitted, the first matching runtime key selects
+    the writer and an ambiguous mixture is rejected.
+    """
+    writers = {
+        "standard": (".lora_down.weight", "networks.lora_modules.lora", "defuse_standard_qkv"),
+        "loha": (".hada_w1_a", "networks.plugins.loha.save", "defuse_loha_qkv"),
+        "lokr": (".lokr_w1", "networks.plugins.lokr.save", "defuse_lokr_qkv"),
+        "vera": (".vera_lambda_b", "networks.plugins.vera.save", "defuse_vera_qkv"),
+        "glora": (".a1.weight", "networks.plugins.glora.save", "defuse_glora_qkv"),
+    }
+    if variant is not None and variant not in writers:
+        raise ValueError(f"unsupported QKV defuse variant: {variant!r}")
+
+    candidates = [variant] if variant is not None else [
+        name for name, (suffix, _module, _function) in writers.items()
+        if any(key.endswith(suffix) and match_fused_spec(key[: -len(suffix)]) for key in state_dict)
+    ]
+    if not candidates:
+        return
+    if len(candidates) > 1:
+        raise ValueError(
+            "QKV defuse found multiple adapter layouts; pass an explicit variant"
+        )
+
+    _suffix, module_name, function_name = writers[candidates[0]]
+    module = __import__(module_name, fromlist=[function_name])
+    getattr(module, function_name)(state_dict)
+
+
+def refuse_qkv_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    """Fuse split attention adapter keys for the runtime representation.
+
+    The loader-side order is centralized here because stacked-experts,
+    Hydra, Chimera, and plain LoRA layouts have overlapping key shapes. The
+    implementation imports lazily to keep this metadata-only module free of
+    the loader's registry and module-construction dependencies at import time.
+    """
+    from networks.lora_anima.loading import (
+        _refuse_split_chimera_keys,
+        _refuse_split_hydra_keys,
+        _refuse_split_stacked_experts_keys,
+        _refuse_unfused_attn_lora_keys,
+    )
+
+    state_dict = _refuse_split_stacked_experts_keys(state_dict)
+    state_dict = _refuse_split_hydra_keys(state_dict)
+    state_dict = _refuse_split_chimera_keys(state_dict)
+    return _refuse_unfused_attn_lora_keys(state_dict)

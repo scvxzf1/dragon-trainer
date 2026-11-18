@@ -7,6 +7,7 @@ from library.models.family_registry import MODEL_FAMILY_REGISTRY
 
 POLICY = 'main-mlp-nf4-v1'
 ALL_LINEAR_POLICY = 'all-linear-nf4-v1'
+ANIMA_SELECTIVE_POLICY = 'anima-selective-mlp-nf4-v1'
 
 
 class _RegistryMixedNf4Families(Mapping[str, tuple[str, str, tuple[str, ...]]]):
@@ -39,11 +40,20 @@ class _RegistryMixedNf4Families(Mapping[str, tuple[str, str, tuple[str, ...]]]):
 FAMILIES: Mapping[str, tuple[str, str, tuple[str, ...]]] = _RegistryMixedNf4Families()
 
 
-def policy_paths(family, count):
+def policy_paths(family, count, policy=POLICY):
     if family not in FAMILIES or type(count) is not int or count <= 0:
         raise ValueError('Unsupported mixed NF4 family or empty main blocks')
     root, mlp, names = FAMILIES[family]
-    return [f'{root}.{i}.{mlp}.{name}' for i in range(count) for name in names]
+    if policy not in (POLICY, ANIMA_SELECTIVE_POLICY):
+        raise ValueError('Unsupported mixed NF4 policy')
+    if policy == ANIMA_SELECTIVE_POLICY and family != 'anima':
+        raise ValueError('Anima selective NF4 policy is supported only for anima')
+    paths = [f'{root}.{i}.{mlp}.{name}' for i in range(count) for name in names]
+    if policy == ANIMA_SELECTIVE_POLICY and count == 28:
+        paths = [path for path in paths if not (
+            path.endswith('.layer1') and 14 <= int(path.split('.')[1]) <= 20
+        )]
+    return paths
 
 
 def model_linear_paths(model):
@@ -81,13 +91,16 @@ def model_paths(model, family, policy=POLICY):
                     or hasattr(module, 'lora_up')):
                 raise ValueError(f'Model already has packed weights or adapter: {name}')
         return paths
-    if policy != POLICY:
+    if policy == ANIMA_SELECTIVE_POLICY:
+        if family != 'anima':
+            raise ValueError('Anima selective NF4 policy is supported only for anima')
+    elif policy != POLICY:
         raise ValueError('Unsupported mixed NF4 policy')
     root = FAMILIES[family][0]
     blocks = getattr(model, root, None)
     if not isinstance(blocks, (torch.nn.ModuleList, torch.nn.Sequential)):
         raise ValueError('Expected complete main block collection')
-    paths = policy_paths(family, len(blocks))
+    paths = policy_paths(family, len(blocks), policy)
     for path in paths:
         try:
             linear = model.get_submodule(path)

@@ -5,7 +5,9 @@
 固定策略保留 `blocks.14..20.mlp.layer1` 为 BF16，其余 21 个 layer1 和全部
 28 个 layer2 使用 NF4（blocksize 64、double quant、uint8 packed），共 49 个权重。
 所有其他 tensor 的 key、dtype、shape、字节值及源 metadata 原样保留。
-`anima.mixed_nf4.manifest` 保存版本、精确策略、模块清单、源 SHA256 和 bnb 版本。
+`diffusion.mixed_nf4.manifest` 是当前 canonical manifest，保存 family、版本、
+prefix、精确策略、完整源张量清单、源 SHA256、qstate 元数据和 bnb 版本。
+旧版 `anima.mixed_nf4.manifest` 只读兼容，不再由新转换器写出。
 
 ```bash
 .venv/bin/python scripts/anima/quantize_mixed_nf4.py --source /path/base.safetensors --output /path/mixed.safetensors --device cpu --threads 4
@@ -16,7 +18,9 @@
 源文件不会覆盖；目标已存在时拒绝写入，并用同目录临时文件和原子无覆盖发布。
 发布前校验源 SHA256、量化状态和全部非目标 tensor 字节一致。
 
-Anima loader 自动识别此格式，直接恢复 `Linear4bit`，不重复量化。
+Anima loader 优先识别 canonical manifest，必要时回退旧 manifest，直接恢复
+`Linear4bit`，不重复量化；canonical manifest 的 qstate 内容也会被校验，
+不是只检查 safetensors header。
 只允许 BF16 compute，拒绝加载时 LoRA merge；普通 BF16 路径保持原行为。
 CPU 小夹具验证 bnb 状态 roundtrip、BF16 前后向及 plain LoRA 挂载。
 2026-10-02 已完成 CMP 90HX 上 plain LoRA、BF16 compute、1024×1024、swap12、

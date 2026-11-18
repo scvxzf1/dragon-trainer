@@ -22,6 +22,7 @@ from library.anima.text_strategies import (
     TokenizeStrategy,
     TextEncoderOutputsCachingStrategy,
 )
+from library.strategies.text_cache import VariantSafetensorsTextCacheStrategy
 from library.models import qwen_vae as qwen_image_autoencoder_kl
 from library.models.family_registry import (
     get_model_family_spec,
@@ -34,11 +35,6 @@ setup_logging()
 import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
-
-# Module-level latch so the legacy-cache warning fires once per process,
-# not once per cache file.
-_warned_legacy_variants_cache = False
-
 
 class AnimaTokenizeStrategy(TokenizeStrategy):
     """Tokenize strategy for Anima: dual tokenization with Qwen3 + T5.
@@ -211,7 +207,9 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
                 crossattn_emb[drop_mask] = 0
 
 
-class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
+class AnimaTextEncoderOutputsCachingStrategy(
+    VariantSafetensorsTextCacheStrategy, TextEncoderOutputsCachingStrategy
+):
     """Caching strategy for Anima text encoder outputs.
 
     Caches: prompt_embeds (bf16), attn_mask (int32), t5_input_ids (int64), t5_attn_mask (int32)
@@ -378,7 +376,12 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             has_variants = "num_variants" in keys
             if has_variants and "caption_multi_source" in keys:
                 num_variants = int(f.get_tensor("num_variants"))
-                vi = random.randint(0, max(0, num_variants - 1))
+                vi = self._select_variant_index(
+                    num_variants,
+                    multi_source=True,
+                    v0_intact=True,
+                    cache_path=cache_path,
+                )
                 prompt_embeds = f.get_tensor(f"prompt_embeds_v{vi}")
                 attn_mask = f.get_tensor(f"attn_mask_v{vi}")
                 t5_input_ids = f.get_tensor(f"t5_input_ids_v{vi}")
@@ -402,27 +405,18 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     # Legacy cache: every variant is shuffled (no pristine v0).
                     # Fall back to uniform sampling and warn once so the user
                     # knows to re-cache for the 20%/80% weighted behavior.
-                    global _warned_legacy_variants_cache
-                    if not _warned_legacy_variants_cache:
-                        logger.warning(
-                            "Loaded a legacy multi-variant TE cache without the "
-                            "`v0_intact` marker (e.g. %s). Sampling uniformly "
-                            "across v0..v%d. Re-run `make preprocess-te` to "
-                            "regenerate caches with v0=pristine and "
-                            "20%%/80%% weighted sampling.",
-                            cache_path,
-                            num_variants - 1,
-                        )
-                        _warned_legacy_variants_cache = True
-                    vi = random.randint(0, num_variants - 1)
-                elif num_variants <= 1:
-                    vi = 0
+                    vi = self._select_variant_index(
+                        num_variants,
+                        multi_source=False,
+                        v0_intact=False,
+                        cache_path=cache_path,
+                    )
                 else:
-                    # 20% pristine v0, 80% uniform over v1..v{N-1}.
-                    vi = (
-                        0
-                        if random.random() < 0.2
-                        else random.randint(1, num_variants - 1)
+                    vi = self._select_variant_index(
+                        num_variants,
+                        multi_source=False,
+                        v0_intact=True,
+                        cache_path=cache_path,
                     )
                 prompt_embeds = f.get_tensor(f"prompt_embeds_v{vi}")
                 attn_mask = f.get_tensor(f"attn_mask_v{vi}")

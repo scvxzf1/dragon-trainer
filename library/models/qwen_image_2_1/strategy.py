@@ -15,7 +15,7 @@ from library.anima import strategy as anima_strategy
 from library.anima.text_strategies import TextEncodingStrategy, TokenizeStrategy
 from library.io.cache import resolve_cache_path
 from library.models.family_registry import get_model_family_spec
-from library.models.krea2_raw.strategy import Krea2TextEncoderOutputsCachingStrategy
+from library.strategies.text_cache import FamilySafetensorsTextCacheStrategy
 from library.models.latent_space import QWEN_IMAGE_21_F16C64_P1
 from library.models.qwen_image_2_1.latent import encode_qwen_image_2_1_latents
 from library.datasets.qwen_image_edit import (
@@ -268,7 +268,7 @@ class QwenImage21TextEncodingStrategy(TextEncodingStrategy):
             raise ValueError("Qwen Image 2.1 caption dropout is not supported")
 
 
-class QwenImage21TextCache(Krea2TextEncoderOutputsCachingStrategy):
+class QwenImage21TextCache(FamilySafetensorsTextCacheStrategy):
     MODEL_FAMILY = "qwen_image_2_1"
     CACHE_LABEL = "Qwen Image 2.1"
     EXPECTED_HIDDEN_RANK = 2

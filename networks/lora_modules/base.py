@@ -123,6 +123,7 @@ class BaseLoRAModule(torch.nn.Module):
     timestep masking, ``apply_to`` monkey-patching. Subclasses own ``forward``."""
 
     supports_conv2d: bool = False
+    supports_packed_qkv: bool = False
 
     def __init__(
         self,
@@ -307,6 +308,26 @@ class BaseLoRAModule(torch.nn.Module):
         if can_scale_in_bottleneck:
             return org_forwarded + lx
         return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
+
+    def compute_delta(
+        self,
+        x: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+        *,
+        base_output: torch.Tensor | None = None,
+        base_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return the adapter-only contribution for a shared base projection.
+
+        Packed projections use this protocol to compute one base GEMM and keep
+        each adapter's own dropout, timestep, and variant-specific semantics.
+        ``base_output``/``base_weight`` are optional inputs for variants whose
+        delta depends on the base projection.
+        """
+        del x, out_dtype, base_output, base_weight
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support shared-base delta computation"
+        )
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:
         return lx * self._timestep_mask

@@ -240,6 +240,7 @@ def test_ssot_capability_consumers_match_registry() -> None:
 
     assert TRAINER_PP_WIRED_FAMILIES == frozenset(ADAPTERS)
     assert quant_policy.FAMILIES == {
+        "anima": ("blocks", "mlp", ("layer1", "layer2")),
         "krea2_raw": ("blocks", "mlp", ("gate", "up", "down")),
         "z_image": ("layers", "feed_forward", ("w1", "w2", "w3")),
         "qwen_image_2_1": ("transformer_blocks", "img_mlp", ("gate_layer", "proj", "out")),
@@ -263,3 +264,40 @@ def test_ssot_capability_consumers_match_registry() -> None:
     assert get_model_family_spec("z_image").attention.forbids_xformers_flag is True
     assert get_model_family_spec("qwen_image_2_1").attention.forbids_xformers_flag is True
     assert get_model_family_spec("moss_image").attention.forbids_xformers_flag is True
+
+
+def test_family_plugin_loader_is_lazy_and_registered() -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; "
+        "from library.models.family_plugins import get_family_plugin; "
+        "assert 'library.models.z_image.strategy' not in sys.modules; "
+        "plugin = get_family_plugin('z_image'); "
+        "assert plugin.family == 'z_image'; "
+        "assert 'library.models.z_image.strategy' not in sys.modules; "
+        "assert get_family_plugin('z_image') is plugin"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr or proc.stdout
+
+    from library.models.family_plugins import get_family_plugin
+
+    with pytest.raises(ValueError, match="family plugin"):
+        get_family_plugin("unknown_family")
+
+
+def test_family_plugins_declare_text_preprocess_contracts() -> None:
+    from library.models.family_plugins import get_family_plugin
+
+    expected = {
+        "anima": ("module", "scripts.preprocess.cache_text_embeddings"),
+        "krea2_raw": ("module", "scripts.krea2.preprocess_te_cache"),
+        "z_image": ("module", "scripts.z_image.preprocess_te_cache"),
+        "qwen_image_2_1": ("special", "scripts.qwen_image_2_1.preprocess_te_cache"),
+        "moss_image": ("special", "scripts.moss_image.preprocess_te_cache"),
+    }
+    for family, (runner, module) in expected.items():
+        spec = get_family_plugin(family).text_preprocess_spec
+        assert (spec.runner, spec.module) == (runner, module)

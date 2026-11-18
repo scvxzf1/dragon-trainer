@@ -8,6 +8,8 @@ import torch
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.configuration_utils import register_to_config
 
+from library.inference.flow_euler import run_flow_euler_loop
+
 
 class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
     """Official MOSS V2 grid; inference shift is applied before grid snapping."""
@@ -71,6 +73,8 @@ def generate_moss_image(
     dit, cond_embeds, uncond_embeds=None, *, height=1024, width=1024,
     sample_steps=50, guidance_scale=3.0, flow_shift=5.0, seed=0,
     device, dtype=torch.bfloat16, uncond_skip_layers=(22,), latents=None,
+    step_start_callback=None,
+    branch_start_callback=None,
 ):
     """Return normalized [B,128,H/16,W/16] MOSS latents without loading TE/VAE.
 
@@ -99,16 +103,41 @@ def generate_moss_image(
         latents = latents.to(device=device, dtype=torch.float32)
     scheduler = MOSSImageScheduler(shift=float(flow_shift), training_shift=1.0)
     scheduler.set_timesteps(sample_steps, device=device)
-    for timestep in scheduler.timesteps:
-        positive_velocity = dit(
-            latents, timestep, positive, positive_mask, return_dict=True,
+    sigmas = scheduler.sigmas.to(device=device, dtype=torch.float32)
+
+    def positive_predict(current_latent, sigma):
+        timestep = sigma * 1000.0
+        return dit(
+            current_latent, timestep, positive, positive_mask, return_dict=True,
         ).sample.float()
-        velocity = positive_velocity
-        if use_cfg:
-            negative_velocity = dit(
-                latents, timestep, negative, negative_mask,
-                return_dict=True, skip_layers=skip_layers,
-            ).sample.float()
-            velocity = negative_velocity + guidance_scale * (positive_velocity - negative_velocity)
-        latents = scheduler.step(velocity, timestep, latents, return_dict=False)[0].float()
-    return latents
+
+    def negative_predict(current_latent, sigma):
+        timestep = sigma * 1000.0
+        return dit(
+            current_latent, timestep, negative, negative_mask,
+            return_dict=True, skip_layers=skip_layers,
+        ).sample.float()
+
+    def scheduler_step(index, current_latent, velocity, _sigma_current, _sigma_next):
+        return scheduler.step(
+            velocity, scheduler.timesteps[index], current_latent, return_dict=False
+        )[0].float()
+
+    return run_flow_euler_loop(
+        latents,
+        sigmas,
+        positive_predict,
+        guidance_scale=guidance_scale,
+        predict_negative=negative_predict if use_cfg else None,
+        combine_predictions=lambda positive, negative, scale: negative + scale * (positive - negative),
+        use_guidance=use_cfg,
+        step_fn=scheduler_step,
+        step_start_callback=step_start_callback,
+        branch_start_callback=(
+            (lambda index, branch, current, sigma: branch_start_callback(
+                index, branch, current, sigma,
+                positive if branch == 0 else negative,
+            ))
+            if branch_start_callback is not None else None
+        ),
+    )

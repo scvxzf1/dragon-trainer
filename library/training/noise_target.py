@@ -401,7 +401,9 @@ def compute_noise_pred_and_target(
     # pass during backward, so the mask must remain set. It gets overwritten on the next step.
 
     # Rectified flow target: noise - latents
-    target = noise - latents
+    from library.training.flow_step import velocity_target
+
+    target = velocity_target(noise, latents)
 
     observer_aux = trainer._state.extras_for_step.get("personalization_observer")
     if observer_probe and observer_aux is not None:

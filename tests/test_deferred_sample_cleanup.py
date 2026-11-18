@@ -15,10 +15,7 @@ def _section(source: str, start: str, end: str) -> str:
 
 def test_deferred_sample_decode_runs_on_interrupted_training_loop() -> None:
     source = (ROOT / "library" / "training" / "train_session.py").read_text(encoding="utf-8")
-    train_tail = source[
-        source.index("with run_scope(trainer.progress_sink")
-        : source.index("if is_main_process and (args.save_state", source.index("with run_scope(trainer.progress_sink"))
-    ]
+    train_tail = source[source.index("with run_scope(trainer.progress_sink") :]
 
     assert "training_loop_completed = False" in train_tail
     assert "finally:" in train_tail
@@ -29,10 +26,7 @@ def test_deferred_sample_decode_runs_on_interrupted_training_loop() -> None:
 
 def test_deferred_sample_decode_still_runs_on_normal_completion() -> None:
     source = (ROOT / "library" / "training" / "train_session.py").read_text(encoding="utf-8")
-    train_tail = source[
-        source.index("accelerator.end_training()")
-        : source.index("if is_main_process and (args.save_state", source.index("accelerator.end_training()"))
-    ]
+    train_tail = source[source.index("accelerator.end_training()") :]
 
     assert "optimizer_eval_fn()" in train_tail
     assert "decode_deferred_samples_safely(accelerator, args, loop_state, vae)" in train_tail
@@ -71,15 +65,20 @@ def test_sigterm_uses_keyboard_interrupt_cleanup_path() -> None:
 
 def test_live_sample_preview_decode_runs_after_all_ranks_finish() -> None:
     source = ANIMA_TRAINING.read_text(encoding="utf-8")
-    sample_body = source[
-        source.index("def sample_images(")
-        : source.index("def _sample_image_inference(")
-    ]
+    common = (ROOT / "library" / "training" / "sample_preview_common.py").read_text(
+        encoding="utf-8"
+    )
+    sample_body = _section(source, "def sample_images(", "def _sample_image_inference(")
 
-    first_wait = sample_body.index("accelerator.wait_for_everyone()")
-    decode = sample_body.index("decode_samples_for_live_preview(accelerator, args, vae")
-    second_wait = sample_body.index("accelerator.wait_for_everyone()", first_wait + 1)
-    assert first_wait < decode < second_wait
+    assert "finish_preview_batch(" in sample_body
+    assert "accelerator.wait_for_everyone()" in common
+    assert "decode(accelerator, args, vae, dit=dit, network=network)" in common
+    assert common.index("accelerator.wait_for_everyone()") < common.index(
+        "decode(accelerator, args, vae, dit=dit, network=network)"
+    )
+    assert common.index(
+        "decode(accelerator, args, vae, dit=dit, network=network)"
+    ) < common.index("accelerator.wait_for_everyone()", common.index("decode("))
 
 
 def test_live_sample_preview_restores_block_swap_safely() -> None:

@@ -2940,12 +2940,31 @@ class LLMAdapterAttention(nn.Module):
         can_use_flash = attention_dispatch.flash_attn_available_for_tensor(
             query_states
         )
+        if (
+            not can_use_flash
+            and query_states.dtype == torch.bfloat16
+            and attention_dispatch.flash_attn_v100_provider
+        ):
+            can_use_flash = attention_dispatch.flash_attn_supports_outer_dtype(
+                query_states.dtype, device=query_states.device
+            )
 
         if can_use_flash and q_mask is None and kv_mask is None:
             # No masking — simple flash attention, [B, L, H, D] layout
+            outer_dtype = query_states.dtype
+            query_states, key_states, value_states = (
+                attention_dispatch._cast_qkv_for_flash(
+                    query_states, key_states, value_states
+                )
+            )
             attn_output = attention_dispatch.flash_attn_func(
                 query_states, key_states, value_states
             )
+            if (
+                attention_dispatch.flash_attn_v100_provider
+                and outer_dtype == torch.bfloat16
+            ):
+                attn_output = attn_output.to(dtype=outer_dtype)
         elif can_use_flash:
             # Varlen flash attention: pack valid tokens, attend, unpack
             B, L_q = query_states.shape[:2]
@@ -2976,6 +2995,10 @@ class LLMAdapterAttention(nn.Module):
             # Pass the padded lengths as max_seqlen_q/k. Slightly over-sizes the
             # flash kernel's metadata vs the true batch maxima but avoids a
             # host-device sync from .item() on every adapter layer.
+            outer_dtype = query_states.dtype
+            q_packed, k_packed, v_packed = attention_dispatch._cast_qkv_for_flash(
+                q_packed, k_packed, v_packed
+            )
             out_packed = attention_dispatch.flash_attn_varlen_func(
                 q_packed,
                 k_packed,
@@ -2985,6 +3008,11 @@ class LLMAdapterAttention(nn.Module):
                 L_q,
                 L_kv,
             )
+            if (
+                attention_dispatch.flash_attn_v100_provider
+                and outer_dtype == torch.bfloat16
+            ):
+                out_packed = out_packed.to(dtype=outer_dtype)
 
             # Unpack: [total_valid_q, H, D] → [B, L_q, H, D]
             attn_output = query_states.new_zeros(B, L_q, self.n_heads, self.head_dim)

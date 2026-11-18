@@ -19,6 +19,7 @@ from library import cache_identity as _identity
 from library.preprocess import cache_latents, tqdm_progress
 from library.runtime.cli import add_io_args
 from library.runtime.device import str_to_dtype
+from library.models.family_registry import get_family_plugin, get_model_family_spec
 
 
 def main() -> None:
@@ -78,41 +79,9 @@ def main() -> None:
     dtype = str_to_dtype(args.dtype or ("float32" if args.model_family == "moss_image" else "bfloat16"))
 
     print(f"Loading VAE from {args.vae} ...")
-    latent_space_name = None
-    encode_fn = None
-    if args.model_family == "z_image":
-        from library.models.z_image.latent import encode_z_image_latents
-        from library.models.z_image.weights import load_z_image_vae
-
-        vae = load_z_image_vae(args.vae, dtype=dtype, device="cpu")
-        latent_space_name = "z_image"
-
-        def encode_fn(vae, images):
-            return encode_z_image_latents(vae, images)
-    elif args.model_family == "qwen_image_2_1":
-        from library.models.qwen_image_2_1.latent import encode_qwen_image_2_1_latents
-        from library.models.qwen_image_2_1.weights import load_qwen_image_2_1_vae
-
-        vae = load_qwen_image_2_1_vae(args.vae, dtype=dtype, device="cpu")
-        latent_space_name = "qwen_image_2_1"
-        encode_fn = encode_qwen_image_2_1_latents
-    elif args.model_family == "moss_image":
-        from library.models.moss_image.latent import encode_moss_latents
-        from library.models.moss_image.weights import load_moss_vae
-
-        vae = load_moss_vae(args.vae, dtype=dtype, device="cpu")
-        latent_space_name = "moss_image"
-        encode_fn = encode_moss_latents
-    else:
-        from library.models import qwen_vae as qwen_image_autoencoder_kl
-
-        vae = qwen_image_autoencoder_kl.load_vae(
-            args.vae,
-            device="cpu",
-            disable_mmap=True,
-            spatial_chunk_size=args.chunk_size,
-            disable_cache=args.disable_cache,
-        )
+    plugin = get_family_plugin(args.model_family)
+    vae, encode_fn = plugin.load_preprocess_vae(args, dtype)
+    latent_spec = get_model_family_spec(args.model_family).latent_space
     vae.to(device, dtype=dtype)
     vae.requires_grad_(False)
     vae.eval()
@@ -130,8 +99,8 @@ def main() -> None:
         batch_size=args.batch_size,
         progress=tqdm_progress("Caching latents"),
         overwrite=bool(args.overwrite),
-        latent_space_name=latent_space_name,
-        vae_spatial_compression=16 if args.model_family in {"qwen_image_2_1", "moss_image"} else 8,
+        latent_space_name=latent_spec.name if latent_spec.name != "anima" else None,
+        vae_spatial_compression=latent_spec.vae_spatial_compression,
         encode_fn=encode_fn,
     )
     print(

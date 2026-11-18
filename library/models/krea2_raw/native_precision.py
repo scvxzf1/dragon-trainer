@@ -64,7 +64,7 @@ def observe_guards(model):
 
 
 def block_forward(block, x, vec, freqs, mask):
-    compute = block.attn.wq.weight.dtype
+    compute = getattr(block.attn.wq, "compute_dtype", None) or x.dtype
     x = x.float()
     modulation = tuple(v.float() for v in block.mod(vec.float()))
     prescale, preshift, pregate, postscale, postshift, postgate = modulation
@@ -75,7 +75,7 @@ def block_forward(block, x, vec, freqs, mask):
 
 
 def text_forward(block, x, mask):
-    compute = block.attn.wq.weight.dtype
+    compute = getattr(block.attn.wq, "compute_dtype", None) or x.dtype
     x = x.float()
     x = x + block.attn(block.prenorm(x).to(compute), mask=mask).float()
     return x + block.mlp(block.postnorm(x).to(compute)).float()

@@ -17,6 +17,7 @@ from .weight_access import is_nf4_weight, materialize_module_weight
 
 class DoRALoRAModule(LoRAModule):
     supports_conv2d = True
+    supports_packed_qkv = True
 
     def __init__(
         self,
@@ -312,3 +313,45 @@ class DoRALoRAModule(LoRAModule):
         if self.multiplier == 1:
             return adapted
         return org_forwarded + self.multiplier * (adapted - org_forwarded)
+
+    def compute_delta(
+        self,
+        x: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+        *,
+        base_output: torch.Tensor | None = None,
+        base_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if not self.enabled or self._fused or self.multiplier == 0:
+            if base_output is None:
+                raise RuntimeError("inactive DoRA delta requires base_output")
+            return torch.zeros_like(base_output)
+        if base_output is None or base_weight is None:
+            raise RuntimeError("DoRA packed delta requires base_output and base_weight")
+        output_dtype = out_dtype or base_output.dtype
+        if self.training and self._skip_module():
+            return torch.zeros_like(base_output)
+
+        x_lora = self._rebalance(x)
+        lx = self.lora_down(x_lora)
+        if self.training:
+            lx = lx * self._timestep_mask
+        if self.dropout is not None and self.training:
+            lx = torch.nn.functional.dropout(lx, p=self.dropout)
+        lx, scale = self._apply_rank_dropout(lx)
+        delta_out = self.lora_up(lx) * scale
+
+        delta_weight = self._delta_weight(multiplier=1.0).to(
+            device=base_output.device, dtype=torch.float32
+        )
+        merged_norm = self._compute_weight_norm(
+            base_weight.to(device=base_output.device, dtype=torch.float32) + delta_weight
+        ).detach()
+        row_scale = (
+            self.magnitude.to(device=base_output.device, dtype=output_dtype)
+            / merged_norm.to(device=base_output.device, dtype=output_dtype)
+        ).clamp_min(1e-6)
+        row_scale = row_scale.view(*([1] * (base_output.ndim - 1)), -1)
+        edit = (row_scale - 1) * base_output
+        edit = edit + delta_out.to(output_dtype) * row_scale
+        return (edit * self.multiplier).to(output_dtype)

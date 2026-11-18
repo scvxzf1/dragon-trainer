@@ -6,11 +6,13 @@ from diffusers import FlowMatchEulerDiscreteScheduler
 
 from library.models.qwen_image_2_1.family import forward_for_loss
 from library.models.qwen_image_2_1.preview_kv import PreviewKVForward, supports_preview_kv
+from library.inference.flow_euler import run_flow_euler_loop
 
 
 @torch.no_grad()
 def generate_preview(dit, prompt, positive, negative, reference, *, device, dtype, seed,
-                     forward=forward_for_loss, use_kv_cache=False):
+                     forward=forward_for_loss, use_kv_cache=False,
+                     step_start_callback=None, branch_start_callback=None):
     """Sample using the inference block layout prepared by the caller.
 
     With block swap enabled, call ``switch_block_swap_for_inference()`` before
@@ -47,23 +49,47 @@ def generate_preview(dit, prompt, positive, negative, reference, *, device, dtyp
         use_kv_cache and supports_preview_kv(dit, forward)
     ) else []
 
-    def predict(values, sigma, branch):
+    def predict(values, current_latent, sigma, branch):
         if caches:
-            return caches[branch](latent, values[0], values[1], sigma,
+            return caches[branch](current_latent, values[0], values[1], sigma,
                                   reference_latents=reference,
                                   image_slot_mask=values[2] if reference is not None else None)
-        return forward(dit, latent, values[0], values[1], sigma,
+        return forward(dit, current_latent, values[0], values[1], sigma,
                        reference_latents=reference,
                        image_slot_mask=values[2] if reference is not None else None)
 
     try:
-        for timestep in scheduler.timesteps:
-            sigma = (timestep / 1000).expand(1)
-            prediction = predict(positive, sigma, 0)
-            if negative is not None:
-                unconditional = predict(negative, sigma, 1)
-                prediction = unconditional + scale * (prediction - unconditional)
-            latent = scheduler.step(prediction, timestep, latent, return_dict=False)[0].to(dtype)
+        sigmas = scheduler.sigmas.to(device=device, dtype=torch.float32)
+
+        def positive_predict(current_latent, sigma):
+            return predict(positive, current_latent, sigma, 0)
+
+        def negative_predict(current_latent, sigma):
+            return predict(negative, current_latent, sigma, 1)
+
+        def scheduler_step(index, current_latent, velocity, _sigma_current, _sigma_next):
+            return scheduler.step(
+                velocity, scheduler.timesteps[index], current_latent, return_dict=False
+            )[0].to(dtype)
+
+        latent = run_flow_euler_loop(
+            latent,
+            sigmas,
+            positive_predict,
+            guidance_scale=scale,
+            predict_negative=negative_predict if negative is not None else None,
+            use_guidance=negative is not None,
+            combine_predictions=lambda positive, negative, scale: negative + scale * (positive - negative),
+            step_fn=scheduler_step,
+            step_start_callback=step_start_callback,
+            branch_start_callback=(
+                (lambda index, branch, current, sigma: branch_start_callback(
+                    index, branch, current, sigma,
+                    positive if branch == 0 else negative,
+                ))
+                if branch_start_callback is not None else None
+            ),
+        )
     finally:
         for cache in caches:
             cache.close()

@@ -9,8 +9,12 @@ copy is only consulted at vocab-build time.
 Three rule families:
 
 * ``replacements``: whole-string ``str.replace`` applied before tokenization.
-  Used for HTML-entity decode (``&#039; → '``), rating collapse
-  (``questionable → sensitive``), and artist-alias rewrites.
+  Used for HTML-entity decode (``&#039; → '``), rating normalization onto
+  Anima's band (``general → safe``, ``questionable → nsfw`` — see
+  ``taxonomy.LEGACY_RATING_ALIASES``), and artist-alias rewrites. Checkpoint
+  snapshots predating the band carry the old collapse (``questionable →
+  sensitive``, ``safe → general``); they stay valid for their own checkpoint
+  because :meth:`AnimaTagger.tag` holds the rating slot out of ``apply_rules``.
 * ``remove``: tag literals that are unconditionally stripped.
 * dedup map: ``{base: {variants}}``. If any variant of ``base`` is present,
   the base tag is removed. Used to drop generic clothing tags like ``bra``

@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from library.models.qwen_image_2_1.attention_backend import (
     QwenImage21FlashAttnProcessor,
 )
-from networks.lora_modules.lora import LoRAModule
+from networks.lora_modules.base import BaseLoRAModule
 
 
 class _RemovedProjection(nn.Module):
@@ -26,7 +26,7 @@ def _removed_lora_forward(_x: torch.Tensor) -> torch.Tensor:
 class FrozenPackedQKV(nn.Module):
     """One registered base weight; three original, separately registered LoRAs."""
 
-    def __init__(self, weight: torch.Tensor, loras: tuple[LoRAModule, LoRAModule, LoRAModule]):
+    def __init__(self, weight: torch.Tensor, loras: tuple[BaseLoRAModule, BaseLoRAModule, BaseLoRAModule]):
         super().__init__()
         self.weight = nn.Parameter(weight, requires_grad=False)
         self._loras = loras  # A tuple does not re-register adapter parameters.
@@ -34,8 +34,15 @@ class FrozenPackedQKV(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, ...]:
         base = F.linear(hidden_states, self.weight)
         return tuple(
-            lora.forward_with_base(hidden_states, part)
-            for lora, part in zip(self._loras, base.chunk(3, dim=-1))
+            part + lora.compute_delta(
+                hidden_states,
+                part.dtype,
+                base_output=part,
+                base_weight=weight_part,
+            ).to(part.dtype)
+            for lora, part, weight_part in zip(
+                self._loras, base.chunk(3, dim=-1), self.weight.chunk(3, dim=0)
+            )
         )
 
 
@@ -128,7 +135,7 @@ class PackedQwenImage21AttnProcessor:
         return attn.to_out[1](attn.to_out[0](hidden_states))
 
 
-def _validate_attention(attn: nn.Module, loras: Sequence[LoRAModule], *, freeze: bool):
+def _validate_attention(attn: nn.Module, loras: Sequence[BaseLoRAModule], *, freeze: bool):
     from diffusers.models.transformers.transformer_qwenimage21 import (
         QwenImage21Attention, QwenImage21AttnProcessor,
     )
@@ -141,8 +148,13 @@ def _validate_attention(attn: nn.Module, loras: Sequence[LoRAModule], *, freeze:
     if any(getattr(attn, name) for name in ("_forward_pre_hooks", "_forward_hooks")):
         raise RuntimeError("cannot replace attention with hooks")
     projections = tuple(getattr(attn, name) for name in ("to_q", "to_k", "to_v"))
-    if len(loras) != 3 or any(type(lora) is not LoRAModule for lora in loras):
-        raise TypeError("packed QKV requires exactly three plain LoRAModule adapters")
+    if len(loras) != 3 or any(not isinstance(lora, BaseLoRAModule) for lora in loras):
+        raise TypeError("packed QKV requires exactly three LoRA-family adapters")
+    if any(not getattr(lora, "supports_packed_qkv", False) for lora in loras):
+        unsupported = sorted({type(lora).__name__ for lora in loras if not getattr(lora, "supports_packed_qkv", False)})
+        raise TypeError(
+            "packed QKV does not support adapter variants: " + ", ".join(unsupported)
+        )
     dims = {(p.in_features, p.out_features, p.weight.dtype, p.weight.device) for p in projections if type(p) is nn.Linear}
     if len(dims) != 1 or any(type(p) is not nn.Linear or p.bias is not None for p in projections):
         raise TypeError("packed QKV requires matching bias-free Linear projections")
@@ -183,11 +195,11 @@ def _check_install_timing(model: nn.Module) -> nn.ModuleList:
 
 
 def install_qwen_image_2_1_packed_qkv(
-    model: nn.Module, loras: Sequence[LoRAModule], *, freeze: bool = False
+    model: nn.Module, loras: Sequence[BaseLoRAModule], *, freeze: bool = False
 ) -> int:
     """Preflight all blocks, then replace split base weights without changing LoRA keys."""
     blocks = _check_install_timing(model)
-    by_projection = {id(lora.org_module_ref[0]): lora for lora in loras if type(lora) is LoRAModule}
+    by_projection = {id(lora.org_module_ref[0]): lora for lora in loras}
     groups = []
     for block in blocks:
         attn = getattr(block, "attn", None)

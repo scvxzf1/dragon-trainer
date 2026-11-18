@@ -168,6 +168,330 @@ def flash_attn_available_for_tensor(tensor: torch.Tensor) -> bool:
     return check_flash_attn_for_dtype(tensor.dtype, device=dev)
 
 
+def flash_attn_supports_outer_dtype(
+    dtype: torch.dtype,
+    device: torch.device | int | str | None = None,
+) -> bool:
+    """Check whether Flash can serve an outer model dtype.
+
+    The V100 provider accepts FP16 at its kernel boundary only. Its callers
+    may still run BF16 mixed-precision training because the shared dispatch
+    casts Q/K/V to FP16 immediately before the kernel and restores the outer
+    dtype on return. ``flash_attn_available_for_dtype`` intentionally keeps
+    reporting the stricter kernel contract.
+    """
+    if flash_attn_v100_provider and dtype == torch.bfloat16:
+        return check_flash_attn_for_dtype(torch.float16, device=device)
+    return check_flash_attn_for_dtype(dtype, device=device)
+
+
+def _flash_backward_scale(grad_output: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Move an outer BF16 gradient into FP16's useful exponent range."""
+    max_abs = grad_output.detach().float().abs().amax()
+    if not bool(torch.isfinite(max_abs)) or not bool(max_abs):
+        scale = torch.ones((), device=grad_output.device, dtype=torch.float32)
+        return grad_output.to(dtype=torch.float16), scale
+    exponent = torch.frexp(max_abs)[1]
+    shift = torch.clamp(-exponent, min=-126, max=126)
+    scale = torch.ldexp(
+        torch.ones((), device=grad_output.device, dtype=torch.float32), shift
+    )
+    return (grad_output.float() * scale).to(dtype=torch.float16), scale
+
+
+_V100_BRIDGE_QK_SCALE = 8.0
+
+
+def _v100_bridge_qkv(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    softmax_scale: float | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float | None]:
+    """Keep V100 FP16 QK products small without changing attention logits."""
+    factor = _V100_BRIDGE_QK_SCALE
+    effective_scale = (
+        (q.shape[-1] ** -0.5 if softmax_scale is None else softmax_scale)
+        * factor
+        * factor
+    )
+    return (
+        q.to(torch.float16) / factor,
+        k.to(torch.float16) / factor,
+        v.to(torch.float16),
+        effective_scale,
+    )
+
+
+class _V100Bf16DenseBridge(torch.autograd.Function):
+    """Keep V100 Flash's FP16 kernel boundary behind a BF16 autograd API."""
+
+    @staticmethod
+    def forward(ctx, q, k, v, dropout_p, softmax_scale):
+        ctx.save_for_backward(q, k, v)
+        ctx.dropout_p = dropout_p
+        ctx.softmax_scale = softmax_scale
+        q16, k16, v16, effective_scale = _v100_bridge_qkv(
+            q, k, v, softmax_scale
+        )
+        ctx.qk_scale = _V100_BRIDGE_QK_SCALE
+        with torch.no_grad():
+            output = flash_attn_func(
+                q16,
+                k16,
+                v16,
+                dropout_p,
+                softmax_scale=effective_scale,
+            )
+        return output.to(torch.bfloat16)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        q, k, v = ctx.saved_tensors
+        with torch.enable_grad():
+            q16, k16, v16, effective_scale = _v100_bridge_qkv(
+                q.detach(), k.detach(), v.detach(), ctx.softmax_scale
+            )
+            q16 = q16.requires_grad_(True)
+            k16 = k16.requires_grad_(True)
+            v16 = v16.requires_grad_(True)
+            output = flash_attn_func(
+                q16,
+                k16,
+                v16,
+                ctx.dropout_p,
+                softmax_scale=effective_scale,
+            )
+            scaled_grad, scale = _flash_backward_scale(grad_output)
+            gradients = torch.autograd.grad(output, (q16, k16, v16), scaled_grad)
+        q_grad, k_grad, v_grad = gradients
+        factor = ctx.qk_scale
+        return (
+            q_grad.float().div(scale * factor).to(torch.bfloat16),
+            k_grad.float().div(scale * factor).to(torch.bfloat16),
+            v_grad.float().div(scale).to(torch.bfloat16),
+            None,
+            None,
+        )
+
+
+class _V100Bf16VarlenBridge(torch.autograd.Function):
+    """Varlen counterpart of ``_V100Bf16DenseBridge``."""
+
+    @staticmethod
+    def forward(ctx, q, k, v, cu_q, cu_k, max_q, max_k, softmax_scale):
+        ctx.save_for_backward(q, k, v, cu_q, cu_k)
+        ctx.max_q = max_q
+        ctx.max_k = max_k
+        ctx.softmax_scale = softmax_scale
+        q16, k16, v16, effective_scale = _v100_bridge_qkv(
+            q, k, v, softmax_scale
+        )
+        ctx.qk_scale = _V100_BRIDGE_QK_SCALE
+        with torch.no_grad():
+            output = flash_attn_varlen_func(
+                q16,
+                k16,
+                v16,
+                cu_q,
+                cu_k,
+                max_q,
+                max_k,
+                softmax_scale=effective_scale,
+            )
+        return output.to(torch.bfloat16)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        q, k, v, cu_q, cu_k = ctx.saved_tensors
+        with torch.enable_grad():
+            q16, k16, v16, effective_scale = _v100_bridge_qkv(
+                q.detach(), k.detach(), v.detach(), ctx.softmax_scale
+            )
+            q16 = q16.requires_grad_(True)
+            k16 = k16.requires_grad_(True)
+            v16 = v16.requires_grad_(True)
+            output = flash_attn_varlen_func(
+                q16,
+                k16,
+                v16,
+                cu_q,
+                cu_k,
+                ctx.max_q,
+                ctx.max_k,
+                softmax_scale=effective_scale,
+            )
+            scaled_grad, scale = _flash_backward_scale(grad_output)
+            gradients = torch.autograd.grad(output, (q16, k16, v16), scaled_grad)
+        q_grad, k_grad, v_grad = gradients
+        factor = ctx.qk_scale
+        return (
+            q_grad.float().div(scale * factor).to(torch.bfloat16),
+            k_grad.float().div(scale * factor).to(torch.bfloat16),
+            v_grad.float().div(scale).to(torch.bfloat16),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
+def flash_varlen_with_bool_mask(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    mask: torch.Tensor | None = None,
+    softmax_scale: float | None = None,
+    max_seqlen: int | None = None,
+) -> torch.Tensor:
+    """Run Flash varlen attention for padded BLHD tensors.
+
+    ``q``, ``k`` and ``v`` use the BLHD layout. Queries are always dense;
+    ``mask`` may be a key-valid mask shaped ``(B,K)`` or ``(B,1,1,K)``, or a
+    Krea-style boolean outer-product mask shaped ``(B,1,Q,K)``. The latter is
+    reduced to its diagonal after validating its dimensions. The output keeps
+    the padded ``(B,Q,H,D)`` shape and invalid K/V positions receive no
+    gradient.
+    """
+    tensors = {"q": q, "k": k, "v": v}
+    for name, tensor in tensors.items():
+        if tensor.ndim != 4:
+            raise ValueError(
+                f"Flash varlen expects {name} in (B,L,H,D); got shape={tuple(tensor.shape)}"
+            )
+    if q.device != k.device or q.device != v.device:
+        raise ValueError("Flash varlen requires Q/K/V on the same device")
+    if q.dtype != k.dtype or q.dtype != v.dtype:
+        raise ValueError(
+            "Flash varlen requires matching Q/K/V dtypes; "
+            f"got q={q.dtype}, k={k.dtype}, v={v.dtype}"
+        )
+    if q.shape[0] != k.shape[0] or k.shape[0] != v.shape[0]:
+        raise ValueError("Flash varlen requires matching Q/K/V batch sizes")
+    if q.shape[-1] != k.shape[-1] or k.shape[-1] != v.shape[-1]:
+        raise ValueError("Flash varlen requires matching Q/K/V head dimensions")
+    if k.shape[1] != v.shape[1]:
+        raise ValueError("Flash varlen requires matching K/V sequence lengths")
+    if k.shape[2] == 0 or q.shape[2] % k.shape[2] != 0:
+        raise ValueError(
+            "Flash varlen GQA requires non-empty K/V heads and Q heads divisible by K/V heads"
+        )
+    batch, query_length = q.shape[:2]
+    key_length = k.shape[1]
+    query_valid = torch.ones(batch, query_length, device=q.device, dtype=torch.bool)
+    if mask is None:
+        valid = torch.ones(batch, key_length, device=q.device, dtype=torch.bool)
+    elif not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool:
+        raise ValueError("Flash varlen requires a boolean key-valid mask")
+    elif mask.ndim == 1 and batch == 1 and mask.shape[0] == key_length:
+        valid = mask[None, :]
+    elif mask.ndim == 2 and tuple(mask.shape) == (batch, key_length):
+        valid = mask
+    elif mask.ndim == 4 and tuple(mask.shape) == (batch, 1, 1, key_length):
+        valid = mask[:, 0, 0]
+    elif mask.ndim == 4 and tuple(mask.shape) == (
+        batch, 1, query_length, key_length
+    ):
+        outer = mask[:, 0]
+        valid = outer.diagonal(dim1=-2, dim2=-1)
+        query_valid = valid
+    else:
+        raise ValueError(
+            "Flash varlen supports boolean masks shaped (B,K), (B,1,1,K), "
+            "or an outer-product (B,1,Q,K); "
+            f"got shape={tuple(mask.shape)}"
+        )
+
+    outer_dtype = q.dtype
+    v100_outer_bf16 = flash_attn_v100_provider and outer_dtype == torch.bfloat16
+    available = (
+        flash_attn_available_for_dtype(torch.float16, device=q.device)
+        if v100_outer_bf16
+        else flash_attn_available_for_tensor(q)
+    )
+    if not available:
+        raise RuntimeError(
+            f"Flash varlen does not support Q/K/V dtype or device: "
+            f"dtype={q.dtype}, device={q.device}"
+        )
+    if flash_attn_varlen_func is None:
+        raise RuntimeError("FlashAttention varlen provider is unavailable")
+
+    lengths = valid.sum(dim=1, dtype=torch.int32)
+    min_length = int(lengths.min())
+    if min_length == 0:
+        raise ValueError("Flash varlen does not accept empty key sequences")
+    cu_k = torch.zeros(batch + 1, device=q.device, dtype=torch.int32)
+    cu_k[1:] = lengths.cumsum(dim=0)
+    max_key_length = int(lengths.max())
+    valid_indices = None
+    if min_length != key_length or max_key_length != key_length:
+        valid_indices = valid.reshape(-1).nonzero(as_tuple=False).flatten()
+
+    query_lengths = query_valid.sum(dim=1, dtype=torch.int32)
+    if int(query_lengths.min()) == 0:
+        raise ValueError("Flash varlen does not accept empty query sequences")
+    cu_q = torch.zeros(batch + 1, device=q.device, dtype=torch.int32)
+    cu_q[1:] = query_lengths.cumsum(dim=0)
+    max_query_length = int(query_lengths.max())
+    if max_seqlen is not None:
+        if type(max_seqlen) is not int or max_seqlen < max_query_length or max_seqlen < max_key_length:
+            raise ValueError(
+                f"max_seqlen must be an int covering packed lengths; got {max_seqlen!r}"
+            )
+        max_query_length = max_key_length = max_seqlen
+    q_indices = query_valid.reshape(-1).nonzero(as_tuple=False).flatten()
+    q_packed = q.reshape(batch * query_length, q.shape[2], q.shape[3]).index_select(
+        0, q_indices
+    )
+    if valid_indices is None:
+        k_packed = k.reshape(batch * key_length, k.shape[2], k.shape[3]).contiguous()
+        v_packed = v.reshape(batch * key_length, v.shape[2], v.shape[3]).contiguous()
+    else:
+        k_packed = k.reshape(batch * key_length, k.shape[2], k.shape[3]).index_select(
+            0, valid_indices
+        )
+        v_packed = v.reshape(batch * key_length, v.shape[2], v.shape[3]).index_select(
+            0, valid_indices
+        )
+    if v100_outer_bf16:
+        output_packed = _V100Bf16VarlenBridge.apply(
+            q_packed,
+            k_packed,
+            v_packed,
+            cu_q,
+            cu_k,
+            max_query_length,
+            max_key_length,
+            softmax_scale,
+        )
+    else:
+        output_packed = flash_attn_varlen_func(
+            q_packed,
+            k_packed,
+            v_packed,
+            cu_q,
+            cu_k,
+            max_query_length,
+            max_key_length,
+            softmax_scale=softmax_scale,
+        )
+    output = torch.zeros(
+        batch,
+        query_length,
+        q.shape[2],
+        q.shape[3],
+        device=q.device,
+        dtype=q.dtype,
+    )
+    output.reshape(batch * query_length, q.shape[2], q.shape[3]).index_copy_(
+        0, q_indices, output_packed
+    )
+    return output
+
+
 _FLASH_HALF_DTYPES = (torch.float16, torch.bfloat16)
 
 
@@ -213,12 +537,6 @@ def _cast_qkv_for_flash(
     (cast only when q.dtype != v.dtype *and* autocast is on) does not fire.
     Casting here is the safety net for that four-lock combo.
     """
-    if flash_attn_v100_provider and any(
-        tensor.dtype == torch.bfloat16 for tensor in (q, k, v)
-    ):
-        raise RuntimeError(
-            "flash-attention-v100 only supports FP16; BF16 Q/K/V are invalid"
-        )
     target = _preferred_flash_dtype(q, k, v)
     if q.dtype != target:
         q = q.to(dtype=target)
@@ -523,9 +841,36 @@ def dispatch_attention(
     elif attn_params.attn_mode == "flash":
         # Hard half cast: FlashAttention rejects fp32. Required when compile
         # materializes Q/K/V as float32 (e.g. w8a16_convrot scope=all).
-        q, k, v = _cast_qkv_for_flash(q, k, v)
+        outer_dtype = q.dtype
+        v100_outer_bf16 = flash_attn_v100_provider and outer_dtype == torch.bfloat16
+        if not v100_outer_bf16:
+            q, k, v = _cast_qkv_for_flash(q, k, v)
+        flash_fn = (
+            flash_attn_varlen_func
+            if attn_params.cu_seqlens is not None
+            else flash_attn_func
+        )
+        if flash_fn is None:
+            variant = "varlen" if attn_params.cu_seqlens is not None else "dense"
+            raise RuntimeError(
+                f"FlashAttention {variant} provider is unavailable; "
+                "install a compatible FlashAttention backend or use attn_mode='torch'"
+            )
+        available = (
+            flash_attn_available_for_dtype(torch.float16, device=q.device)
+            if v100_outer_bf16
+            else flash_attn_available_for_tensor(q)
+        )
+        if not available:
+            raise RuntimeError(
+                "FlashAttention provider does not support the current "
+                f"dtype/device: dtype={q.dtype}, device={q.device}"
+            )
         if attn_params.cu_seqlens is None:  # all tokens are valid
-            x = flash_attn_func(q, k, v, drop_rate, softmax_scale=scale)  # B, L, H, D
+            if flash_attn_v100_provider and outer_dtype == torch.bfloat16:
+                x = _V100Bf16DenseBridge.apply(q, k, v, drop_rate, scale)
+            else:
+                x = flash_attn_func(q, k, v, drop_rate, softmax_scale=scale)
             del q, k, v
         else:
             # Reshape to [(bxs), a, d]
@@ -535,17 +880,29 @@ def dispatch_attention(
             v = v.view(v.shape[0] * v.shape[1], *v.shape[2:])  # [B*L, H, D]
 
             # Assume cu_seqlens_q == cu_seqlens_kv and max_seqlen_q == max_seqlen_kv
-            x = flash_attn_varlen_func(
-                q,
-                k,
-                v,
-                attn_params.cu_seqlens,
-                attn_params.cu_seqlens,
-                attn_params.max_seqlen,
-                attn_params.max_seqlen,
-                drop_rate,
-                softmax_scale=scale,
-            )
+            if flash_attn_v100_provider and outer_dtype == torch.bfloat16:
+                x = _V100Bf16VarlenBridge.apply(
+                    q,
+                    k,
+                    v,
+                    attn_params.cu_seqlens,
+                    attn_params.cu_seqlens,
+                    attn_params.max_seqlen,
+                    attn_params.max_seqlen,
+                    scale,
+                )
+            else:
+                x = flash_attn_varlen_func(
+                    q,
+                    k,
+                    v,
+                    attn_params.cu_seqlens,
+                    attn_params.cu_seqlens,
+                    attn_params.max_seqlen,
+                    attn_params.max_seqlen,
+                    drop_rate,
+                    softmax_scale=scale,
+                )
             del q, k, v
 
             # Reshape x with shape [(bxs), a, d] to [b, s, a, d]
@@ -613,8 +970,11 @@ def attention_with_lse(
             f"flash-attn installed (got attn_mode={attn_mode!r}, "
             f"flash_attn={'installed' if flash_attn is not None else 'missing'})."
         )
+    outer_dtype = q.dtype
     q, k, v = _cast_qkv_for_flash(q, k, v)
     out, lse, _ = flash_attn_func(
         q, k, v, drop_rate, softmax_scale=softmax_scale, return_attn_probs=True
     )
+    if flash_attn_v100_provider and outer_dtype == torch.bfloat16:
+        out = out.to(dtype=outer_dtype)
     return out, lse

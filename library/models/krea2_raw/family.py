@@ -276,8 +276,10 @@ def compute_noise_pred_and_target(
         )
     model_pred = model_pred.squeeze(2)  # 5D → 4D
 
+    from library.training.flow_step import velocity_target
+
     # Rectified-flow target: noise - latents (velocity; anima 同构).
-    target = noise - latents
+    target = velocity_target(noise, latents)
 
     # Loss weighting (复用 anima 的 min-snr / p2 加权; Krea-2 首日沿用).
     from library.anima import training as anima_train_utils

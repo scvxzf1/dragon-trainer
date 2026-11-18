@@ -55,6 +55,7 @@ class LoKrModule(BaseLoRAModule):
     """LyCORIS-style LoKr adapter for Linear layers."""
 
     supports_conv2d = False
+    supports_packed_qkv = True
 
     def __init__(
         self,
@@ -460,6 +461,34 @@ class LoKrModule(BaseLoRAModule):
                 chunk_bytes=self.lokr_project_chunk_bytes,
             )
         return result
+
+    def compute_delta(
+        self,
+        x: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+        *,
+        base_output: torch.Tensor | None = None,
+        base_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del base_output, base_weight
+        output_dtype = out_dtype or x.dtype
+        if not self.enabled or self._fused:
+            return torch.zeros((*x.shape[:-1], self.out_dim * self.factor), device=x.device, dtype=output_dtype)
+        if self._skip_module():
+            return torch.zeros((*x.shape[:-1], self.out_dim * self.factor), device=x.device, dtype=output_dtype)
+        x_lokr = F.dropout(x, p=self.dropout) if self.training and self.dropout else x
+        if self.lokr_use_einsum:
+            work = torch.float32 if self.training else x.dtype
+            delta = self._einsum_delta(self._rebalance(x_lokr.to(work)), work)
+            if self.training:
+                delta = delta * self._timestep_mask[:, :1].to(delta)
+                if self.dropout is not None:
+                    delta = F.dropout(delta, p=self.dropout)
+        else:
+            delta = F.linear(self._rebalance(x_lokr), self._compute_weight().to(x_lokr.dtype))
+            if self.training:
+                delta = delta * self._timestep_mask[:, :1].to(delta)
+        return (delta * self.multiplier * self.scale).to(output_dtype)
 
     def get_weight(self, multiplier=None):
         if multiplier is None:

@@ -10,8 +10,10 @@ class Network(torch.nn.Module):
     def __init__(self, fail_clear=False):
         super().__init__()
         self.fail_clear = fail_clear
+        self.clear_timestep_mask_calls = 0
 
     def clear_timestep_mask(self):
+        self.clear_timestep_mask_calls += 1
         torch.rand(1)
         if self.fail_clear:
             raise RuntimeError("clear failed")
@@ -60,6 +62,7 @@ def test_restoration_errors_preserve_original_and_attempt_all_cleanup(failure, t
     assert network.training == training
     # Swap cleanup itself can consume randomness. The snapshot must still win.
     assert torch.equal(torch.get_rng_state(), before)
+    assert network.clear_timestep_mask_calls == 2
     if failure == "body_and_exit":
         assert "training prepare failed" in caught.value.__notes__[0]
 

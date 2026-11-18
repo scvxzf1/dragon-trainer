@@ -32,6 +32,8 @@ import torch
 import torch.nn.functional as F
 
 from library.training.mask_loss import apply_mask, reduce_masked_loss
+from library.env import resolve_model_family
+from library.models.family_registry import get_model_family_spec
 
 
 def add_custom_train_arguments(
@@ -646,7 +648,10 @@ def _multiscale_loss(ctx: LossContext) -> torch.Tensor:
     if ms_weight <= 0.0:
         return ctx.model_pred.new_zeros(())
     h, w = ctx.model_pred.shape[-2:]
-    side_length = math.sqrt(h * w) * 8
+    vae_spatial_compression = get_model_family_spec(
+        resolve_model_family(ctx.args)
+    ).latent_space.vae_spatial_compression
+    side_length = math.sqrt(h * w) * vae_spatial_compression
     if side_length < 1024 * 0.9 or h < 2 or w < 2:
         return ctx.model_pred.new_zeros(())
     pred_ds = torch.nn.functional.avg_pool2d(ctx.model_pred.float(), 2)

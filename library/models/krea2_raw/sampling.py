@@ -27,6 +27,8 @@ import math
 import torch
 from torch import Tensor
 
+from library.inference.flow_euler import run_flow_euler_loop
+
 
 def timesteps(
     seq_len: int,
@@ -70,6 +72,7 @@ def sample(
     mu: float | None = None,
     device: torch.device | None = None,
     dtype: torch.dtype | None = None,
+    step_start_callback=None,
 ) -> Tensor:
     """Krea-2 flow-matching Euler ODE 采样.
 
@@ -84,16 +87,18 @@ def sample(
         device=device, dtype=dtype,
     )
     use_cfg = cfg > 0
-    img = latents_5d
+    def predict(image, sigma):
+        return dit_forward(image, cond_emb, sigma)
+
+    def predict_negative(image, sigma):
+        return dit_forward(image, uncond_emb, sigma)
+
     with torch.inference_mode():
-        for tcurr, tprev in zip(ts[:-1], ts[1:]):
-            t = tcurr.reshape(1)
-            cond_v = dit_forward(img, cond_emb, t)
-            if use_cfg:
-                uncond_v = dit_forward(img, uncond_emb, t)
-                v = cond_v + cfg * (cond_v - uncond_v)
-            else:
-                v = cond_v
-            # Euler ODE: img = img + (tprev - tcurr) * v  (tprev < tcurr, 反向积分)
-            img = img + (tprev - tcurr) * v
-    return img
+        return run_flow_euler_loop(
+            latents_5d,
+            ts,
+            predict,
+            guidance_scale=cfg if use_cfg else 0.0,
+            predict_negative=predict_negative if use_cfg else None,
+            step_start_callback=step_start_callback,
+        )

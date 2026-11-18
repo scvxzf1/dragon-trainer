@@ -23,6 +23,7 @@
 | [anima-native-fp16-acceptance.md](anima-native-fp16-acceptance.md) | 原生 FP16 集中严格验收与独立训练质量协议 |
 | [anima-mixed-nf4.md](anima-mixed-nf4.md) | Anima 固定 MLP 策略 BF16/NF4 保存与加载实验 |
 | [multi-family-mixed-nf4.md](multi-family-mixed-nf4.md) | Krea-2、Z-Image、Qwen Image 2.1 主干 MLP 混合 NF4 格式、加载与转换（不含 `moss_image`，与 `--nf4_dir1` 边界独立） |
+| [adapter-qkv-fuse-compat.md](adapter-qkv-fuse-compat.md) | Adapter QKV Fuse/Defuse 统一入口、旧 helper 兼容边界与审计结论 |
 | [anima_tagger.md](anima_tagger.md) | Anima Tagger，多标签 tagger 与 DirectEdit 文本入口 |
 | [byg.md](byg.md) | BYG unpaired instruction-editing：训练可用，专用推理仍是占位 |
 | [chimera-hydra.md](chimera-hydra.md) | ChimeraHydra 双池 MoE，配合 [../structure/chimera-hydra.md](../structure/chimera-hydra.md) 阅读 |

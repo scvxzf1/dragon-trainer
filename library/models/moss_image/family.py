@@ -38,8 +38,9 @@ def sample_moss_flow(latents, *, generator=None):
     sigmas = uniform_grid_sigmas(
         latents.shape[0], device=latents.device, generator=generator
     )
-    sigma_view = sigmas.to(latents.dtype).view(-1, 1, 1, 1)
-    noisy_input = (1 - sigma_view) * latents + sigma_view * noise
+    from library.training.flow_step import mix_latents
+
+    noisy_input = mix_latents(latents, noise, sigmas)
     return noise, sigmas, noisy_input
 
 
@@ -82,7 +83,6 @@ def compute_noise_pred_and_target(
     if latents.ndim != 4 or latents.shape[1] != 128:
         raise ValueError("MOSS cached latents must be [B,128,H,W]")
     noise, sigmas, noisy_input = sample_moss_flow(latents)
-    sigma_view = sigmas.to(latents.dtype).view(-1, 1, 1, 1)
     from library.training.router_conditioning import apply_router_conditioning
     trainer._hydra_warmup_step = apply_router_conditioning(
         network=ctx.network, noisy_model_input=noisy_input, timesteps=sigmas,
@@ -95,4 +95,6 @@ def compute_noise_pred_and_target(
     text_emb = _prepare_text_conditions(trainer, ctx, batch, text_encoder_conds)
     with torch.set_grad_enabled(is_train), ctx.accelerator.autocast():
         pred = forward_for_loss(ctx.unet, noisy_input, text_emb, sigmas)
-    return pred, noise - latents, sigmas * 1000, torch.ones_like(sigma_view, dtype=torch.float32)
+    from library.training.flow_step import unit_weighting, velocity_target
+
+    return pred, velocity_target(noise, latents), sigmas * 1000, unit_weighting(sigmas, latents)

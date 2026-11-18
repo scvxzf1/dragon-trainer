@@ -1,13 +1,15 @@
 """One-matrix-at-a-time CPU conversion and atomic, non-overwriting publication."""
 from __future__ import annotations
-import json
-import os
 from pathlib import Path
-import tempfile
 import torch
 from safetensors import safe_open
-from safetensors.torch import save_file
-from .format import MANIFEST_KEY, POLICY, STATE_KEYS, inspect_mixed_nf4, quantized_paths, quant_state, sha256
+from library.quantization.constants import STATE_KEYS
+from library.quantization.format import MANIFEST_KEY as CANONICAL_MANIFEST_KEY
+from library.quantization.format import inspect_mixed_nf4 as inspect_canonical_mixed_nf4
+from library.quantization.format import validate_mixed_nf4_payload
+from library.quantization.policy import ANIMA_SELECTIVE_POLICY
+from .format import inspect_mixed_nf4 as inspect_legacy_mixed_nf4
+from .format import quantized_paths, quant_state, sha256
 
 
 def validate_source(f) -> tuple[str, dict]:
@@ -32,9 +34,33 @@ def validate_source(f) -> tuple[str, dict]:
 
 
 def verify_checkpoint(path, source=None) -> dict:
-    manifest = inspect_mixed_nf4(path)
+    with safe_open(str(path), framework='pt', device='cpu') as f:
+        metadata = f.metadata() or {}
+    canonical = CANONICAL_MANIFEST_KEY in metadata
+    manifest = (
+        inspect_canonical_mixed_nf4(path, family='anima')
+        if canonical else inspect_legacy_mixed_nf4(path)
+    )
     if manifest is None:
         raise ValueError('Not an Anima mixed NF4 checkpoint')
+    if canonical:
+        validate_mixed_nf4_payload(path, family='anima', manifest=manifest)
+        if source is not None:
+            source_hash = sha256(source)
+            if source_hash != manifest['source_sha256']:
+                raise ValueError('Source SHA256 differs from manifest')
+            with safe_open(str(source), framework='pt', device='cpu') as base:
+                prefix, shapes = validate_source(base)
+                if prefix != manifest.get('prefix', '') or {
+                    key: {'shape': list(shape), 'dtype': 'bfloat16'}
+                    for key, shape in shapes.items()
+                } != manifest['source_tensors']:
+                    raise ValueError('Source inventory differs from manifest')
+        return {
+            'quantized_weights': len(manifest['modules']),
+            'retained_layer1_hotspots': 7,
+            'bytes': Path(path).stat().st_size,
+        }
     with safe_open(str(path), framework='pt', device='cpu') as f:
         for p in manifest['modules']:
             w = manifest['prefix'] + p + '.weight'
@@ -54,62 +80,58 @@ def verify_checkpoint(path, source=None) -> dict:
     return {'quantized_weights': 49, 'retained_layer1_hotspots': 7, 'bytes': Path(path).stat().st_size}
 
 
-def convert_checkpoint(source, output, *, device='cpu', progress=None) -> dict:
-    import bitsandbytes
-    from bitsandbytes.functional import quantize_4bit
+def convert_checkpoint(source, output, *, device='cpu', threads=None, progress=None) -> dict:
     from library.anima.checkpoint import inspect_anima_checkpoint
+    if threads is not None:
+        if type(threads) is not int or threads <= 0:
+            raise ValueError('threads must be positive')
+        torch.set_num_threads(threads)
     source, output = Path(source).resolve(), Path(output).resolve()
     if source == output or output.exists():
         raise FileExistsError(f'Refusing to overwrite: {output}')
+    from library.quantization.mixed_nf4 import _write_mixed_nf4_state_dict
     layout = inspect_anima_checkpoint(source)
     if layout.num_blocks != 28 or layout.model_channels != 2048:
         raise ValueError('Only standard 28-block/2048 Anima is supported')
     source_hash = sha256(source)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix='.' + output.name + '.', dir=output.parent)
-    os.close(fd)
-    try:
-        with safe_open(str(source), framework='pt', device='cpu') as f:
-            prefix, shapes = validate_source(f)
-            validate_model_shapes(shapes)
-            metadata = dict(f.metadata() or {})
-            if any(k.startswith('anima.mixed_nf4') for k in metadata):
-                raise ValueError('Source already contains mixed NF4 metadata')
-            targets = {prefix + p + '.weight' for p in quantized_paths()}
-            state, count = {}, 0
-            for k in f.keys():
-                t = f.get_tensor(k)
-                if not torch.isfinite(t).all():
-                    raise ValueError(f'Nonfinite source tensor: {k}')
-                if k in targets:
-                    packed, qs = quantize_4bit(t.to(device), blocksize=64, compress_statistics=True,
-                                               quant_type='nf4', quant_storage=torch.uint8)
-                    state[k] = packed.cpu().contiguous()
-                    state.update({k + '.' + qk: v.cpu().contiguous() for qk, v in qs.as_dict(packed=True).items()})
-                    count += 1
-                    if progress:
-                        progress(count, len(targets), k)
-                else:
-                    state[k] = t
-            metadata[MANIFEST_KEY] = json.dumps({'version': 1, 'family': 'anima', 'policy': POLICY,
-                'prefix': prefix, 'modules': quantized_paths(), 'source_sha256': source_hash,
-                'bitsandbytes_version': bitsandbytes.__version__, 'tensor_shapes': shapes,
-                'compute_dtype': 'bfloat16', 'blocksize': 64, 'double_quant': True}, sort_keys=True)
-            if sha256(source) != source_hash:
-                raise ValueError('Source changed during conversion')
-            save_file(state, temporary, metadata=metadata)
-        del state
-        result = verify_checkpoint(temporary, source)
-        if sha256(source) != source_hash:
-            raise ValueError('Source changed before publication')
-        # link is atomic and fails if another process created the destination.
-        os.link(temporary, output)
-        result.update(source_sha256=source_hash, output_sha256=sha256(output),
-                      source_bytes=source.stat().st_size, output=str(output))
-        result['saving_fraction'] = 1 - result['bytes'] / result['source_bytes']
-        return result
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    with safe_open(str(source), framework='pt', device='cpu') as f:
+        prefix, shapes = validate_source(f)
+        validate_model_shapes(shapes)
+        metadata = dict(f.metadata() or {})
+        if any(k.startswith('anima.mixed_nf4') for k in metadata):
+            raise ValueError('Source already contains mixed NF4 metadata')
+        targets = {prefix + p + '.weight' for p in quantized_paths()}
+        state = {}
+        target_index = 0
+        for key in f.keys():
+            tensor = f.get_tensor(key)
+            if not torch.isfinite(tensor).all():
+                raise ValueError(f'Nonfinite source tensor: {key}')
+            state[key] = tensor
+            if key in targets and progress:
+                target_index += 1
+                progress(target_index, len(targets), key)
+    if sha256(source) != source_hash:
+        raise ValueError('Source changed during conversion')
+    result = _write_mixed_nf4_state_dict(
+        state,
+        output,
+        family='anima',
+        source_sha256=source_hash,
+        policy=ANIMA_SELECTIVE_POLICY,
+        modules=quantized_paths(),
+        prefix=prefix,
+        metadata=metadata,
+        quantize_device=device,
+    )
+    result = verify_checkpoint(output, source)
+    if sha256(source) != source_hash:
+        raise ValueError('Source changed before publication')
+    result.update(source_sha256=source_hash, output_sha256=sha256(output),
+                  source_bytes=source.stat().st_size, output=str(output))
+    result['saving_fraction'] = 1 - result['bytes'] / result['source_bytes']
+    return result
 
 
 def validate_model_shapes(shapes):

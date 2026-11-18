@@ -676,20 +676,109 @@ def _run_preprocess_te(
     if backup_captions:
         _run_caption_backup(row)
     family = _model_family()
-    from library.models.family_registry import dispatch_model_family
+    from library.models.family_registry import get_family_plugin
 
-    handler = dispatch_model_family(
-        family,
-        operation="text-encoder preprocessing",
-        handlers={
-            "anima": _run_preprocess_te_anima,
-            "krea2_raw": _run_preprocess_te_krea2,
-            "z_image": _run_preprocess_te_z_image,
-            "qwen_image_2_1": _run_preprocess_te_qwen_image_2_1,
-            "moss_image": _run_preprocess_te_moss_image,
-        },
+    plugin = get_family_plugin(family)
+    spec = plugin.text_preprocess_spec
+    if spec.runner == "special":
+        if family == "qwen_image_2_1":
+            _run_preprocess_te_qwen_image_2_1(
+                row, extra, shuffle_variants, tag_dropout_rate
+            )
+        elif family == "moss_image":
+            _run_preprocess_te_moss_image(
+                row, extra, shuffle_variants, tag_dropout_rate
+            )
+        else:  # pragma: no cover - guarded by plugin metadata
+            raise RuntimeError(f"unsupported special text preprocess family: {family}")
+        return
+    _run_preprocess_te_from_plugin(
+        row, extra, shuffle_variants, tag_dropout_rate, plugin=plugin
     )
-    handler(row, extra, shuffle_variants, tag_dropout_rate)
+
+
+def _run_preprocess_te_from_plugin(
+    row: dict[str, Any],
+    extra: list[str],
+    shuffle_variants: str | None,
+    tag_dropout_rate: str | None,
+    *,
+    plugin,
+) -> None:
+    """Build the common Anima/Krea-2/Z-Image text-cache command."""
+    spec = plugin.text_preprocess_spec
+    if spec.module is None:
+        raise RuntimeError(f"text preprocess plugin has no module: {plugin.family}")
+    if spec.strip_diff_output_preservation:
+        extra, _ = _split_diff_output_preservation_args(list(extra))
+    mp_args, extra = _resolve_lowres_filter(extra)
+    shuffle_variants = shuffle_variants or os.environ.get(
+        "CAPTION_SHUFFLE_VARIANTS", spec.default_shuffle_variants
+    )
+    tag_dropout_rate = tag_dropout_rate or os.environ.get(
+        "CAPTION_TAG_DROPOUT_RATE", spec.default_tag_dropout_rate
+    )
+    prefer_json_env = os.environ.get("CAPTION_PREFER_JSON")
+    prefer_json = (
+        _truthy(prefer_json_env)
+        if prefer_json_env is not None
+        else _truthy(row.get("prefer_json_caption"))
+    )
+    source_mode_env = os.environ.get("CAPTION_SOURCE_MODE")
+    source_mode = (
+        source_mode_env
+        if source_mode_env is not None
+        else row.get("caption_source_mode")
+    )
+    _, text_batch_size = _preprocess_cache_batch_sizes()
+    cmd = [
+        PY,
+        "-m",
+        spec.module,
+        "--dir",
+        str(row.get("source_image_dir") or _path("source_image_dir", "image_dataset")),
+        "--cache_dir",
+        _text_cache_dir_for_row(row),
+    ]
+    if spec.qwen3_config_key:
+        cmd.extend(
+            [
+                "--qwen3",
+                _path(spec.qwen3_config_key, spec.qwen3_default or ""),
+            ]
+        )
+    if spec.dit_config_key:
+        cmd.extend(
+            [
+                "--dit",
+                _path(spec.dit_config_key, spec.dit_default or ""),
+            ]
+        )
+    cmd.extend(
+        [
+            "--batch_size",
+            str(text_batch_size),
+            "--dtype",
+            _preprocess_precision_dtype(),
+            "--caption_shuffle_variants",
+            str(shuffle_variants),
+        ]
+    )
+    if spec.supports_tag_dropout:
+        cmd.extend(["--caption_tag_dropout_rate", str(tag_dropout_rate)])
+    optional_args = [
+        *_caption_source_args(source_mode, prefer_json),
+        *_caption_extension_args_for_row(row),
+        *( ["--prefer_json_caption"] if prefer_json else [] ),
+        *_recursive_args(row),
+        *_path_pattern_args(row),
+        *mp_args,
+    ]
+    if spec.supports_diff_output_preservation:
+        optional_args.extend(_diff_output_preservation_args(extra))
+    optional_args.extend([*_reuse_overwrite_args(row, kind="te"), *extra])
+    cmd.extend(optional_args)
+    run(cmd)
 
 
 def _run_preprocess_te_moss_image(row, extra, shuffle_variants=None, tag_dropout_rate=None):

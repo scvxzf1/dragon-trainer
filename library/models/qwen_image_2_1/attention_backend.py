@@ -195,11 +195,6 @@ def _normalize_key_valid_mask(mask, *, batch: int, key_length: int, device) -> t
 def _flash_varlen_attention(query, key, value, *, mask):
     """Pack the actual valid K/V positions outside compiled checkpoint blocks."""
     from networks import attention_dispatch
-
-    if not attention_dispatch.flash_attn_available_for_tensor(query):
-        raise RuntimeError(
-            f"Qwen Image 2.1 FlashAttention does not support Q/K/V dtype {query.dtype}"
-        )
     if query.device.type != "cuda" or key.device != query.device or value.device != query.device:
         raise RuntimeError("Qwen Image 2.1 FlashAttention requires Q/K/V on the same CUDA device")
     if query.dtype != key.dtype or query.dtype != value.dtype:
@@ -209,81 +204,12 @@ def _flash_varlen_attention(query, key, value, *, mask):
     if query.shape[2:] != key.shape[2:]:
         raise ValueError("Qwen Image 2.1 FlashAttention requires matching head count and dimension")
 
-    batch, query_length, heads, head_dim = query.shape
-    key_length = key.shape[1]
-    cached_meta = (
-        getattr(mask, "_qwen_varlen_meta", None) if torch.is_tensor(mask) else None
+    return attention_dispatch.flash_varlen_with_bool_mask(
+        query,
+        key,
+        value,
+        mask=mask,
     )
-    if (
-        cached_meta is not None
-        and cached_meta[0] == mask._version
-        and cached_meta[1] == batch
-        and cached_meta[2] == key_length
-        and cached_meta[3] == query.device
-    ):
-        valid_indices, cu_k, max_key_length = (
-            cached_meta[4],
-            cached_meta[5],
-            cached_meta[6],
-        )
-    elif mask is None:
-        valid_indices = None
-        cu_k = torch.arange(batch + 1, device=query.device, dtype=torch.int32) * key_length
-        max_key_length = key_length
-    else:
-        valid = _normalize_key_valid_mask(
-            mask, batch=batch, key_length=key_length, device=query.device
-        )
-        lengths = valid.sum(dim=1, dtype=torch.int32)
-        min_len, max_len = torch.stack([lengths.min(), lengths.max()]).tolist()
-        if int(min_len) == 0:
-            raise ValueError(
-                "Qwen Image 2.1 FlashAttention does not accept empty key sequences"
-            )
-        cu_k = torch.zeros(batch + 1, device=query.device, dtype=torch.int32)
-        cu_k[1:] = lengths.cumsum(dim=0)
-        max_key_length = int(max_len)
-        if int(min_len) == key_length and int(max_len) == key_length:
-            valid_indices = None
-        else:
-            valid_indices = valid.reshape(-1).nonzero(as_tuple=False).flatten()
-        if torch.is_tensor(mask):
-            try:
-                mask._qwen_varlen_meta = (
-                    mask._version,
-                    batch,
-                    key_length,
-                    query.device,
-                    valid_indices,
-                    cu_k,
-                    max_key_length,
-                )
-            except Exception:
-                pass
-
-    cu_q = torch.arange(batch + 1, device=query.device, dtype=torch.int32) * query_length
-    q_packed = query.reshape(batch * query_length, heads, head_dim).contiguous()
-    if valid_indices is None:
-        k_packed = key.reshape(batch * key_length, heads, head_dim).contiguous()
-        v_packed = value.reshape(batch * key_length, heads, head_dim).contiguous()
-    else:
-        k_packed = key.reshape(batch * key_length, heads, head_dim).index_select(
-            0, valid_indices
-        )
-        v_packed = value.reshape(batch * key_length, heads, head_dim).index_select(
-            0, valid_indices
-        )
-    output = attention_dispatch.flash_attn_varlen_func(
-        q_packed,
-        k_packed,
-        v_packed,
-        cu_q,
-        cu_k,
-        query_length,
-        max_key_length,
-        dropout_p=0.0,
-    )
-    return output.reshape(batch, query_length, heads, head_dim)
 
 
 def prepare_qwen_image_2_1_attention(
@@ -306,8 +232,11 @@ def prepare_qwen_image_2_1_attention(
     try:
         from networks import attention_dispatch
 
-        if not attention_dispatch.check_flash_attn_for_dtype(dtype, device=device):
-            raise RuntimeError("installed FlashAttention provider does not support BF16")
+        if not attention_dispatch.flash_attn_supports_outer_dtype(dtype, device=device):
+            raise RuntimeError(
+                "installed FlashAttention provider does not support the requested "
+                "outer dtype (V100 uses an internal FP16 kernel bridge)"
+            )
     except (ImportError, RuntimeError, ValueError) as exc:
         raise RuntimeError(
             "Qwen Image 2.1 attn_mode='flash' requires a compatible "

@@ -22,12 +22,9 @@ from networks import (
     preprocess_weights_from_plugins,
     resolve_network_spec,
 )
+from networks.attn_fuse import refuse_qkv_state_dict
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
-    _refuse_split_chimera_keys,
-    _refuse_split_hydra_keys,
-    _refuse_split_stacked_experts_keys,
-    _refuse_unfused_attn_lora_keys,
     _rename_dora_scale_for_load,
     _stack_chimera_lora_ups,
     _stack_lora_ups,
@@ -623,11 +620,10 @@ def create_network_from_weights(
     # .lora_up_f_weight); a separate stack/refuse pair handles them.
     weights_sd = _stack_lora_ups(weights_sd)
     weights_sd = _stack_chimera_lora_ups(weights_sd)
-    weights_sd = _refuse_split_stacked_experts_keys(weights_sd)
-    weights_sd = _refuse_split_hydra_keys(weights_sd)
-    weights_sd = _refuse_split_chimera_keys(weights_sd)
-    # Refuse unfused attn projections so modules_dim reflects the runtime (qkv/kv fused).
-    weights_sd = _refuse_unfused_attn_lora_keys(weights_sd)
+    # Refuse split attention projections so modules_dim reflects the runtime
+    # (qkv/kv fused) representation. The shared entry point preserves the
+    # stacked-experts → Hydra → Chimera → plain ordering.
+    weights_sd = refuse_qkv_state_dict(weights_sd)
     weights_sd = _rename_dora_scale_for_load(weights_sd)
     weights_sd = preprocess_weights_from_plugins(weights_sd)
 

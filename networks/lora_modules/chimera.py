@@ -36,10 +36,9 @@ from typing import Dict, List, Optional
 
 import torch
 
-from ..attn_fuse import match_fused_spec
+from ..attn_fuse import defuse_qkv_state_dict, match_fused_spec
 from .base import BaseLoRAModule, _absorb_channel_scale
 from .custom_autograd import lora_down_project
-from .lora import defuse_standard_qkv
 
 logger = logging.getLogger(__name__)
 
@@ -738,7 +737,7 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
                     sd[f"{new_prefix}.inv_scale"] = inv_scale.clone()
 
         # Plain-LoRA leg defuse on any remaining fused attention prefixes.
-        defuse_standard_qkv(sd)
+        defuse_qkv_state_dict(sd, variant="standard")
 
         if dtype is not None:
             sd = {k: v.to(dtype) for k, v in sd.items()}

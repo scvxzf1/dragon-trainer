@@ -16,6 +16,7 @@ from library.datasets import DatasetGroup
 from library.runtime.device import clean_memory_on_device
 from library.training.sample_prompt_cache import save_sample_prompt_cache
 from library.training.train_bootstrap import sample_preview_enabled
+from library.strategies.text_cache import text_encoder_cache_session
 
 logger = logging.getLogger(__name__)
 
@@ -83,43 +84,40 @@ def cache_text_encoder_outputs_if_needed(
             return
 
         logger.info("move text encoder to gpu")
-        text_encoders[0].to(accelerator.device)
+        with text_encoder_cache_session(text_encoders[0], accelerator.device):
+            prompts = train_util.load_prompts(args.sample_prompts)
+            trainer.sample_prompts_snapshot = [dict(prompt) for prompt in prompts]
+            sample_prompts_te_outputs = {}
+            with accelerator.autocast(), torch.no_grad():
+                for prompt_dict in prompts:
+                    for p in [
+                        prompt_dict.get("prompt", ""),
+                        prompt_dict.get("negative_prompt", ""),
+                    ]:
+                        if p not in sample_prompts_te_outputs:
+                            logger.info(f"  cache TE outputs for: {p}")
+                            tokens_and_masks = tokenize_strategy.tokenize(p)
+                            encoded = text_encoding_strategy.encode_tokens(
+                                tokenize_strategy,
+                                text_encoders,
+                                tokens_and_masks,
+                            )
+                            sample_prompts_te_outputs[p] = tuple(
+                                torch.as_tensor(value).detach().to("cpu").contiguous()
+                                for value in encoded
+                            )
+            trainer.sample_prompts_te_outputs = sample_prompts_te_outputs
 
-        prompts = train_util.load_prompts(args.sample_prompts)
-        trainer.sample_prompts_snapshot = [dict(prompt) for prompt in prompts]
-        sample_prompts_te_outputs = {}
-        with accelerator.autocast(), torch.no_grad():
-            for prompt_dict in prompts:
-                for p in [
-                    prompt_dict.get("prompt", ""),
-                    prompt_dict.get("negative_prompt", ""),
-                ]:
-                    if p not in sample_prompts_te_outputs:
-                        logger.info(f"  cache TE outputs for: {p}")
-                        tokens_and_masks = tokenize_strategy.tokenize(p)
-                        encoded = text_encoding_strategy.encode_tokens(
-                            tokenize_strategy,
-                            text_encoders,
-                            tokens_and_masks,
-                        )
-                        sample_prompts_te_outputs[p] = tuple(
-                            torch.as_tensor(value).detach().to("cpu").contiguous()
-                            for value in encoded
-                        )
-        trainer.sample_prompts_te_outputs = sample_prompts_te_outputs
+            if accelerator.is_main_process:
+                try:
+                    save_sample_prompt_cache(
+                        args,
+                        trainer.sample_prompts_snapshot,
+                        sample_prompts_te_outputs,
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    logger.warning("Could not persist sample-prompt TE cache: %s", exc)
 
-        if accelerator.is_main_process:
-            try:
-                save_sample_prompt_cache(
-                    args,
-                    trainer.sample_prompts_snapshot,
-                    sample_prompts_te_outputs,
-                )
-            except (OSError, RuntimeError, ValueError) as exc:
-                logger.warning("Could not persist sample-prompt TE cache: %s", exc)
-
-        logger.info("move text encoder back to cpu")
-        text_encoders[0].to("cpu")
         clean_memory_on_device(accelerator.device)
 
     accelerator.wait_for_everyone()

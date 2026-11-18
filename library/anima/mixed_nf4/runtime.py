@@ -2,20 +2,33 @@
 from __future__ import annotations
 import torch
 from safetensors.torch import load_file
-from .format import STATE_KEYS, inspect_mixed_nf4, quant_state
+from library.quantization.constants import STATE_KEYS
+from library.quantization.format import inspect_mixed_nf4 as inspect_canonical_mixed_nf4
+from .format import inspect_mixed_nf4 as inspect_legacy_mixed_nf4, quant_state
+
+
+def inspect_mixed_nf4(path):
+    """Read canonical output first, then accept the legacy Anima format."""
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework='pt', device='cpu') as f:
+        metadata = f.metadata() or {}
+    if 'diffusion.mixed_nf4.manifest' in metadata:
+        return inspect_canonical_mixed_nf4(path, family='anima')
+    return inspect_legacy_mixed_nf4(path)
 
 
 def restore_linear(data, qs, *, in_features, out_features, bias=None):
-    from bitsandbytes.nn import Params4bit
-    from .linear import AnimaMixedNF4Linear
-    new = AnimaMixedNF4Linear(in_features, out_features, bias=bias is not None,
-                     compute_dtype=torch.bfloat16, compress_statistics=True,
-                     quant_type='nf4', device='meta')
-    new.weight = Params4bit.from_prequantized(data, dict(qs), requires_grad=False,
-                                             device='cpu', module=new)
-    if bias is not None:
-        new.bias = torch.nn.Parameter(bias, requires_grad=False)
-    return new
+    from library.quantization.nf4 import restore_nf4_linear
+
+    return restore_nf4_linear(
+        data,
+        qs,
+        in_features=in_features,
+        out_features=out_features,
+        bias=bias,
+        device="cpu",
+    )
 
 
 def load_mixed_state(model, path, *, dtype, lora_weights_list, rename_hook, concat_hook, device):
@@ -26,15 +39,18 @@ def load_mixed_state(model, path, *, dtype, lora_weights_list, rename_hook, conc
     manifest = inspect_mixed_nf4(path)
     if manifest is None:
         raise ValueError('Not an Anima mixed NF4 checkpoint')
+    canonical = 'source_tensors' in manifest
     state = load_file(str(path), device='cpu')
     quantized = {}
     for p in manifest['modules']:
-        w = manifest['prefix'] + p + '.weight'
-        qs, _ = quant_state(state, w, manifest['tensor_shapes'][w])
+        prefix = manifest.get('prefix', '')
+        w = prefix + p + '.weight'
+        shape = manifest['source_tensors'][w]['shape'] if canonical else manifest['tensor_shapes'][w]
+        qs, _ = quant_state(state, w, shape)
         target = model.get_submodule(p)
-        if (target.in_features, target.out_features) != (manifest['tensor_shapes'][w][1], manifest['tensor_shapes'][w][0]):
+        if (target.in_features, target.out_features) != (shape[1], shape[0]):
             raise ValueError(f'Mixed NF4 model shape mismatch: {p}')
-        bias_key = manifest['prefix'] + p + '.bias'
+        bias_key = prefix + p + '.bias'
         bias = state.get(bias_key)
         if (target.bias is None) != (bias is None):
             raise ValueError(f'Mixed NF4 bias mismatch: {p}')

@@ -114,6 +114,7 @@ class VeRAModule(BaseLoRAModule):
     """PEFT-style VeRA adapter for ``torch.nn.Linear`` layers."""
 
     supports_conv2d = False
+    supports_packed_qkv = True
 
     def __init__(
         self,
@@ -216,6 +217,43 @@ class VeRAModule(BaseLoRAModule):
         lambda_b = self._broadcast_output_scale(lambda_b, delta)
         delta = delta * lambda_b
         return org_forwarded + (delta * self.multiplier * scale).to(org_forwarded.dtype)
+
+    def compute_delta(
+        self,
+        x: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+        *,
+        base_output: torch.Tensor | None = None,
+        base_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del base_weight
+        output_dtype = out_dtype or (base_output.dtype if base_output is not None else x.dtype)
+        if not self.enabled or self._fused:
+            if base_output is None:
+                raise RuntimeError("inactive VeRA delta requires base_output")
+            return torch.zeros_like(base_output)
+        if self._skip_module():
+            if base_output is not None:
+                return torch.zeros_like(base_output)
+            return torch.zeros((*x.shape[:-1], self.out_features), device=x.device, dtype=output_dtype)
+        vera_A, vera_B = self._projection_slices()
+        x_vera = F.dropout(x, p=self.dropout) if self.training and self.dropout else x
+        if self.training:
+            hidden = F.linear(x_vera.float(), vera_A.float())
+            hidden = hidden * self.vera_lambda_d.float() * self._timestep_mask.to(
+                device=hidden.device, dtype=hidden.dtype
+            )
+            hidden, scale = self._apply_rank_dropout(hidden)
+            delta = F.linear(hidden, vera_B.float())
+            lambda_b = self.vera_lambda_b.float()
+        else:
+            hidden = F.linear(x_vera, vera_A.to(device=x_vera.device, dtype=x_vera.dtype))
+            hidden = hidden * self.vera_lambda_d.to(device=hidden.device, dtype=x_vera.dtype)
+            delta = F.linear(hidden, vera_B.to(device=hidden.device, dtype=x_vera.dtype))
+            scale = self.scale
+            lambda_b = self.vera_lambda_b.to(device=delta.device, dtype=delta.dtype)
+        delta = delta * self._broadcast_output_scale(lambda_b, delta)
+        return (delta * self.multiplier * scale).to(output_dtype)
 
     def _compute_weight(self) -> torch.Tensor:
         vera_A, vera_B = self._projection_slices()

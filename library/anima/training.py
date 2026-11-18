@@ -15,7 +15,11 @@ from tqdm import tqdm
 
 from library.runtime.device import clean_memory_on_device, synchronize_device
 from library import train_util
-from library.training.preview_lifecycle import preview_lifecycle
+from library.training.preview_lifecycle import (
+    apply_preview_router_conditioning,
+    preview_lifecycle,
+)
+from library.training.sample_preview_common import finish_preview_batch
 from library.datasets.buckets import snap_sample_size
 from library.training.checkpoints import (
     get_epoch_ckpt_name,
@@ -854,6 +858,7 @@ def do_sample(
     neg_crossattn_emb: Optional[torch.Tensor] = None,
     sampler: str = "euler",
     show_progress: bool = True,
+    step_start_callback=None,
 ) -> torch.Tensor:
     """Generate a sample using Anima flow-matching sampling.
 
@@ -924,24 +929,20 @@ def do_sample(
         sigma = sigmas[i]
         t = sigma.unsqueeze(0)  # (1,)
         if preview_net is not None:
-            if hasattr(preview_net, "set_sigma"):
-                preview_net.set_sigma(t)
-            if (
-                getattr(preview_net, "use_fei_router", False)
-                or (
-                    getattr(preview_net, "global_router", None) is not None
-                    and getattr(getattr(preview_net, "cfg", None), "router_source", None) == "fei"
-                )
-                or getattr(preview_net, "freq_router", None) is not None
-            ):
-                from library.runtime.fei import compute_fei
-                fei = compute_fei(x.squeeze(2) if x.dim() == 5 else x)
-                preview_net.set_fei(fei)
+            apply_preview_router_conditioning(
+                preview_net, x, t, step_index=i, crossattn_emb=crossattn_emb
+            )
+        if step_start_callback is not None:
+            step_start_callback(i, x, t)
 
         if use_cfg:
             # CFG: two separate passes to reduce memory usage
             pos_out = dit(x, t, crossattn_emb, padding_mask=padding_mask)
             pos_out = pos_out.float()
+            if preview_net is not None:
+                apply_preview_router_conditioning(
+                    preview_net, x, t, step_index=i, crossattn_emb=neg_crossattn_emb
+                )
             neg_out = dit(x, t, neg_crossattn_emb, padding_mask=padding_mask)
             neg_out = neg_out.float()
 
@@ -1064,8 +1065,7 @@ def sample_images(
             raise compile_error
         raise RuntimeError("Sample compile preparation failed on another process")
 
-    sample_error: Optional[Exception] = None
-    try:
+    def run_local():
         with preview_lifecycle(
             dit, net, disable_block_swap=getattr(args, "disable_block_swap_for_eval", False)
         ):
@@ -1088,31 +1088,17 @@ def sample_images(
                         sample_prompts_te_outputs,
                         prompt_replacement,
                     )
-    except Exception as exc:  # coordinate failures before any rank enters a barrier
-        sample_error = exc
-    if sample_error is not None and _is_cuda_oom(sample_error):
-        clean_memory_on_device(accelerator.device)
-    if _sample_failed_on_any_process(
-        accelerator, sample_error is not None, num_processes
-    ):
-        if sample_error is not None:
-            raise sample_error
-        raise RuntimeError("Sample generation failed on another process")
 
-    # Each rank writes its prompt shard. Decode only after every latent is
-    # visible, then keep the other ranks parked until the main rank restores
-    # the VAE/DiT devices and removes the staging files.
-    accelerator.wait_for_everyone()
-    decode_error = None
-    try:
-        if getattr(accelerator, "is_main_process", True):
-            decode_samples_for_live_preview(accelerator, args, vae, dit=dit, network=net)
-    except Exception as exc:
-        decode_error = exc
-    from library.training.preview_decode import raise_decode_failure
-
-    raise_decode_failure(accelerator, decode_error, num_processes)
-    accelerator.wait_for_everyone()
+    finish_preview_batch(
+        accelerator,
+        args,
+        processes=num_processes,
+        run_local=run_local,
+        failure_message="Sample generation failed on another process",
+        vae=vae,
+        dit=dit,
+        network=net,
+    )
 
 
 def _sample_failed_on_any_process(

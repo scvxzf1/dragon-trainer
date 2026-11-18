@@ -145,3 +145,18 @@ def test_real_family_mixed_nf4_training_swap_roundtrip(tmp_path, family, count, 
         for index in list(offloader.futures):
             offloader._wait_blocks_move(index, phase="test_cleanup")
         offloader.thread_pool.shutdown(wait=True)
+
+
+def test_krea2_nf4_mlp_uses_compute_dtype_not_packed_weight_dtype(tmp_path):
+    """Packed NF4 storage must not leak uint8 into the activation path."""
+    family = "krea2_raw"
+    source = _construct(family).bfloat16()
+    path = tmp_path / "mixed.safetensors"
+    save_mixed_nf4(source, path, family=family, source_sha256="a" * 64)
+    model = _load(family, path).cuda().train()
+    block = model.blocks[0]
+    assert block.mlp.gate.weight.dtype == torch.uint8
+    assert block.mlp.gate.compute_dtype == torch.bfloat16
+    hidden = torch.randn(1, 2, model.config.features, device="cuda", dtype=torch.bfloat16)
+    output = block.mlp(hidden)
+    assert output.dtype == torch.bfloat16

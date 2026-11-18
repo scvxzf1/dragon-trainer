@@ -108,8 +108,16 @@ TAG_TYPE_NAMES: Dict[int, str] = {
     6: "deprecated",
 }
 
-# 3-class rating set (post-``questionable→sensitive`` collapse).
-RATINGS: Tuple[str, ...] = ("general", "sensitive", "explicit")
+# Anima's 4-class rating set, in canonical class-index order (least → most
+# restrictive). Same members as ``library.captioning.taxonomy.CAPTION_RATINGS``
+# — that module holds the unordered set + the legacy booru aliases
+# (``general``→``safe``, ``questionable``→``nsfw``); the order lives here
+# because it's the rating head's class index. Do not reorder without rebuilding
+# vocab: ``vocab.json`` snapshots this list and ``dataset.json`` stores indices
+# into it. Existing checkpoints are unaffected — ``AnimaTagger`` reads
+# ``vocab["ratings"]`` from the checkpoint, and ``n_ratings`` comes from the
+# manifest, so a 3-class checkpoint keeps loading and predicting its own labels.
+RATINGS: Tuple[str, ...] = ("safe", "sensitive", "nsfw", "explicit")
 
 # 8-class people-count bucket. Derived from parsed count tags
 # (``scripts.anima_tagger.constants.classify_people``); trained as a dedicated

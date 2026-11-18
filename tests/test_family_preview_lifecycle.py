@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +7,8 @@ import torch
 
 from library.anima import training as anima
 from library.models.krea2_raw import training_preview as krea
+from library.models.moss_image import training_preview as moss
+from library.models.qwen_image_2_1 import training_preview as qwen
 from library.models.z_image import training_preview as zimage
 
 
@@ -55,6 +58,16 @@ class DiT:
         assert self.mode == "inference"
         self.predictions.append((size, cfg_pass))
         torch.rand(1)
+
+
+@pytest.mark.parametrize("family", [anima, krea, qwen, moss, zimage])
+def test_all_family_preview_entrypoints_use_shared_lifecycle_contract(family):
+    module_source = inspect.getsource(family)
+    sample_source = inspect.getsource(family.sample_images)
+
+    assert "from library.training.preview_lifecycle import" in module_source
+    assert "with preview_lifecycle(" in module_source
+    assert "finish_preview_batch(" in sample_source
 
 
 @pytest.mark.parametrize("family", [anima, krea, zimage])

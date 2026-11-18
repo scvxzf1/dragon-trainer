@@ -382,7 +382,7 @@ def test_krea2_sample_lifecycle_restores_training_state(monkeypatch, tmp_path) -
     assert dit.prepare_calls == 2
     assert dit.training_calls == 1
     assert network.training is True
-    assert network.cleared == 1
+    assert network.cleared == 2
     assert torch.equal(torch.get_rng_state(), rng_before)
 
 

@@ -15,7 +15,7 @@ from library.training import numerical_observation
 from library.training.method_adapter import ComputeLossCtx
 from library.training.noise_target import compute_noise_pred_and_target
 from library.training.contexts import TrainCtx
-from library.models.family_registry import dispatch_model_family
+from library.models.family_registry import get_family_plugin
 
 
 def _nonfinite_counts(tensor: torch.Tensor) -> dict[str, int]:
@@ -59,19 +59,7 @@ def _qwen_image_2_1_noise_pred_and_target(*args, **kwargs):
 
 def _get_noise_pred_and_target(trainer, ctx, latents, batch, text_encoder_conds, *, is_train=True):
     from library.env import resolve_model_family
-
-    handler = dispatch_model_family(
-        resolve_model_family(ctx.args),
-        operation="training batch forward",
-        handlers={
-            "anima": compute_noise_pred_and_target,
-            "krea2_raw": _krea2_noise_pred_and_target,
-            "z_image": _z_image_noise_pred_and_target,
-            "qwen_image_2_1": _qwen_image_2_1_noise_pred_and_target,
-            "moss_image": _moss_noise_pred_and_target,
-        },
-    )
-    return handler(
+    return get_family_plugin(resolve_model_family(ctx.args)).compute_noise_pred_and_target(
         trainer, ctx, latents, batch, text_encoder_conds, is_train=is_train
     )
 

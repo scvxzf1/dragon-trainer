@@ -16,8 +16,7 @@ from library.models.krea2_raw.family import Krea2TextEmbedding
 from library.models.krea2_raw.inference_runner import generate_krea2
 from library.runtime.accelerator import prepare_dtype
 from library.training.sample_preview_common import (
-    failed_on_any_process as _failed_on_any_process,
-    is_cuda_oom as _is_cuda_oom,
+    finish_preview_batch,
     load_prompts as _load_prompts,
     should_sample as _should_sample,
 )
@@ -301,41 +300,26 @@ def sample_images(
     if text_encoder is not None:
         text_encoder = accelerator.unwrap_model(text_encoder)
     net = accelerator.unwrap_model(network) if network is not None else None
-    sample_error = _run_local_samples(
+    finish_preview_batch(
         accelerator,
         args,
+        processes=num_processes,
+        run_local=lambda: _run_local_samples(
+            accelerator,
+            args,
+            dit=dit,
+            net=net,
+            text_encoder=text_encoder,
+            tokenize_strategy=tokenize_strategy,
+            text_encoding_strategy=text_encoding_strategy,
+            local_prompts=local_prompts,
+            epoch=epoch,
+            steps=steps,
+            sample_prompts_te_outputs=sample_prompts_te_outputs,
+            prompt_replacement=prompt_replacement,
+        ),
+        failure_message="Krea-2 sample generation failed on another process",
+        vae=vae,
         dit=dit,
-        net=net,
-        text_encoder=text_encoder,
-        tokenize_strategy=tokenize_strategy,
-        text_encoding_strategy=text_encoding_strategy,
-        local_prompts=local_prompts,
-        epoch=epoch,
-        steps=steps,
-        sample_prompts_te_outputs=sample_prompts_te_outputs,
-        prompt_replacement=prompt_replacement,
+        network=net,
     )
-
-    if sample_error is not None and _is_cuda_oom(sample_error):
-        from library.runtime.device import clean_memory_on_device
-
-        clean_memory_on_device(accelerator.device)
-    if _failed_on_any_process(accelerator, sample_error is not None, num_processes):
-        if sample_error is not None:
-            raise sample_error
-        raise RuntimeError("Krea-2 sample generation failed on another process")
-
-    # Krea-2 and Anima share the same 5D latent and Qwen VAE contracts.
-    from library.anima.training import decode_samples_for_live_preview
-
-    accelerator.wait_for_everyone()
-    decode_error = None
-    try:
-        if getattr(accelerator, "is_main_process", True):
-            decode_samples_for_live_preview(accelerator, args, vae, dit=dit, network=net)
-    except Exception as exc:
-        decode_error = exc
-    from library.training.preview_decode import raise_decode_failure
-
-    raise_decode_failure(accelerator, decode_error, num_processes)
-    accelerator.wait_for_everyone()

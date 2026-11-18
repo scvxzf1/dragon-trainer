@@ -11,8 +11,10 @@ from library.quantization import (
     inspect_mixed_nf4,
     load_mixed_nf4_into,
     save_mixed_nf4,
+    save_mixed_nf4_state_dict,
 )
 from library.quantization.policy import FAMILIES
+from library.quantization.policy import policy_paths
 
 
 def tiny(family, device="cpu", count=2):
@@ -52,7 +54,8 @@ def test_cpu_roundtrip(family, tmp_path):
     before = {k: t.clone() for k, t in source.state_dict().items()}
     path = tmp_path / "mixed.safetensors"
     result = save_mixed_nf4(source, path, family=family, source_sha256="a" * 64)
-    assert result["quantized_weights"] == 6
+    expected_quantized = 4 if family == "anima" else 6
+    assert result["quantized_weights"] == expected_quantized
     manifest = inspect_mixed_nf4(path, family=family)
     model = load_mixed_nf4_into(
         tiny(family, "meta"), path, family=family, dtype=torch.bfloat16, device="cpu"
@@ -84,6 +87,31 @@ def test_cpu_roundtrip(family, tmp_path):
     y.float().sum().backward()
     yy.float().sum().backward()
     torch.testing.assert_close(x.grad, xx.grad, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_prefixed_state_dict_export_roundtrip(family, tmp_path):
+    source = tiny(family)
+    path = tmp_path / "prefixed.safetensors"
+    prefix = "net."
+    root = FAMILIES[family][0]
+    modules = policy_paths(family, len(getattr(source, root)))
+    save_mixed_nf4_state_dict(
+        {prefix + key: value for key, value in source.state_dict().items()},
+        path,
+        family=family,
+        source_sha256="d" * 64,
+        modules=modules,
+        prefix=prefix,
+    )
+    manifest = inspect_mixed_nf4(path, family=family)
+    assert manifest["prefix"] == prefix
+    restored = load_mixed_nf4_into(
+        tiny(family, "meta"), path, family=family, dtype=torch.bfloat16, device="cpu"
+    )
+    for key, value in source.state_dict().items():
+        if key.removesuffix(".weight") not in modules:
+            torch.testing.assert_close(restored.state_dict()[key], value, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(

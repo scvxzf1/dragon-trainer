@@ -41,6 +41,7 @@ from library.models.krea2_raw.attention_backend import (
     validate_krea2_attention_mode,
 )
 from library.models.krea2_raw.weights import load_krea2_dit
+from library.training.preview_lifecycle import apply_preview_router_conditioning
 
 logger = logging.getLogger(__name__)
 
@@ -328,5 +329,8 @@ def generate_krea2(
         cfg=cfg,
         device=device,
         dtype=runtime_dtype,
+        step_start_callback=lambda index, latent, sigma: apply_preview_router_conditioning(
+            network, latent, sigma, step_index=index
+        ),
     )
     return final_latent

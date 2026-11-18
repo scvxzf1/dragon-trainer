@@ -233,3 +233,47 @@ def test_cli_conversion_dispatch_and_hash(tmp_path, monkeypatch):
             "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         }
     ]
+
+
+def test_cli_dispatches_anima_to_canonical_converter(tmp_path, monkeypatch):
+    from scripts.quantization import convert_mixed_nf4 as cli
+    source = tmp_path / "source.safetensors"
+    output = tmp_path / "output.safetensors"
+    save_file({"ordinary": torch.ones(64, dtype=torch.bfloat16)}, str(source))
+    calls = []
+
+    def convert_checkpoint(source_path, output_path, *, device, threads=None):
+        calls.append((source_path, output_path, device, threads))
+        return {"output": str(output_path), "canonical": True}
+
+    monkeypatch.setattr("library.anima.mixed_nf4.convert_checkpoint", convert_checkpoint)
+    result = cli.convert(
+        family="anima", source=source, output=output, policy="main-mlp", threads=3
+    )
+    assert result["canonical"] is True
+    assert calls == [(source.resolve(), output.resolve(), "cpu", 3)]
+
+    with pytest.raises(ValueError, match="fixed selective"):
+        cli.convert(
+            family="anima",
+            source=source,
+            output=tmp_path / "other.safetensors",
+            policy="all-linear",
+        )
+
+
+def test_cli_verify_dispatches_anima_without_rewriting(tmp_path, monkeypatch):
+    from scripts.quantization import convert_mixed_nf4 as cli
+    artifact = tmp_path / "mixed.safetensors"
+    artifact.write_bytes(b"artifact")
+    calls = []
+
+    def verify_checkpoint(path, source):
+        calls.append((path, source))
+        return {"output": str(path), "verified": True}
+
+    monkeypatch.setattr("library.anima.mixed_nf4.verify_checkpoint", verify_checkpoint)
+    result = cli.verify(family="anima", output=artifact, source=None)
+    assert result["verified"] is True
+    assert calls == [(artifact, None)]
+    assert artifact.read_bytes() == b"artifact"

@@ -162,8 +162,9 @@ def compute_noise_pred_and_target(
         )
     noise = torch.randn_like(latents)
     sigmas = sample_sigmas(latents.shape[0], latents.shape[2] * latents.shape[3], device=latents.device)
-    sigma_view = sigmas.to(latents.dtype).view(-1, 1, 1, 1)
-    noisy = (1 - sigma_view) * latents + sigma_view * noise
+    from library.training.flow_step import mix_latents, velocity_target, unit_weighting
+
+    noisy = mix_latents(latents, noise, sigmas)
     if getattr(ctx.args, "gradient_checkpointing", False):
         noisy.requires_grad_(True)
     with torch.set_grad_enabled(is_train), ctx.accelerator.autocast():
@@ -176,5 +177,5 @@ def compute_noise_pred_and_target(
             reference_latents=reference_latents,
             image_slot_mask=image_slot_mask,
         )
-    target = noise - latents
-    return model_pred, target, sigmas, torch.ones_like(sigma_view, dtype=torch.float32)
+    target = velocity_target(noise, latents)
+    return model_pred, target, sigmas, unit_weighting(sigmas, latents)

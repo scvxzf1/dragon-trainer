@@ -9,6 +9,7 @@ import torch
 
 from library.env import normalize_model_family
 from networks import lora_save
+from networks.attn_fuse import refuse_qkv_state_dict
 from networks.registry import (
     NETWORK_REGISTRY,
     NetworkSpec,
@@ -16,10 +17,6 @@ from networks.registry import (
 )
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
-    _refuse_split_chimera_keys,
-    _refuse_split_hydra_keys,
-    _refuse_split_stacked_experts_keys,
-    _refuse_unfused_attn_lora_keys,
     _rename_dora_scale_for_load,
     _stack_chimera_lora_ups,
     _stack_lora_ups,
@@ -277,10 +274,7 @@ def load_lora_network_weights(network, file):
     # Refuse split stacked-experts first; its discriminator is per-expert
     # `lora_down_weight` 3-D, which the hydra refuser would otherwise
     # short-circuit on the absent shared `lora_down.weight`.
-    weights_sd = _refuse_split_stacked_experts_keys(weights_sd)
-    weights_sd = _refuse_split_hydra_keys(weights_sd)
-    weights_sd = _refuse_split_chimera_keys(weights_sd)
-    weights_sd = _refuse_unfused_attn_lora_keys(weights_sd)
+    weights_sd = refuse_qkv_state_dict(weights_sd)
     weights_sd = _rename_dora_scale_for_load(weights_sd)
     weights_sd = preprocess_weights_from_plugins(weights_sd)
 

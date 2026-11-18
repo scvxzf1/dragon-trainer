@@ -8,13 +8,14 @@ from typing import Dict, List
 import torch
 
 from ..attn_fuse import match_fused_spec
-from .base import BaseLoRAModule
+from .base import BaseLoRAModule, _chunked_down, _chunked_up
 
 logger = logging.getLogger(__name__)
 
 
 class LoRAModule(BaseLoRAModule):
     supports_conv2d = True
+    supports_packed_qkv = True
 
     def __init__(
         self,
@@ -115,6 +116,50 @@ class LoRAModule(BaseLoRAModule):
         if getattr(self.lora_up, "bias", None) is None:
             return self.lora_up(down_out * (self.multiplier * self.scale))
         return self.lora_up(down_out) * self.multiplier * self.scale
+
+    def compute_delta(
+        self,
+        x: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+        *,
+        base_output: torch.Tensor | None = None,
+        base_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del base_weight
+        output_dtype = out_dtype or (base_output.dtype if base_output is not None else x.dtype)
+        if not self.enabled or getattr(self, "_fused", False):
+            if base_output is None:
+                raise RuntimeError("inactive LoRA delta requires base_output")
+            return torch.zeros_like(base_output)
+
+        if not self.training:
+            if base_output is None:
+                raise RuntimeError("evaluation LoRA delta requires base_output")
+            return self._eval_delta(x, base_output).to(output_dtype)
+        if self._skip_module():
+            if base_output is None:
+                shape = (*x.shape[:-1], self.lora_up.out_features)
+                return torch.zeros(shape, device=x.device, dtype=output_dtype)
+            return torch.zeros_like(base_output)
+
+        reference = torch.empty((), device=x.device, dtype=output_dtype)
+        work = self._rank_compute_dtype(reference)
+        up_module = getattr(self, "lora_up", None)
+        can_scale_in_bottleneck = getattr(up_module, "bias", None) is None
+        with self._rank_autocast_context(x, work):
+            lx = _chunked_down(self, x, work)
+            lx = self._gate(lx, work)
+            if self.dropout is not None:
+                lx = torch.nn.functional.dropout(lx, p=self.dropout)
+            lx, scale = self._apply_rank_dropout(lx)
+            lx = lx.to(work)
+            if can_scale_in_bottleneck:
+                lx = lx * (self.multiplier * scale)
+            lx = _chunked_up(self, lx, work, output_dtype)
+        lx = lx.to(output_dtype)
+        if can_scale_in_bottleneck:
+            return lx
+        return (lx * self.multiplier * scale).to(output_dtype)
 
     def get_weight(self, multiplier=None):
         """Return the LoRA delta as a tensor matching org_module.weight shape."""
@@ -338,6 +383,8 @@ def defuse_and_bake_standard(
     state_dict: Dict[str, torch.Tensor],
 ) -> None:
     """Standard write pipeline: fused-key conversion plus inv_scale bake."""
-    defuse_standard_qkv(state_dict)
+    from ..attn_fuse import defuse_qkv_state_dict
+
+    defuse_qkv_state_dict(state_dict, variant="standard")
     rename_dora_scale(state_dict)
     bake_inv_scale(state_dict)

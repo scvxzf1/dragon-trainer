@@ -47,10 +47,11 @@ def test_normalize_krea2_attention_rejects_other_backends() -> None:
 
 def test_prepare_krea2_flash_validates_provider_and_dtype(monkeypatch) -> None:
     target = _AttentionTarget()
+    monkeypatch.setattr(attention_dispatch, "flash_attn_v100_provider", False)
     monkeypatch.setattr(
         attention_dispatch,
-        "flash_attn_available_for_dtype",
-        lambda dtype: dtype == torch.bfloat16,
+        "flash_attn_supports_outer_dtype",
+        lambda dtype, device=None: dtype == torch.bfloat16,
     )
 
     assert prepare_krea2_attention(target, "flash", dtype=torch.bfloat16) == "flash"
@@ -60,6 +61,18 @@ def test_prepare_krea2_flash_validates_provider_and_dtype(monkeypatch) -> None:
         validate_krea2_attention_mode("flash", dtype=torch.float32)
     with pytest.raises(RuntimeError, match="requires"):
         validate_krea2_attention_mode("flash", dtype=torch.float16)
+
+
+def test_krea2_v100_bf16_flash_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(attention_dispatch, "flash_attn_v100_provider", True)
+    monkeypatch.setattr(
+        attention_dispatch,
+        "flash_attn_supports_outer_dtype",
+        lambda dtype, device=None: True,
+    )
+
+    with pytest.raises(RuntimeError, match="non-finite Q/K gradients"):
+        validate_krea2_attention_mode("flash", dtype=torch.bfloat16)
 
 
 def test_prepare_krea2_flash_enables_dynamic_output_capture(monkeypatch) -> None:

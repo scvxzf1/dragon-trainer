@@ -223,6 +223,24 @@ def test_v100_provider_keeps_pre_ampere_support(monkeypatch):
     assert attention_dispatch.flash_attn_device_supported()
 
 
+def test_v100_outer_bf16_bridge_preserves_attention_scale():
+    from networks import attention_dispatch
+
+    q = torch.ones(2, 3, 4, 8, dtype=torch.bfloat16)
+    k = torch.ones_like(q)
+    v = torch.ones_like(q)
+
+    q16, k16, v16, scale = attention_dispatch._v100_bridge_qkv(
+        q, k, v, None
+    )
+
+    assert q16.dtype == k16.dtype == v16.dtype == torch.float16
+    torch.testing.assert_close(q16, q.to(torch.float16) / 8)
+    torch.testing.assert_close(k16, k.to(torch.float16) / 8)
+    torch.testing.assert_close(v16, v.to(torch.float16))
+    assert scale == pytest.approx(8 * 8 / (8**0.5))
+
+
 def test_heterogeneous_multi_gpu_queries_target_device(monkeypatch):
     """When cuda:0 is sm_61 (GTX 1050) and cuda:1 is sm_70 (V100), querying cuda:1 succeeds."""
     from library.quantization import nf4
@@ -250,19 +268,25 @@ def test_heterogeneous_multi_gpu_queries_target_device(monkeypatch):
     assert nf4.dir1_supported("cuda:1")
 
 
-def test_v100_dispatch_rejects_bf16_before_kernel(monkeypatch):
+def test_v100_dispatch_bridges_bf16_outer_dtype_to_fp16_kernel(monkeypatch):
     from networks import attention_dispatch
 
-    def forbidden_flash(*_args, **_kwargs):
-        raise AssertionError("V100 kernel must not receive BF16")
+    seen = []
+
+    def fake_flash(q, _k, _v, *_args, **_kwargs):
+        seen.append(q.dtype)
+        return q
 
     monkeypatch.setattr(attention_dispatch, "flash_attn_v100_provider", True)
-    monkeypatch.setattr(attention_dispatch, "flash_attn_func", forbidden_flash)
+    monkeypatch.setattr(attention_dispatch, "flash_attn_device_supported", lambda *args, **kwargs: True)
+    monkeypatch.setattr(attention_dispatch, "flash_attn_func", fake_flash)
     q = torch.randn(1, 3, 2, 4, dtype=torch.bfloat16)
     params = AttentionParams.create_attention_params("flash")
 
-    with pytest.raises(RuntimeError, match="only supports FP16"):
-        attention_dispatch.dispatch_attention([q, q, q], attn_params=params)
+    output = attention_dispatch.dispatch_attention([q, q, q], attn_params=params)
+
+    assert seen == [torch.float16]
+    assert output.dtype == torch.bfloat16
 
 
 def test_v100_provider_detection_accepts_package_doc_fallback():
@@ -319,6 +343,9 @@ def test_llm_adapter_v100_fp16_keeps_varlen_flash(monkeypatch):
         raise AssertionError("V100 FP16 LLM-adapter tensors should keep using Flash")
 
     monkeypatch.setattr(attention_dispatch, "flash_attn_v100_provider", True)
+    monkeypatch.setattr(
+        attention_dispatch, "flash_attn_available_for_tensor", lambda _tensor: True
+    )
     monkeypatch.setattr(attention_dispatch, "flash_attn_func", fake_varlen)
     monkeypatch.setattr(attention_dispatch, "flash_attn_varlen_func", fake_varlen)
     monkeypatch.setattr(

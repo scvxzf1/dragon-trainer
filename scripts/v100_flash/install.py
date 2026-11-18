@@ -25,6 +25,7 @@ EXPECTED_PYTHON = (3, 13)
 EXPECTED_TORCH = "2.10.0+cu129"
 EXPECTED_TORCH_CUDA = "12.9"
 EXPECTED_TOOLKIT = "12.9"
+EXPERIMENTAL_TOOLKITS = ("12.8",)
 EXPECTED_WHEEL_PARTS = ("cp313", "cp313", "linux_x86_64")
 FORBIDDEN_BUILD_ENV = ("MMA_NATIVE", "MMA_884", "ATTENTION_DEBUG")
 
@@ -99,8 +100,30 @@ def capture_command(command: list[str], *, cwd: Path = ROOT) -> str:
     return result.stdout.strip()
 
 
+def _cuda_library_dir(cuda_home: Path) -> Path:
+    for name in ("lib64", "lib"):
+        candidate = cuda_home / name
+        if candidate.is_dir():
+            return candidate
+    raise RuntimeError(f"CUDA toolkit has neither lib64/ nor lib/: {cuda_home}")
+
+
+def _cuda_include_dirs(cuda_home: Path) -> list[Path]:
+    candidates = [
+        cuda_home / "include",
+        cuda_home / "targets/x86_64-linux/include",
+    ]
+    return [path for path in candidates if path.is_dir()]
+
+
 def build_environment(
-    base: dict[str, str], *, cuda_home: Path, gcc: Path, gxx: Path
+    base: dict[str, str],
+    *,
+    cuda_home: Path,
+    gcc: Path,
+    gxx: Path,
+    include_cuda_library_path: bool = True,
+    experimental_toolchain: bool = False,
 ) -> dict[str, str]:
     env = dict(base)
     for name in FORBIDDEN_BUILD_ENV:
@@ -114,11 +137,27 @@ def build_environment(
             "MAX_JOBS": "2",
             "NVCC_THREADS": "2",
             "PATH": f"{cuda_home / 'bin'}:{env.get('PATH', '')}",
-            "LD_LIBRARY_PATH": (
-                f"{cuda_home / 'lib64'}:{env.get('LD_LIBRARY_PATH', '')}"
-            ),
         }
     )
+    if include_cuda_library_path:
+        env["LD_LIBRARY_PATH"] = (
+            f"{_cuda_library_dir(cuda_home)}:{env.get('LD_LIBRARY_PATH', '')}"
+        )
+    else:
+        # Torch cu129 ships its own runtime libraries.  Prepending a different
+        # toolkit's lib directory makes importing torch resolve incompatible
+        # cusparse/nvJitLink symbols before the build even starts.
+        env.pop("LD_LIBRARY_PATH", None)
+    include_dirs = _cuda_include_dirs(cuda_home)
+    if include_dirs:
+        existing = env.get("CPLUS_INCLUDE_PATH", "")
+        env["CPLUS_INCLUDE_PATH"] = ":".join(
+            [*(str(path) for path in include_dirs), existing]
+        ).rstrip(":")
+    if experimental_toolchain:
+        # CUDA 12.8 rejects GCC 16 before compilation; this is only reachable
+        # through the explicit experimental-toolchain opt-in.
+        env["NVCC_PREPEND_FLAGS"] = "--allow-unsupported-compiler"
     return env
 
 
@@ -151,7 +190,13 @@ def _require_file(path: Path, label: str) -> None:
 
 
 def preflight(
-    *, python: Path, cuda_home: Path, gcc: Path, gxx: Path, allow_reinstall: bool
+    *,
+    python: Path,
+    cuda_home: Path,
+    gcc: Path,
+    gxx: Path,
+    allow_reinstall: bool,
+    allow_experimental_toolchain: bool = False,
 ) -> dict[str, Any]:
     if sys.platform != "linux" or platform.machine() != "x86_64":
         raise RuntimeError("flash-attention-v100 landing supports Linux x86_64 only")
@@ -181,8 +226,22 @@ def preflight(
     _require_file(gcc, "GCC")
     _require_file(gxx, "G++")
     nvcc_version = capture_command([str(nvcc), "--version"])
-    if f"release {EXPECTED_TOOLKIT}" not in nvcc_version:
-        raise RuntimeError(f"expected CUDA toolkit {EXPECTED_TOOLKIT}:\n{nvcc_version}")
+    toolkit_match = next(
+        (
+            version
+            for version in (EXPECTED_TOOLKIT, *EXPERIMENTAL_TOOLKITS)
+            if f"release {version}" in nvcc_version
+        ),
+        None,
+    )
+    if toolkit_match is None:
+        raise RuntimeError(f"unsupported CUDA toolkit; expected {EXPECTED_TOOLKIT}:\n{nvcc_version}")
+    experimental_toolchain = toolkit_match != EXPECTED_TOOLKIT
+    if experimental_toolchain and not allow_experimental_toolchain:
+        raise RuntimeError(
+            f"CUDA toolkit {toolkit_match} is experimental; expected {EXPECTED_TOOLKIT}. "
+            "Pass --allow-experimental-toolchain only for a separately audited build."
+        )
 
     provider = installed_flash_provider()
     if (provider["modules"] or provider["distributions"]) and not allow_reinstall:
@@ -207,6 +266,9 @@ def preflight(
             ]
         ).splitlines()[0],
         "cuda_home": str(cuda_home.resolve()),
+        "cuda_library_dir": str(_cuda_library_dir(cuda_home)),
+        "cuda_toolkit_version": toolkit_match,
+        "experimental_toolchain": experimental_toolchain,
         "nvcc": nvcc_version.splitlines()[-1],
         "gcc": capture_command([str(gcc), "--version"]).splitlines()[0],
         "gxx": capture_command([str(gxx), "--version"]).splitlines()[0],
@@ -215,7 +277,11 @@ def preflight(
 
 
 def prepare_source(
-    *, shared_repo: Path, source_dir: Path, logs_dir: Path
+    *,
+    shared_repo: Path,
+    source_dir: Path,
+    logs_dir: Path,
+    allow_upstream_moved: bool = False,
 ) -> dict[str, str]:
     if not (shared_repo / ".git").is_dir():
         shared_repo.parent.mkdir(parents=True, exist_ok=True)
@@ -229,10 +295,11 @@ def prepare_source(
         log_path=logs_dir / "source.log",
     )
     remote_head = capture_command(["git", "rev-parse", "origin/main"], cwd=shared_repo)
-    if remote_head != PINNED_COMMIT:
+    upstream_moved = remote_head != PINNED_COMMIT
+    if upstream_moved and not allow_upstream_moved:
         raise RuntimeError(
             f"upstream main moved to {remote_head}; expected pinned {PINNED_COMMIT}. "
-            "Review and re-run the full matrix before changing the pin."
+            "Review and re-run the full matrix before using --allow-upstream-moved."
         )
     run_logged(
         ["git", "worktree", "add", "--detach", str(source_dir), PINNED_COMMIT],
@@ -246,7 +313,12 @@ def prepare_source(
         raise RuntimeError(
             f"prepared source is not the clean pinned commit: head={source_head} dirty={dirty!r}"
         )
-    return {"commit": source_head, "tree": source_tree, "remote_main": remote_head}
+    return {
+        "commit": source_head,
+        "tree": source_tree,
+        "remote_main": remote_head,
+        "upstream_moved": upstream_moved,
+    }
 
 
 def build_wheel(
@@ -368,6 +440,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-root", type=Path, default=ROOT / "output/v100-flash-install"
     )
     parser.add_argument("--allow-reinstall", action="store_true")
+    parser.add_argument(
+        "--allow-experimental-toolchain",
+        action="store_true",
+        help=(
+            "Allow the explicitly audited CUDA 12.8 fallback toolkit. "
+            "The resulting install is not standard 12.9 acceptance evidence."
+        ),
+    )
+    parser.add_argument(
+        "--allow-upstream-moved",
+        action="store_true",
+        help=(
+            "Continue using the pinned source commit when upstream main moved. "
+            "The source checkout remains pinned and the build is marked experimental."
+        ),
+    )
     return parser
 
 
@@ -407,17 +495,25 @@ def main() -> int:
             gcc=args.gcc,
             gxx=args.gxx,
             allow_reinstall=args.allow_reinstall,
+            allow_experimental_toolchain=args.allow_experimental_toolchain,
         )
         env = build_environment(
             os.environ,
             cuda_home=cuda_home,
             gcc=args.gcc,
             gxx=args.gxx,
+            include_cuda_library_path=not manifest["environment"][
+                "experimental_toolchain"
+            ],
+            experimental_toolchain=manifest["environment"][
+                "experimental_toolchain"
+            ],
         )
         manifest["source"] = prepare_source(
             shared_repo=output_root / "source/upstream",
             source_dir=source_dir,
             logs_dir=logs_dir,
+            allow_upstream_moved=args.allow_upstream_moved,
         )
         wheel = build_wheel(
             python=python,

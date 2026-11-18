@@ -143,7 +143,14 @@ def test_conversion_small_fixture_preserves_metadata_and_non_targets(tmp_path,mo
         from safetensors import safe_open
         state=load_file(path)
         assert torch.equal(state['net.non_target'].view(torch.uint8),original['net.non_target'].view(torch.uint8))
-        with safe_open(path,framework='pt') as f:assert f.metadata()['original']=='kept'
+        with safe_open(path,framework='pt') as f:
+            metadata = f.metadata()
+            assert metadata['original']=='kept'
+            assert fmt.MANIFEST_KEY not in metadata
+            assert 'diffusion.mixed_nf4.manifest' in metadata
+            manifest = json.loads(metadata['diffusion.mixed_nf4.manifest'])
+            assert manifest['policy'] == 'anima-selective-mlp-nf4-v1'
+            assert manifest['prefix'] == 'net.'
         return {'bytes':__import__('pathlib').Path(path).stat().st_size}
     monkeypatch.setattr(conversion,'verify_checkpoint',verify)
     result=conversion.convert_checkpoint(source,tmp)

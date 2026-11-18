@@ -27,6 +27,7 @@ from scripts.v100_flash.install import sha256_file
 
 def test_v100_build_environment_is_fixed_and_clears_extra_mma(tmp_path: Path):
     cuda_home = tmp_path / "cuda"
+    (cuda_home / "lib64").mkdir(parents=True)
     gcc = Path("/usr/bin/gcc-14")
     gxx = Path("/usr/bin/g++-14")
     env = build_environment(
@@ -139,6 +140,25 @@ def test_v100_cli_requires_machine_local_inputs():
     )
     assert install.cuda_home == Path("/opt/cuda-12.9")
     assert validate.capture == Path("/data/first_failure.pt")
+
+
+def test_v100_cli_exposes_explicit_experimental_toolchain_switch():
+    install = build_install_parser().parse_args(
+        ["--cuda-home", "/opt/cuda-12.8", "--allow-experimental-toolchain"]
+    )
+    assert install.allow_experimental_toolchain is True
+
+
+def test_v100_environment_accepts_cuda_lib_layout(tmp_path: Path):
+    cuda_home = tmp_path / "cuda"
+    (cuda_home / "lib").mkdir(parents=True)
+    env = build_environment(
+        {"PATH": "/usr/bin", "LD_LIBRARY_PATH": "/usr/lib"},
+        cuda_home=cuda_home,
+        gcc=Path("/usr/bin/gcc"),
+        gxx=Path("/usr/bin/g++"),
+    )
+    assert env["LD_LIBRARY_PATH"].startswith(f"{cuda_home / 'lib'}:")
 
 
 def test_aligned_regression_requires_both_lengths():

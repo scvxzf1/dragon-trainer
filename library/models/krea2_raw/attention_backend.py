@@ -167,9 +167,18 @@ def validate_krea2_attention_mode(
                 "Krea-2 attn_mode='flash' requires fp16 or bf16 compute; "
                 f"got {dtype}"
             )
-        if not attention_dispatch.check_flash_attn_for_dtype(dtype, device=device):
+        if (
+            dtype == torch.bfloat16
+            and attention_dispatch.flash_attn_v100_provider
+        ):
+            raise RuntimeError(
+                "Krea-2 attn_mode='flash' is disabled for BF16 outer training "
+                "on flash-attention-v100: the FP16 provider bridge can produce "
+                "non-finite Q/K gradients on SM70; use attn_mode='torch' instead"
+            )
+        if not attention_dispatch.flash_attn_supports_outer_dtype(dtype, device=device):
             provider = (
-                "flash-attention-v100 (FP16 only)"
+                "flash-attention-v100 (FP16 kernel with BF16 outer bridge)"
                 if attention_dispatch.flash_attn_v100_provider
                 else "FlashAttention 2"
             )
@@ -457,50 +466,22 @@ def _flash_varlen_attention(
     from networks import attention_dispatch
 
     _validate_flash_qkv(q, k, v)
-    if not attention_dispatch.flash_attn_available_for_tensor(q):
+    sequence = q.shape[2]
+    if not attention_dispatch.flash_attn_supports_outer_dtype(
+        q.dtype, device=q.device
+    ):
         raise RuntimeError(
             f"Krea-2 FlashAttention does not support Q/K/V dtype {q.dtype}"
         )
-    flash_varlen: Callable = attention_dispatch.flash_attn_varlen_func
-
-    batch, _heads, sequence, _dim = q.shape
-    if mask is None:
-        valid = torch.ones(batch, sequence, device=q.device, dtype=torch.bool)
-    else:
-        expected_mask_shape = (batch, 1, sequence, sequence)
-        if tuple(mask.shape) != expected_mask_shape or mask.dtype != torch.bool:
-            raise ValueError(
-                "Krea-2 FlashAttention expects a boolean (B,1,L,L) "
-                f"outer-product mask; got shape={tuple(mask.shape)}, dtype={mask.dtype}"
-            )
-        valid = mask[:, 0].diagonal(dim1=-2, dim2=-1)
-
-    lengths = valid.sum(dim=1, dtype=torch.int32)
-    cu_seqlens = torch.zeros(batch + 1, device=q.device, dtype=torch.int32)
-    cu_seqlens[1:] = lengths.cumsum(dim=0)
-    q_packed = rearrange(q, "b h l d -> b l h d")[valid].contiguous()
-    k_packed = rearrange(k, "b h l d -> b l h d")[valid].contiguous()
-    v_packed = rearrange(v, "b h l d -> b l h d")[valid].contiguous()
-    output_packed = flash_varlen(
-        q_packed,
-        k_packed,
-        v_packed,
-        cu_seqlens,
-        cu_seqlens,
-        sequence,
-        sequence,
+    output = attention_dispatch.flash_varlen_with_bool_mask(
+        rearrange(q, "b h l d -> b l h d"),
+        rearrange(k, "b h l d -> b l h d"),
+        rearrange(v, "b h l d -> b l h d"),
+        mask=mask,
         softmax_scale=scale,
+        max_seqlen=sequence,
     )
-    output = torch.zeros(
-        batch,
-        sequence,
-        q.shape[1],
-        q.shape[-1],
-        device=q.device,
-        dtype=q.dtype,
-    )
-    output[valid] = output_packed
-    return rearrange(output, "b l h d -> b l (h d)")
+    return output.flatten(2)
 
 
 def _validate_flash_qkv(q: Tensor, k: Tensor, v: Tensor) -> None:

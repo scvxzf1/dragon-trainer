@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import torch
 
-from ...attn_fuse import match_fused_spec
+from ...attn_fuse import defuse_qkv_state_dict, match_fused_spec
 
 
 def defuse_glora_qkv(state_dict: Dict[str, torch.Tensor]) -> None:
@@ -48,7 +48,7 @@ def save_glora_weights(
 ) -> bool:
     """Write a GLoRA checkpoint using the standard safetensors path."""
 
-    defuse_glora_qkv(state_dict)
+    defuse_qkv_state_dict(state_dict, variant="glora")
     # Same runtime→ComfyUI adaln relayout the plain-LoRA writer does. This
     # handler short-circuits lora_save.save_network_weights, so without it a
     # GLoRA trained with train_adaln would ship runtime-named adaln keys that

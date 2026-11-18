@@ -121,7 +121,12 @@ def meminfo_available_gb() -> float:
 def make_network(
     dit, lora_dim: int = LORA_DIM, lora_alpha: float = LORA_ALPHA
 ) -> LoRANetwork:
-    kwargs = {**krea2_target_kwargs(), "lora_dim": lora_dim, "alpha": lora_alpha}
+    kwargs = {
+        **krea2_target_kwargs(),
+        "model_family": "krea2_raw",
+        "lora_dim": lora_dim,
+        "alpha": lora_alpha,
+    }
     cfg = LoRANetworkCfg.from_kwargs(
         kwargs,
         network_dim=lora_dim,
@@ -136,6 +141,10 @@ def make_network(
 
 def encode_te_vae(img_size, device, dtype, te_device):
     """TE -> hiddens -> free; VAE -> latents -> free. 返回 (hiddens, txtmask, latents_4d)."""
+    cache_path = os.environ.get("K2_ABL_CONDITIONS_CACHE", "") or None
+    if cache_path and Path(cache_path).is_file():
+        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
+        return cached["hiddens"], cached["txtmask"], cached["latents_4d"]
     te_model, tokenizer = load_krea2_text_encoder(str(KREA2_TE), dtype=dtype, device=te_device)
     tok = Krea2TokenizeStrategy()
     tokens = tok.tokenize([PROMPT])
@@ -155,7 +164,55 @@ def encode_te_vae(img_size, device, dtype, te_device):
     latents_4d = latents_4d.to("cpu")
     del vae, pixels
     torch.cuda.empty_cache()
+    if cache_path:
+        cache_file = Path(cache_path)
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"hiddens": hiddens, "txtmask": txtmask, "latents_4d": latents_4d},
+            cache_file,
+        )
     return hiddens, txtmask, latents_4d
+
+
+def install_finite_diagnostics(dit):
+    """Install opt-in forward/backward hooks for one full-model probe."""
+    if not _env_bool("K2_ABL_DIAG", False):
+        return []
+    handles = []
+    seen = {"forward": set(), "backward": set()}
+
+    def finite(value):
+        if isinstance(value, torch.Tensor):
+            return bool(torch.isfinite(value.detach()).all())
+        if isinstance(value, (tuple, list)):
+            return all(finite(item) for item in value)
+        return True
+
+    def forward_hook(name):
+        def hook(_module, _inputs, output):
+            if not finite(output) and name not in seen["forward"]:
+                seen["forward"].add(name)
+                print(f"  [diag] first nonfinite forward: {name}", flush=True)
+        return hook
+
+    def backward_hook(name):
+        def hook(_module, grad_input, grad_output):
+            if not finite(grad_output) and name not in seen["backward"]:
+                seen["backward"].add(name)
+                print(f"  [diag] first nonfinite backward output: {name}", flush=True)
+            if not finite(grad_input) and name not in seen["backward"]:
+                seen["backward"].add(name)
+                print(f"  [diag] first nonfinite backward input: {name}", flush=True)
+        return hook
+
+    for index, block in enumerate(getattr(dit, "blocks", ())):
+        for suffix, module in (("attn", getattr(block, "attn", None)), ("block", block)):
+            if module is None:
+                continue
+            name = f"blocks.{index}.{suffix}"
+            handles.append(module.register_forward_hook(forward_hook(name)))
+            handles.append(module.register_full_backward_hook(backward_hook(name)))
+    return handles
 
 
 def load_dit(nf4, nf4_path, device, dtype):
@@ -340,6 +397,7 @@ def main() -> int:
     print(f"  setup 后 host RSS 峰值 {rss_after_setup:.2f}GB, 系统可用 {avail_after_setup:.2f}GB")
 
     opt = torch.optim.AdamW(network.parameters(), lr=LR, weight_decay=0.0)
+    diagnostic_handles = install_finite_diagnostics(dit)
 
     latents_5d = latents_4d.to(device).unsqueeze(2).requires_grad_(False)
     text_emb = Krea2TextEmbedding(hiddens.to(device), txtmask.to(device))
@@ -512,6 +570,9 @@ def main() -> int:
         "losses": [round(x, 6) for x in losses],
         "step_times": [round(x, 3) for x in step_times],
     }
+
+    for handle in diagnostic_handles:
+        handle.remove()
 
     FINDINGS_DIR.mkdir(parents=True, exist_ok=True)
     jsonl_path = Path(

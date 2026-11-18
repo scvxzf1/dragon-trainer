@@ -47,6 +47,23 @@ class _FakeNetwork:
         self.cleared += 1
 
 
+class _RecordingRouterNetwork(_FakeNetwork):
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+    def set_step_index(self, value):
+        self.events.append(("step", value))
+
+    def set_sigma(self, value):
+        self.events.append(("sigma", value.detach().clone()))
+
+    def set_content(self, value):
+        self.events.append(("content", value.detach().clone()))
+
+    use_content_router = True
+
+
 class _FakeScheduler:
     def __init__(self):
         self.sigma_min = None
@@ -177,6 +194,34 @@ def test_generate_z_image_uses_official_sign_and_cfg(monkeypatch) -> None:
     assert result.shape == (1, 16, 128, 128)
 
 
+def test_generate_z_image_refreshes_router_for_each_cfg_branch(monkeypatch) -> None:
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr(training_preview, "_make_scheduler", lambda _shift: scheduler)
+    network = _RecordingRouterNetwork()
+    transformer = _FakeTransformer()
+    transformer._preview_network = network
+
+    training_preview.generate_z_image(
+        transformer,
+        [torch.zeros(8, 4)],
+        [torch.ones(8, 4)],
+        height=1024,
+        width=1024,
+        sample_steps=9,
+        guidance_scale=2.0,
+        flow_shift=3.0,
+        seed=114,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert [event[0] for event in network.events] == [
+        "step", "sigma", "content", "step", "sigma", "content",
+    ]
+    assert torch.equal(network.events[2][1], torch.zeros(1, 8, 4))
+    assert torch.equal(network.events[5][1], torch.ones(1, 8, 4))
+
+
 def test_z_image_preview_uses_turbo_and_base_scheduler_shifts(tmp_path) -> None:
     assert training_preview._default_flow_shift(_args(tmp_path)) == 3.0
     assert (
@@ -230,7 +275,7 @@ def test_z_image_sample_lifecycle_restores_training_state(
     assert len(decoded) == 1
     assert accelerator.barriers == 2
     assert network.training is True
-    assert network.cleared == 1
+    assert network.cleared == 2
     assert torch.equal(torch.get_rng_state(), rng_before)
 
 

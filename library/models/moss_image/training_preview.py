@@ -11,10 +11,10 @@ import torch
 
 from library.models.moss_image.sampling import generate_moss_image
 from library.runtime.accelerator import prepare_dtype
-from library.runtime.device import clean_memory_on_device
 from library.training.preview_lifecycle import preview_lifecycle
+from library.training.preview_lifecycle import apply_preview_router_conditioning
 from library.training.sample_preview_common import (
-    failed_on_any_process, is_cuda_oom, load_prompts, should_sample,
+    finish_preview_batch, load_prompts, should_sample,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,16 @@ def _sample_local(accelerator, args, dit, network, prompts, outputs, replacement
                     sample_steps=spec.sample_steps, guidance_scale=spec.scale,
                     flow_shift=spec.flow_shift, seed=spec.seed,
                     device=accelerator.device, dtype=dtype, uncond_skip_layers=spec.uncond_skip_layers,
+                    step_start_callback=lambda index, current, sigma: apply_preview_router_conditioning(
+                        network, current, sigma, step_index=index
+                    ),
+                    branch_start_callback=lambda index, branch, current, sigma, condition: apply_preview_router_conditioning(
+                        network,
+                        current,
+                        sigma,
+                        step_index=index,
+                        crossattn_emb=condition[0],
+                    ),
                 )
                 _stage_latent(args, latents, spec, epoch, steps)
 
@@ -111,30 +121,26 @@ def sample_images(
         return
     dit = accelerator.unwrap_model(dit)
     network = accelerator.unwrap_model(network) if network is not None else None
-    error = None
-    try:
-        _sample_local(accelerator, args, dit, network, prompts[rank::processes],
-                      sample_prompts_te_outputs, prompt_replacement, epoch, steps)
-    except Exception as exc:
-        error = exc
-    if error is not None and is_cuda_oom(error):
-        clean_memory_on_device(accelerator.device)
-    if failed_on_any_process(accelerator, error is not None, processes):
-        if error is not None:
-            raise error
-        raise RuntimeError("MOSS sample generation failed on another process")
-    from library.anima.training import decode_samples_for_live_preview
-    from library.training.preview_decode import raise_decode_failure
-
-    accelerator.wait_for_everyone()
-    error = None
-    try:
-        if getattr(accelerator, "is_main_process", True):
-            decode_samples_for_live_preview(accelerator, args, vae, dit=dit, network=network)
-    except Exception as exc:
-        error = exc
-    raise_decode_failure(accelerator, error, processes)
-    accelerator.wait_for_everyone()
+    finish_preview_batch(
+        accelerator,
+        args,
+        processes=processes,
+        run_local=lambda: _sample_local(
+            accelerator,
+            args,
+            dit,
+            network,
+            prompts[rank::processes],
+            sample_prompts_te_outputs,
+            prompt_replacement,
+            epoch,
+            steps,
+        ),
+        failure_message="MOSS sample generation failed on another process",
+        vae=vae,
+        dit=dit,
+        network=network,
+    )
 
 
 def decode_moss_latent(vae, latent):

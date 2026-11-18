@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 import pytest
+import torch
 from PIL import Image
 
 from library.config.loader import (
@@ -11,6 +12,7 @@ from library.config.loader import (
     generate_dataset_group_by_blueprint,
 )
 from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS, BucketManager
+from library.datasets.dataset_getitem_sample import _latent_target_size
 from library.datasets.qwen_image_geometry import (
     align_qwen_bucket_manager,
     align_qwen_resolution,
@@ -20,6 +22,20 @@ from web.services.config.cache_audit import _bucket_reso
 
 
 QWEN = "qwen_image_2_1"
+
+
+@pytest.mark.parametrize(
+    ("family", "shape", "expected"),
+    [
+        ("anima", (16, 32, 48), (384, 256)),
+        ("qwen_image_2_1", (1, 64, 32, 48), (768, 512)),
+        ("moss_image", (128, 1, 32, 48), (768, 512)),
+    ],
+)
+def test_cached_latent_target_size_uses_family_compression_and_trailing_axes(
+    family, shape, expected
+):
+    assert _latent_target_size(torch.zeros(shape), family) == expected
 
 
 def _training_dataset(image_dir, settings, family=QWEN):

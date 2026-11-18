@@ -10,7 +10,7 @@ from library.anima import strategy as anima_strategy
 from library.anima.text_strategies import TextEncodingStrategy, TokenizeStrategy
 from library.io.cache import resolve_cache_path
 from library.models.family_registry import get_model_family_spec
-from library.models.krea2_raw.strategy import Krea2TextEncoderOutputsCachingStrategy
+from library.strategies.text_cache import FamilySafetensorsTextCacheStrategy
 from library.models.latent_space import Z_IMAGE_F8C16_P2
 from library.models.z_image.latent import encode_z_image_latents
 from library.models.z_image.weights import resolve_z_image_tokenizer_path
@@ -79,7 +79,7 @@ class ZImageTextEncodingStrategy(TextEncodingStrategy):
             )
 
 
-class ZImageTextEncoderOutputsCachingStrategy(Krea2TextEncoderOutputsCachingStrategy):
+class ZImageTextEncoderOutputsCachingStrategy(FamilySafetensorsTextCacheStrategy):
     MODEL_FAMILY = "z_image"
     CACHE_LABEL = "Z-Image"
     EXPECTED_HIDDEN_RANK = 2

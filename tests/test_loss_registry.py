@@ -11,11 +11,15 @@ from __future__ import annotations
 import argparse
 from types import SimpleNamespace
 
+import pytest
+import torch
+
 from library.training import (
     LOSS_REGISTRY,
     LossComposer,
     build_loss_composer,
 )
+from library.training.losses import LossContext, _multiscale_loss
 
 
 def _make_args(**overrides) -> argparse.Namespace:
@@ -28,6 +32,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         velocity_direction_loss_weight=0.0,
         prior_preservation_weight=0.0,
         inverted_mask_prior_weight=0.0,
+        model_family="anima",
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -75,6 +80,34 @@ def test_multiscale_activates_when_weight_set():
     args = _make_args(method="lora", multiscale_loss_weight=0.5)
     composer = build_loss_composer(args, _net())
     assert "multiscale" in composer.active_losses
+
+
+@pytest.mark.parametrize(
+    ("model_family", "latent_hw", "expected_nonzero"),
+    [
+        ("anima", (64, 64), False),
+        ("qwen_image_2_1", (64, 64), True),
+        ("moss_image", (64, 64), True),
+    ],
+)
+def test_multiscale_uses_family_vae_compression(
+    model_family, latent_hw, expected_nonzero
+):
+    args = _make_args(model_family=model_family, multiscale_loss_weight=0.5)
+    prediction = torch.ones(1, 2, *latent_hw)
+    context = LossContext(
+        args=args,
+        batch={},
+        model_pred=prediction,
+        target=torch.zeros_like(prediction),
+        timesteps=torch.zeros(1),
+        weighting=None,
+        huber_c=None,
+        loss_weights=torch.ones(1),
+        network=SimpleNamespace(),
+    )
+    result = _multiscale_loss(context)
+    assert bool(torch.count_nonzero(result)) is expected_nonzero
 
 
 def test_velocity_direction_activates_when_weight_set():

@@ -18,6 +18,7 @@ class LoHaModule(BaseLoRAModule):
     """PEFT/LyCORIS-style LoHa adapter for Linear layers."""
 
     supports_conv2d = False
+    supports_packed_qkv = True
 
     def __init__(
         self,
@@ -120,6 +121,39 @@ class LoHaModule(BaseLoRAModule):
         if self.training:
             y = y * self._scalar_timestep_gate(y)
         return org_forwarded + y.to(org_forwarded.dtype)
+
+    def compute_delta(
+        self,
+        x: torch.Tensor,
+        out_dtype: torch.dtype | None = None,
+        *,
+        base_output: torch.Tensor | None = None,
+        base_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        del base_weight
+        output_dtype = out_dtype or (base_output.dtype if base_output is not None else x.dtype)
+        if not self.enabled or self._fused:
+            if base_output is None:
+                raise RuntimeError("inactive LoHa delta requires base_output")
+            return torch.zeros_like(base_output)
+        if self._skip_module():
+            if base_output is not None:
+                return torch.zeros_like(base_output)
+            return torch.zeros((*x.shape[:-1], self.hada_w1_a.shape[0]), device=x.device, dtype=output_dtype)
+
+        x_loha = F.dropout(x, p=self.dropout) if self.training and self.dropout else x
+        effective_scale = float(self.multiplier) * float(self.scale)
+        if self.training and self.rank_dropout:
+            weight = self._drop_output_rows(self._compute_weight(), self.rank_dropout)
+            delta = F.linear(x_loha.float(), weight.float()) * effective_scale
+        else:
+            delta = loha_linear(
+                x_loha, self.hada_w1_a, self.hada_w1_b,
+                self.hada_w2_a, self.hada_w2_b, scale=effective_scale,
+            )
+        if self.training:
+            delta = delta * self._scalar_timestep_gate(delta)
+        return delta.to(output_dtype)
 
     def get_weight(self, multiplier=None):
         if multiplier is None:

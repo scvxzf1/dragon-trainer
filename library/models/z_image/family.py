@@ -155,8 +155,9 @@ def compute_noise_pred_and_target(
             or Z_IMAGE_FLOW_SHIFT
         ),
     )
-    sigma_view = sigmas.to(dtype=latents.dtype).view(-1, 1, 1, 1)
-    noisy_input = (1.0 - sigma_view) * latents + sigma_view * noise
+    from library.training.flow_step import mix_latents, velocity_target, unit_weighting
+
+    noisy_input = mix_latents(latents, noise, sigmas)
 
     from library.training.router_conditioning import apply_router_conditioning
 
@@ -185,6 +186,6 @@ def compute_noise_pred_and_target(
             sigmas,
         )
     model_pred = model_pred.squeeze(2)
-    target = noise - latents
-    weighting = torch.ones_like(sigma_view, dtype=torch.float32)
+    target = velocity_target(noise, latents)
+    weighting = unit_weighting(sigmas, latents)
     return model_pred, target, sigmas, weighting
