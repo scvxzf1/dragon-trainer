@@ -81,7 +81,7 @@ LoRA checkpoint 通过 `ss_model_family` metadata stamp（未标记旧权重视�
 
 ### MOSS-Image (`moss_image`)
 - 起始配置：`configs/methods/moss_image_lora.toml`（及分辨率/文本上限档位 `_t768`、`_t512`、`_tecap1024`，完整使用说明见 [MOSS-Image 配置](configuration/moss-image.md)）。
-- 42-layer 4D DiT（training shift=1，预览 Euler shift=5），仅支持文生图 plain LoRA、`torch`/`sdpa` attention、full checkpoint、`blocks_to_swap = 0..40`（`>0` 时 batch size 必须为 1）及全层级 `caption_dropout_rate = 0`。
+- 42-layer 4D DiT（training shift=1，预览 Euler shift=5），仅支持文生图 plain LoRA、`torch`/`sdpa` attention、full checkpoint、`blocks_to_swap = 0..40` 及全层级 `caption_dropout_rate = 0`。
 - 文本编码器默认 `moss_te_quantization="nf4"`（可选 `"bf16"`），缓存保存真实 token 长度并将 `max_token_length`（`1..4096`）写入 `moss_image_te_v2` 身份；切换量化方式或 `max_token_length` 必须重建文本缓存。支持双卡 1F1B PP 训练会话，不支持 `torch.compile`、DiT NF4 或独立 CLI 推理。
 
 ## 仍存在的架构耦合与修改清单

@@ -355,13 +355,45 @@ def test_cuda_packed_and_batched_moss_matches_single_sample_and_swaps(tiny_model
         out_eq, torch.cat([eq0, eq1], dim=0), rtol=1e-4, atol=1e-4
     )
 
-    swap_model = deepcopy(tiny_model).to(dtype=torch.float16)
+    # Real LoRA training freezes the base DiT (so ModelOffloader actually swaps
+    # frozen block parameters to CPU and relies on nn.Module.__call__ backward
+    # hooks to bring them back during checkpoint recomputation).
+    from networks.lora_anima import create_network
+
+    noswap_ref = deepcopy(tiny_model).to(device=device, dtype=torch.float16).requires_grad_(False)
+    noswap_net = create_network(
+        1.0, 2, 2, None, [], noswap_ref, model_family="moss_image", **moss_image_target_kwargs()
+    )
+    noswap_net.apply_to([], noswap_ref, False, True)
+    noswap_net.to(device=device, dtype=torch.float32)
+    with torch.no_grad():
+        for p in noswap_net.parameters():
+            p.normal_(0, 0.1)
+
+    swap_model = deepcopy(tiny_model).to(dtype=torch.float16).requires_grad_(False)
+    swap_net = create_network(
+        1.0, 2, 2, None, [], swap_model, model_family="moss_image", **moss_image_target_kwargs()
+    )
+    swap_net.apply_to([], swap_model, False, True)
+    swap_net.to(device=device, dtype=torch.float32)
+    swap_net.load_state_dict(noswap_net.state_dict())
     swap_model.enable_gradient_checkpointing()
     swap_model.enable_block_swap(1, device)
     swap_model.move_to_device_except_swap_blocks(device)
     swap_model.prepare_block_swap_before_forward()
-    z16 = z.detach().to(torch.float16).requires_grad_(True)
-    t16 = text.to(torch.float16)
-    out_swap = swap_model(z16, times, t16, mask_varlen).sample
-    out_swap.float().square().mean().backward()
-    assert z16.grad is not None and torch.isfinite(z16.grad).all()
+
+    for _step in range(2):
+        z_ref = z.detach().to(torch.float16).requires_grad_(True)
+        z16 = z.detach().to(torch.float16).requires_grad_(True)
+        t16 = text.to(torch.float16)
+        noswap_net.zero_grad(set_to_none=True)
+        swap_net.zero_grad(set_to_none=True)
+        out_ref = noswap_ref(z_ref, times, t16, mask_varlen).sample
+        out_ref.float().square().mean().backward()
+        out_swap = swap_model(z16, times, t16, mask_varlen).sample
+        out_swap.float().square().mean().backward()
+        torch.testing.assert_close(out_swap, out_ref, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(z16.grad, z_ref.grad, rtol=1e-3, atol=1e-3)
+        for p_swap, p_ref in zip(swap_net.parameters(), noswap_net.parameters()):
+            assert p_swap.grad is not None and p_ref.grad is not None
+            torch.testing.assert_close(p_swap.grad, p_ref.grad, rtol=2e-3, atol=2e-3)

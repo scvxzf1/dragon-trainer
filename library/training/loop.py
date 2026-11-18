@@ -1437,18 +1437,27 @@ def _run_microbatch(
                     if grad_finiteness is not None
                     else None
                 )
+                precomputed_count = (
+                    grad_finiteness.precomputed_grad_count
+                    if grad_finiteness is not None
+                    else 0
+                )
                 dist_type = str(getattr(accelerator, "distributed_type", "NO") or "NO")
+                grads_to_clip = (
+                    [p.grad for p in params_to_clip if p.grad is not None]
+                    if precomputed_norm is not None
+                    else None
+                )
                 if (
                     precomputed_norm is not None
+                    and grads_to_clip is not None
+                    and len(grads_to_clip) == precomputed_count
                     and not scaler_present(accelerator)
                     and type(accelerator).__module__.startswith("accelerate.")
                     and "FSDP" not in dist_type
                     and "DEEPSPEED" not in dist_type
                     and hasattr(torch, "_foreach_mul_")
                 ):
-                    grads_to_clip = [
-                        p.grad for p in params_to_clip if p.grad is not None
-                    ]
                     if grads_to_clip:
                         clip_coef = torch.clamp(
                             float(args.max_grad_norm) / (precomputed_norm + 1e-6),

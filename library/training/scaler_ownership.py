@@ -45,6 +45,7 @@ class GradFiniteness:
     offenders: tuple[str, ...] = ()
     scaler_owned: bool = False
     precomputed_total_norm: torch.Tensor | None = None
+    precomputed_grad_count: int = 0
 
     @property
     def bad(self) -> bool:
@@ -149,17 +150,17 @@ def _scan_norms_bulk(named_grads, limit: int) -> tuple[str, ...] | None:
 
 def _inspect_trainable_grads_with_norm(
     network, *, limit: int = MAX_REPORTED_OFFENDERS
-) -> tuple[tuple[str, ...], torch.Tensor | None]:
+) -> tuple[tuple[str, ...], torch.Tensor | None, int]:
     named_grads = [
         (name, parameter.grad)
         for name, parameter in network.named_parameters()
         if parameter.grad is not None
     ]
     if not named_grads:
-        return (), None
+        return (), None, 0
     bulk = _scan_norms_bulk_with_total(named_grads, limit)
     if bulk is not None:
-        return bulk
+        return bulk[0], bulk[1], len(named_grads)
     offenders: list[str] = []
     for name, grad in named_grads:
         if torch.isfinite(grad.detach()).all():
@@ -167,7 +168,7 @@ def _inspect_trainable_grads_with_norm(
         offenders.append(_describe(name, grad))
         if len(offenders) >= limit:
             break
-    return tuple(offenders), None
+    return tuple(offenders), None, len(named_grads)
 
 
 def inspect_trainable_grads(
@@ -210,7 +211,7 @@ def inspect_grad_ownership(accelerator, network) -> GradFiniteness:
     the information needed to decide ownership.
     """
     scaler_owned = scaler_present(accelerator)
-    offenders, total_norm = _inspect_trainable_grads_with_norm(network)
+    offenders, total_norm, grad_count = _inspect_trainable_grads_with_norm(network)
     if scaler_owned:
         # The scaler already all-reduces ``found_inf`` across ranks, so every rank
         # reaches the same skip decision without help from this module.
@@ -222,6 +223,7 @@ def inspect_grad_ownership(accelerator, network) -> GradFiniteness:
             offenders=offenders,
             scaler_owned=False,
             precomputed_total_norm=total_norm,
+            precomputed_grad_count=grad_count,
         )
 
     # Without a scaler the skip decision must be identical on every rank, so the
@@ -231,6 +233,7 @@ def inspect_grad_ownership(accelerator, network) -> GradFiniteness:
             offenders=(),
             scaler_owned=False,
             precomputed_total_norm=total_norm,
+            precomputed_grad_count=grad_count,
         )
     if not offenders:  # pragma: no cover - another rank owns the observation
         offenders = ("<non-finite gradients reported by another rank>",)

@@ -126,17 +126,34 @@ class _Block(nn.Module):
         self.proj['ffn_up_gate'] = nn.Linear(dim, 2 * ffn_dim, bias=False)
         self.proj['ffn_down'] = nn.Linear(ffn_dim, dim, bias=False)
 
-    def forward(self, x, rope, modulation):
+    def forward(self, x, rope, modulation, spans=None):
+        if isinstance(x, tuple):
+            return tuple(
+                (
+                    checkpoint(
+                        self._forward,
+                        x_i,
+                        r_i,
+                        modulation[i : i + 1],
+                        use_reentrant=False,
+                    )
+                    if self.gradient_checkpointing and torch.is_grad_enabled()
+                    else self._forward(x_i, r_i, modulation[i : i + 1])
+                )
+                for i, (x_i, r_i) in enumerate(zip(x, rope))
+            )
+        if spans is not None:
+            if self.gradient_checkpointing and torch.is_grad_enabled():
+                return checkpoint(
+                    self._forward_packed, x, rope, modulation, spans, use_reentrant=False
+                )
+            return self._forward_packed(x, rope, modulation, spans)
         if self.gradient_checkpointing and torch.is_grad_enabled():
             return checkpoint(self._forward, x, rope, modulation, use_reentrant=False)
         return self._forward(x, rope, modulation)
 
     def forward_packed(self, x, rope, modulation, spans):
-        if self.gradient_checkpointing and torch.is_grad_enabled():
-            return checkpoint(
-                self._forward_packed, x, rope, modulation, spans, use_reentrant=False
-            )
-        return self._forward_packed(x, rope, modulation, spans)
+        return self(x, rope, modulation, spans=spans)
 
     def _forward(self, x, rope, modulation):
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
@@ -212,20 +229,19 @@ def run_moss_block_sequence(
         return [x]
 
     if samples[0].device.type != "cuda":
-        # Preserve bitwise-exact fp32 CPU per-sample numerics while still
-        # stepping the block-swap ring once per layer across the batch.
-        cur = list(samples)
+        # Preserve bitwise-exact fp32 CPU per-sample numerics while invoking
+        # ``layer(...)`` once per layer so ModelOffloader's full_backward_hook
+        # wraps the entire batch as a single unit.
+        cur_tuple = tuple(samples)
+        rope_tuple = tuple(ropes)
         for layer_index, layer in enumerate(layers):
             if blocks_to_swap:
                 offloader.wait_for_block(layer_index)
             if layer_index not in skip_layers:
-                for index in range(batch):
-                    cur[index] = layer(
-                        cur[index], ropes[index], modulation[index : index + 1]
-                    )
+                cur_tuple = layer(cur_tuple, rope_tuple, modulation)
             if blocks_to_swap:
                 offloader.submit_move_blocks(layers, layer_index)
-        return cur
+        return list(cur_tuple)
 
     first_len = int(samples[0].shape[1])
     if all(int(sample.shape[1]) == first_len for sample in samples):
@@ -253,8 +269,8 @@ def run_moss_block_sequence(
         if blocks_to_swap:
             offloader.wait_for_block(layer_index)
         if layer_index not in skip_layers:
-            x_packed = layer.forward_packed(
-                x_packed, rope_packed, modulation, span_tuple
+            x_packed = layer(
+                x_packed, rope_packed, modulation, spans=span_tuple
             )
         if blocks_to_swap:
             offloader.submit_move_blocks(layers, layer_index)
