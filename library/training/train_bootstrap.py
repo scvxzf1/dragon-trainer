@@ -10,7 +10,7 @@ from typing import Optional
 from accelerate import Accelerator
 
 from library import train_util
-from library.anima import training as anima_train_utils
+from library.training.preview_live_decode import decode_live_preview_for_family
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +94,10 @@ def decode_deferred_samples_safely(
                     "Could not switch optimizer to eval before sample decode: "
                     f"{exc}"
                 )
-        anima_train_utils.decode_samples_for_live_preview(
-            accelerator, args, vae,
+        decode_live_preview_for_family(
+            accelerator,
+            args,
+            vae,
             dit=accelerator.unwrap_model(loop_state.unet),
             network=getattr(loop_state, "network", None),
         )

@@ -2,74 +2,49 @@
 
 from __future__ import annotations
 
-from library.models.family_registry import dispatch_model_family, get_model_family_spec
+from library.models.family_plugins import (
+    InferenceRunner,
+    get_family_plugin,
+    validate_runner_contract,
+)
+from library.models.family_registry import get_model_family_spec
 
 
-def _validate_anima(args, *, mode: str) -> None:
-    return None
+_REFERENCE_CONDITIONING_OPTIONS = (
+    ("qwen_image_2_1_task", "--qwen_image_2_1_task"),
+    ("reference_image", "--reference_image"),
+    ("reference_images", "--reference_images"),
+)
 
 
-def _validate_krea2(args, *, mode: str) -> None:
-    from library.models.krea2_raw import inference_runner
-
-    inference_runner.validate_krea2_inference_args(args, mode=mode)
-
-
-def _validate_moss(args, *, mode: str) -> None:
-    raise SystemExit("MOSS-Image v1 supports training previews only.")
-
-
-def _validate_z_image(args, *, mode: str) -> None:
-    raise SystemExit("Z-Image inference is not implemented in the training v1 path.")
-
-
-def _install_anima_strategies(args) -> None:
-    from library.anima import strategy as strategy_anima
-    from library.anima import text_strategies
-    from library.inference.text import MAX_CROSSATTN_TOKENS
-
-    tokenize_strategy = strategy_anima.AnimaTokenizeStrategy(
-        qwen3_path=args.text_encoder,
-        t5_tokenizer_path=None,
-        qwen3_max_length=MAX_CROSSATTN_TOKENS,
-        t5_max_length=MAX_CROSSATTN_TOKENS,
-    )
-    text_strategies.TokenizeStrategy.set_strategy(tokenize_strategy)
-    encoding_strategy = strategy_anima.AnimaTextEncodingStrategy()
-    text_strategies.TextEncodingStrategy.set_strategy(encoding_strategy)
-
-
-def _install_krea2_strategies(args) -> None:
-    # Krea single-prompt inference owns its strategies inside inference_runner.
-    return None
-
-
-def _install_z_image_strategies(args) -> None:
-    return None
-
-
-def _validate_qwen_image_2_1(args, *, mode: str) -> None:
-    from library.models.qwen_image_2_1 import inference_runner
-
-    inference_runner.validate_qwen_image_2_1_inference_args(args, mode=mode)
-
-
-def _install_qwen_image_2_1_strategies(args) -> None:
-    # Standalone Qwen inference owns tokenizer/text encoding inside its runner;
-    # the global Anima strategy singletons must remain untouched.
-    return None
+def _reject_unsupported_reference_options(
+    args,
+    runner: InferenceRunner,
+) -> None:
+    if getattr(runner, "supports_reference_conditioning", False):
+        return
+    offenders = [
+        flag
+        for name, flag in _REFERENCE_CONDITIONING_OPTIONS
+        if getattr(args, name, None) is not None
+    ]
+    if offenders:
+        raise SystemExit(
+            "Qwen task/reference flags require a family runner that "
+            "supports reference conditioning; use --model_family "
+            f"qwen_image_2_1 (got {', '.join(offenders)})."
+        )
 
 
 def validate_inference_family_options(args, family: str) -> None:
-    if family != "qwen_image_2_1" and any(
-        getattr(args, name, None) is not None
-        for name in ("qwen_image_2_1_task", "reference_image", "reference_images")
-    ):
-        raise SystemExit("Qwen task/reference flags require --model_family qwen_image_2_1.")
+    """Validate family-independent option ownership before mode dispatch."""
+    _reject_unsupported_reference_options(args, build_inference_runner(args, family))
 
 
-def prepare_inference_family(args, family: str, mode: str) -> None:
-    validate_inference_family_options(args, family)
+def prepare_inference_family(args, family: str, mode: str) -> InferenceRunner:
+    """Build, validate, and prepare a family runner exactly once."""
+    runner = build_inference_runner(args, family)
+    _reject_unsupported_reference_options(args, runner)
     spec = get_model_family_spec(family)
     if mode not in spec.supported_inference_modes:
         supported = (
@@ -82,27 +57,16 @@ def prepare_inference_family(args, family: str, mode: str) -> None:
             f"supported: {supported}."
         )
 
-    validator = dispatch_model_family(
-        family,
-        operation="inference capability validation",
-        handlers={
-            "anima": _validate_anima,
-            "krea2_raw": _validate_krea2,
-            "z_image": _validate_z_image,
-            "qwen_image_2_1": _validate_qwen_image_2_1,
-            "moss_image": _validate_moss,
-        },
-    )
-    validator(args, mode=mode)
-    installer = dispatch_model_family(
-        family,
-        operation="inference text strategy",
-        handlers={
-            "anima": _install_anima_strategies,
-            "krea2_raw": _install_krea2_strategies,
-            "z_image": _install_z_image_strategies,
-            "qwen_image_2_1": _install_qwen_image_2_1_strategies,
-            "moss_image": _install_z_image_strategies,
-        },
-    )
-    installer(args)
+    runner.validate(args, mode=mode)
+    runner.prepare(args, mode=mode)
+    return runner
+
+
+def build_inference_runner(args, family: str) -> InferenceRunner:
+    """Build the registered family's inference facade through its plugin."""
+    plugin = get_family_plugin(family)
+    builder = getattr(plugin, "build_inference_runner", None)
+    if not callable(builder):
+        raise RuntimeError(f"Model family plugin {family!r} has no inference runner")
+    runner = builder(args)
+    return validate_runner_contract(runner, family)

@@ -51,8 +51,10 @@ class ZImagePlugin:
             batch_size,
             device=device,
             dtype=torch.float32,
-            shift=float(getattr(args, "discrete_flow_shift", spec.image_test_flow_shift_default)
-                        or spec.image_test_flow_shift_default),
+            shift=float(
+                getattr(args, "discrete_flow_shift", spec.image_test_flow_shift_default)
+                or spec.image_test_flow_shift_default
+            ),
         )
 
     def prepare_conditions(self, batch, conditions, *, context, is_train):
@@ -69,7 +71,40 @@ class ZImagePlugin:
     def forward_velocity_4d(self, dit, noisy_4d, conditions, sigmas, *, context):
         from library.models.z_image.family import forward_for_loss
 
-        return forward_for_loss(dit, noisy_4d.unsqueeze(2), conditions, sigmas).squeeze(2)
+        return forward_for_loss(
+            dit, noisy_4d.unsqueeze(2), conditions, sigmas
+        ).squeeze(2)
+
+    def build_inference_runner(self, args):
+        from library.models.z_image.inference_runner import ZImageInferenceRunner
+
+        return ZImageInferenceRunner()
+
+    def decode_preview_samples(
+        self,
+        accelerator,
+        args,
+        vae,
+        *,
+        dit=None,
+        network=None,
+    ):
+        from library.models.z_image.training_preview import decode_pending_samples
+        from library.training.preview_live_decode import decode_live_preview
+
+        return decode_live_preview(
+            accelerator,
+            args,
+            vae,
+            dit=dit,
+            network=network,
+            decode_pending_samples=decode_pending_samples,
+        )
+
+    def decode_pending_samples(self, accelerator, args, vae):
+        from library.models.z_image.training_preview import decode_pending_samples
+
+        return decode_pending_samples(accelerator, args, vae)
 
     def build_tokenize_strategy(self, args):
         from library.models.z_image.strategy import ZImageTokenizeStrategy

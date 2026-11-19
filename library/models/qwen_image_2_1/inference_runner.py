@@ -12,6 +12,7 @@ from typing import Any, Optional, Tuple
 import torch
 
 from library.inference.output import _build_png_info, get_time_flag, save_latent
+from library.inference.family_runner import FamilyInferenceRunner
 from library.models.qwen_image_2_1.attention_backend import (
     normalize_qwen_image_2_1_attention_mode,
     prepare_qwen_image_2_1_attention,
@@ -31,6 +32,64 @@ from library.models.qwen_image_2_1.weights import (
 from library.runtime.device import clean_memory_on_device
 
 logger = logging.getLogger(__name__)
+
+
+class QwenImage21InferenceRunner:
+    family = "qwen_image_2_1"
+    supports_reference_conditioning = True
+
+    @staticmethod
+    def validate(args, *, mode: str = "single") -> None:
+        validate_qwen_image_2_1_inference_args(args, mode=mode)
+
+    @staticmethod
+    def prepare(args, *, mode: str = "single") -> None:
+        return None
+
+    def generate_latent(self, args, gen_settings):
+        self.validate(args, mode="single")
+        device = gen_settings.device
+        runtime_dtype = gen_settings.runtime_dtype
+        from library.models.qwen_image_2_1.inference_conditions import (
+            prepare_qwen_image_2_1_conditions,
+        )
+
+        runtime = FamilyInferenceRunner(
+            self.family,
+            device,
+            cleanup=clean_memory_on_device,
+        )
+        positive, negative, reference = runtime.run_stage(
+            "conditions",
+            lambda: None,
+            lambda _: prepare_qwen_image_2_1_conditions(
+                args,
+                device,
+                runtime_dtype,
+            ),
+        )
+        return runtime.run_stage(
+            "dit",
+            lambda: load_qwen_image_2_1_dit_for_inference(
+                args,
+                device,
+                runtime_dtype,
+            ),
+            lambda loaded: generate_qwen_image_2_1(
+                args,
+                loaded[0],
+                loaded[1],
+                positive,
+                negative,
+                device,
+                args.seed,
+                runtime_dtype,
+                reference=reference,
+            ),
+        )
+
+    def save_output(self, args, latent, device):
+        return save_qwen_image_2_1_output(args, latent, device)
 
 
 _UNSUPPORTED_ANIMA_OPTIONS = {
@@ -330,8 +389,13 @@ def save_qwen_image_2_1_output(
     # The standalone caller releases DiT and clears its allocator before this
     # stage, so decode can use the selected runtime device without co-residency.
     logger.info("Qwen Image 2.1 VAE decoding on %s", device)
-    vae = load_qwen_image_2_1_vae(args.vae, dtype=vae_dtype, device=device)
-    try:
+    runtime = FamilyInferenceRunner(
+        "qwen_image_2_1",
+        device,
+        cleanup=clean_memory_on_device,
+    )
+
+    def save_decoded_image(vae):
         with torch.inference_mode():
             image = decode_latent(vae, latent)
         os.makedirs(args.save_path, exist_ok=True)
@@ -341,7 +405,9 @@ def save_qwen_image_2_1_output(
         path = Path(args.save_path) / f"{stem}.png"
         image.save(path, pnginfo=_build_png_info(args, args.seed, stem))
         logger.info("Qwen Image 2.1 image saved to: %s", path)
-    finally:
-        del vae
-        gc.collect()
-        clean_memory_on_device(device)
+
+    runtime.run_stage(
+        "vae",
+        lambda: load_qwen_image_2_1_vae(args.vae, dtype=vae_dtype, device=device),
+        save_decoded_image,
+    )

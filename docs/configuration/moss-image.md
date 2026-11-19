@@ -55,7 +55,9 @@ MOSS 不使用 P2 加权，方法配置固定 `p2_gamma=0`。默认每轮保存�
 保留最近两个状态；状态包含 optimizer、scheduler 和训练步数，可用于中断后续训。
 
 训练预览使用 Euler，默认 50 步、CFG 3、shift 5。训练 shift 与预览 shift 分开处理。
-预览默认值由 MOSS 专属预览实现提供；普通推理/image-test 的支持以 registry 为准。
+预览默认值由 MOSS 专属预览实现提供。独立 CLI 推理以族 runner 注册的
+`single` + `euler` 为边界；`batch`/`interactive`、LoRA 与 WebUI `image-test`
+仍在独立接线验收范围内。
 
 配置预检（`library/training/moss_compat.py`）明确拒绝 compile、DiT NF4、其他 adapter、
 选择性/卸载 checkpoint、自适应精度、AUTO block swap、weighted caption、TE 训练和高级损失。

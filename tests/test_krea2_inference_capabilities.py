@@ -93,8 +93,7 @@ def test_inference_main_rejects_krea_modes_before_anima_strategy(
     )
     monkeypatch.setattr(inference, "parse_args", lambda: args)
     monkeypatch.setattr(
-        family_runtime,
-        "_install_anima_strategies",
+        "library.inference.anima_legacy_runner.AnimaLegacyInferenceRunner.prepare",
         lambda *args, **kwargs: pytest.fail("Anima strategy must not be installed"),
     )
 

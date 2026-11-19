@@ -202,7 +202,7 @@ def test_facade_loads_dit_after_conditions_and_releases_it(monkeypatch, fail):
         return ((), (), (torch.zeros(1, 64, 2, 2),))
 
     def load(*args):
-        assert events == ["conditions"]
+        assert events == ["conditions", "clean"]
         events.append("dit")
         model = _Resident()
         resident.append(weakref.ref(model))
@@ -217,12 +217,16 @@ def test_facade_loads_dit_after_conditions_and_releases_it(monkeypatch, fail):
     monkeypatch.setattr(conditions, "prepare_qwen_image_2_1_conditions", prepare)
     monkeypatch.setattr(inference_runner, "load_qwen_image_2_1_dit_for_inference", load)
     monkeypatch.setattr(inference_runner, "generate_qwen_image_2_1", generate)
-    monkeypatch.setattr(inference, "clean_memory_on_device", lambda *a: events.append("clean"))
+    monkeypatch.setattr(
+        inference_runner,
+        "clean_memory_on_device",
+        lambda *a: events.append("clean"),
+    )
     settings = SimpleNamespace(device=torch.device("cpu"), runtime_dtype=torch.bfloat16)
     if fail:
         with pytest.raises(RuntimeError, match="sampling failed"):
             inference._generate_qwen_image_2_1_latent(_args(), settings)
     else:
         assert inference._generate_qwen_image_2_1_latent(_args(), settings).shape == (1, 64, 4, 6)
-    assert events == ["conditions", "dit", "clean"]
+    assert events == ["conditions", "clean", "dit", "clean"]
     assert resident[0]() is None

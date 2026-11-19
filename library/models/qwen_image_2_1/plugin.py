@@ -47,9 +47,7 @@ class QwenImage21Plugin:
     def sample_sigmas(self, batch_size, height, width, args, device, *, context):
         from library.models.qwen_image_2_1.family import sample_sigmas
 
-        return sample_sigmas(
-            batch_size, height * width, device=device,
-        )
+        return sample_sigmas(batch_size, height * width, device=device)
 
     def prepare_conditions(self, batch, conditions, *, context, is_train):
         from library.models.qwen_image_2_1.family import prepare_training_conditions
@@ -70,6 +68,37 @@ class QwenImage21Plugin:
             reference_latents=conditions.reference_latents,
             image_slot_mask=conditions.image_slot_mask,
         )
+
+    def build_inference_runner(self, args):
+        from library.models.qwen_image_2_1.inference_runner import QwenImage21InferenceRunner
+
+        return QwenImage21InferenceRunner()
+
+    def decode_preview_samples(
+        self,
+        accelerator,
+        args,
+        vae,
+        *,
+        dit=None,
+        network=None,
+    ):
+        from library.models.qwen_image_2_1.preview_decode import decode_pending_samples
+        from library.training.preview_live_decode import decode_live_preview
+
+        return decode_live_preview(
+            accelerator,
+            args,
+            vae,
+            dit=dit,
+            network=network,
+            decode_pending_samples=decode_pending_samples,
+        )
+
+    def decode_pending_samples(self, accelerator, args, vae):
+        from library.models.qwen_image_2_1.preview_decode import decode_pending_samples
+
+        return decode_pending_samples(accelerator, args, vae)
 
     def build_tokenize_strategy(self, args):
         from library.models.qwen_image_2_1.strategy import (

@@ -116,9 +116,16 @@ def finish_preview_batch(
         raise RuntimeError(failure_message)
 
     if decode is None:
-        from library.anima.training import decode_samples_for_live_preview
+        from library.training.preview_live_decode import decode_live_preview_for_family
 
-        decode = decode_samples_for_live_preview
+        def decode(accelerator, args, vae, *, dit=None, network=None):
+            return decode_live_preview_for_family(
+                accelerator,
+                args,
+                vae,
+                dit=dit,
+                network=network,
+            )
     accelerator.wait_for_everyone()
     decode_error: Optional[Exception] = None
     try:

@@ -351,11 +351,11 @@ def test_krea2_sample_lifecycle_restores_training_state(monkeypatch, tmp_path) -
         "_sample_image",
         lambda *args, **kwargs: sampled.append((args, kwargs)),
     )
-    from library.anima import training as anima_training
+    from library.models.family_plugins import get_family_plugin
 
     monkeypatch.setattr(
-        anima_training,
-        "decode_samples_for_live_preview",
+        get_family_plugin("krea2_raw"),
+        "decode_preview_samples",
         lambda *args, **kwargs: decoded.append((args, kwargs)),
     )
     rng_before = torch.get_rng_state().clone()

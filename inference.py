@@ -35,8 +35,10 @@ from library.inference.precision import (
     resolve_text_encoder_dtype,
 )
 from library.env import KNOWN_MODEL_FAMILIES, resolve_model_family
-from library.models.family_registry import dispatch_model_family
-from library.inference.family_runtime import prepare_inference_family, validate_inference_family_options
+from library.inference.family_runtime import (
+    prepare_inference_family,
+    validate_inference_family_options,
+)
 
 # Side-effect import: registers spectrum_denoise with library.inference.generation
 # so --spectrum dispatches without library.inference holding a hard edge into networks/.
@@ -71,8 +73,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         choices=list(KNOWN_MODEL_FAMILIES),
         help="DiT model family (anima default; krea2_raw and qwen_image_2_1 "
-        "support single-prompt inference; z_image and moss_image have no "
-        "standalone inference registered). "
+        "support single-prompt inference; z_image and moss_image support "
+        "single-prompt Euler inference through their family plugins). "
         "Unset falls back to env ANIMA_MODEL_FAMILY then 'anima'.",
     )
     parser.add_argument("--qwen_image_2_1_task", choices=["t2i", "edit"], default=None)
@@ -1005,67 +1007,31 @@ def process_interactive(args: argparse.Namespace) -> None:
 
 
 def _generate_krea2_latent(args, gen_settings) -> torch.Tensor:
-    """Krea-2-Raw 单 prompt 推理路径 (family dispatch).
+    """Compatibility shim; Krea implementation lives in its family plugin."""
+    from library.models.krea2_raw.inference_runner import Krea2InferenceRunner
 
-    绕过 anima 的 generate() (硬编码 Anima DiT 加载/forward/denoise), 走
-    library.models.krea2_raw.inference_runner 的独立路径: 加载 SingleStreamDiT
-    + attach LoRA + Qwen3-VL 文本编码 + mu-shift Euler ODE 采样. 返回 5D latent,
-    VAE decode + 存图仍走 main 的 anima save_output 路径 (R2: VAE 同一)。
-    """
-    from library.models.krea2_raw import inference_runner
-
-    device = gen_settings.device
-    runtime_dtype = gen_settings.runtime_dtype
-    inference_runner.validate_krea2_inference_args(args, mode="single")
-
-    # Lazy loading 不变量 (AGENTS.md): TE -> encode -> free -> DiT.
-    # 26GB DiT + 8.9GB TE 同时驻留 PG199 会 OOM, 必须 TE 先释放再加载 DiT.
-    cond_emb, uncond_emb = inference_runner.prepare_krea2_text(
-        args, device, runtime_dtype
-    )
-    dit, network = inference_runner.load_krea2_dit_for_inference(
-        args, device, runtime_dtype
-    )
-    latent = inference_runner.generate_krea2(
-        args, dit, network, cond_emb, uncond_emb, device, args.seed, runtime_dtype
-    )
-    return latent
+    return Krea2InferenceRunner().generate_latent(args, gen_settings)
 
 
 def _generate_moss_latent(args, gen_settings) -> torch.Tensor:
-    from library.models.moss_image.integration import reject_inference
+    from library.models.moss_image.inference_runner import MossImageInferenceRunner
 
-    return reject_inference(args, gen_settings)
+    return MossImageInferenceRunner().generate_latent(args, gen_settings)
 
 
 def _generate_z_image_latent(args, gen_settings) -> torch.Tensor:
-    raise RuntimeError("Z-Image inference is not implemented in the training v1 path.")
+    from library.models.z_image.inference_runner import ZImageInferenceRunner
+
+    return ZImageInferenceRunner().generate_latent(args, gen_settings)
 
 
 def _generate_qwen_image_2_1_latent(args, gen_settings) -> torch.Tensor:
-    """Qwen Image 2.1 standalone T2I/Edit family path."""
-    from library.models.qwen_image_2_1 import inference_runner
-
-    device = gen_settings.device
-    runtime_dtype = gen_settings.runtime_dtype
-    inference_runner.validate_qwen_image_2_1_inference_args(args, mode="single")
-    from library.models.qwen_image_2_1.inference_conditions import prepare_qwen_image_2_1_conditions
-
-    positive, negative, reference = prepare_qwen_image_2_1_conditions(
-        args, device, runtime_dtype
+    """Compatibility shim; Qwen implementation lives in its family plugin."""
+    from library.models.qwen_image_2_1.inference_runner import (
+        QwenImage21InferenceRunner,
     )
-    dit, network = inference_runner.load_qwen_image_2_1_dit_for_inference(
-        args, device, runtime_dtype
-    )
-    try:
-        return inference_runner.generate_qwen_image_2_1(
-            args, dit, network, positive, negative, device, args.seed, runtime_dtype,
-            reference=reference,
-        )
-    finally:
-        del network, dit
-        gc.collect()
-        clean_memory_on_device(device)
+
+    return QwenImage21InferenceRunner().generate_latent(args, gen_settings)
 
 
 def main():
@@ -1155,7 +1121,7 @@ def main():
         inference_mode = (
             "batch" if args.from_file else "interactive" if args.interactive else "single"
         )
-        prepare_inference_family(args, model_family, inference_mode)
+        runner = prepare_inference_family(args, model_family, inference_mode)
 
         if args.from_file:
             # Batch mode from file
@@ -1174,40 +1140,8 @@ def main():
             # generate() no longer writes the resolved seed back to args, so
             # pin it here for save_output()'s filename + metadata.
             args.seed = resolve_seed(args)
-            generator = dispatch_model_family(
-                model_family,
-                operation="single-prompt inference generation",
-                handlers={
-                    "anima": generate,
-                    "krea2_raw": _generate_krea2_latent,
-                    "z_image": _generate_z_image_latent,
-                    "qwen_image_2_1": _generate_qwen_image_2_1_latent,
-                    "moss_image": _generate_moss_latent,
-                },
-            )
-            latent = generator(args, gen_settings)
-
-            clean_memory_on_device(device)
-
-            if model_family == "qwen_image_2_1":
-                from library.models.qwen_image_2_1.inference_runner import (
-                    save_qwen_image_2_1_output,
-                )
-
-                save_qwen_image_2_1_output(args, latent, device)
-                logger.info("Done!")
-                return
-
-            vae = qwen_image_autoencoder_kl.load_vae(
-                args.vae,
-                device="cpu",
-                disable_mmap=True,
-                spatial_chunk_size=args.vae_chunk_size,
-                disable_cache=args.vae_disable_cache,
-            )
-            vae.to(dtype=gen_settings.runtime_dtype)
-            vae.eval()
-            save_output(args, vae, latent, device)
+            latent = runner.generate_latent(args, gen_settings)
+            runner.save_output(args, latent, device)
 
     logger.info("Done!")
 

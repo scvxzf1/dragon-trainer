@@ -55,6 +55,37 @@ class MossImagePlugin:
 
         return forward_for_loss(dit, noisy_4d, conditions, sigmas)
 
+    def build_inference_runner(self, args):
+        from library.models.moss_image.inference_runner import MossImageInferenceRunner
+
+        return MossImageInferenceRunner()
+
+    def decode_preview_samples(
+        self,
+        accelerator,
+        args,
+        vae,
+        *,
+        dit=None,
+        network=None,
+    ):
+        from library.models.moss_image.training_preview import decode_pending_samples
+        from library.training.preview_live_decode import decode_live_preview
+
+        return decode_live_preview(
+            accelerator,
+            args,
+            vae,
+            dit=dit,
+            network=network,
+            decode_pending_samples=decode_pending_samples,
+        )
+
+    def decode_pending_samples(self, accelerator, args, vae):
+        from library.models.moss_image.training_preview import decode_pending_samples
+
+        return decode_pending_samples(accelerator, args, vae)
+
     def build_tokenize_strategy(self, args):
         from library.models.moss_image.strategy import MossImageTokenizeStrategy
 

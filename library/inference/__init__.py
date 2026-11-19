@@ -45,6 +45,9 @@ _ATTR_TO_MODULE = {
     "generate_body": "generation",
     "generate_body_tiled": "generation",
     "generate": "generation",
+    # family runtime
+    "FamilyInferenceRunner": "family_runner",
+    "is_cuda_oom": "family_runner",
 }
 
 

@@ -1303,30 +1303,6 @@ def _sample_image_inference(
     return latent_path
 
 
-def _module_device(module) -> Optional[torch.device]:
-    if module is None:
-        return None
-    try:
-        return next(module.parameters()).device
-    except StopIteration:
-        return None
-
-
-def _is_cuda_oom(exc: BaseException) -> bool:
-    return isinstance(exc, torch.cuda.OutOfMemoryError) or (
-        "out of memory" in str(exc).lower()
-    )
-
-
-def _restore_dit_training_device(dit, device: torch.device) -> None:
-    if getattr(dit, "blocks_to_swap", 0) and hasattr(
-        dit, "move_to_device_except_swap_blocks"
-    ):
-        dit.move_to_device_except_swap_blocks(device)
-    else:
-        dit.to(device)
-
-
 def decode_samples_for_live_preview(
     accelerator: Accelerator,
     args,
@@ -1335,65 +1311,21 @@ def decode_samples_for_live_preview(
     dit=None,
     network=None,
 ) -> None:
-    """Best-effort PNG decode right after sampling so the WebUI can refresh live."""
-    if vae is None or not accelerator.is_main_process:
-        return
-    latents_dir = os.path.join(args.output_dir, "sample", "latents")
-    if not os.path.isdir(latents_dir) or not any(
-        name.endswith(".pt") for name in os.listdir(latents_dir)
-    ):
-        return
+    """Compatibility shim for the family-neutral live decode lifecycle."""
+    from library.training.preview_live_decode import decode_live_preview
 
-    dit_device = _module_device(dit)
-    network_device = _module_device(network)
-    offloader = getattr(dit, "offloader", None)
-    parked = False
-    # Offloader placement owns active ConvRot carriers: ordinary dit.to(cpu)
-    # cannot retire them. Transfer failures are fatal, outside decode's retry.
-    if offloader is not None and dit_device is not None:
-        from library.runtime.block_swap_lifecycle import model_swap_blocks
-
-        parked_blocks = model_swap_blocks(dit)
-        parked = offloader.park_blocks_on_cpu(parked_blocks)
-        if not parked:
-            raise RuntimeError("Live decode requires blocks that are not already CPU-parked")
-    try:
-        if dit is not None and dit_device is not None:
-            dit.to("cpu")
-        if network is not None and network_device is not None:
-            network.to("cpu")
-        clean_memory_on_device(accelerator.device)
-        decode_pending_samples(accelerator, args, vae)
-    except Exception as exc:  # noqa: BLE001 - keep training; final cleanup can retry
-        from library.training.preview_decode_policy import PreviewDecodeRestoreError
-
-        if isinstance(exc, PreviewDecodeRestoreError):
-            raise
-        if _is_cuda_oom(exc):
-            logger.warning(
-                "Live sample decode skipped because CUDA memory is tight; "
-                "latent previews will be decoded at stop/end."
-            )
-        else:
-            logger.error(f"Live sample decode failed; will retry at stop/end: {exc}")
-    finally:
-        try:
-            if dit is not None and dit_device is not None:
-                _restore_dit_training_device(dit, dit_device)
-        finally:
-            try:
-                if parked:
-                    offloader.restore_parked_blocks(parked_blocks)
-            finally:
-                if network is not None and network_device is not None:
-                    network.to(network_device)
-        if dit is not None and hasattr(dit, "switch_block_swap_for_training"):
-            dit.switch_block_swap_for_training()
-        clean_memory_on_device(accelerator.device)
+    return decode_live_preview(
+        accelerator,
+        args,
+        vae,
+        dit=dit,
+        network=network,
+        decode_pending_samples=decode_pending_samples,
+    )
 
 
-def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
-    """Decode the sample latents stashed during training into PNGs.
+def decode_anima_pending_samples(accelerator: Accelerator, args, vae) -> None:
+    """Decode Anima-layout sample latents into PNGs.
 
     Used both for live previews during training and as a final stop/end cleanup.
     Applies the selected VAE memory policy and decodes every
@@ -1404,28 +1336,16 @@ def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
     """
     if vae is None:
         return
-    from library.env import resolve_model_family
-
-    if resolve_model_family(args) == "qwen_image_2_1":
-        from library.models.qwen_image_2_1.preview_decode import decode_pending_samples as decode_qwen_samples
-
-        decode_qwen_samples(accelerator, args, vae)
-        return
-    if resolve_model_family(args) == "moss_image":
-        from library.models.moss_image.training_preview import decode_pending_samples as decode_moss_samples
-
-        decode_moss_samples(accelerator, args, vae)
-        return
-    if resolve_model_family(args) == "z_image":
-        from library.models.z_image.training_preview import (
-            decode_pending_samples as decode_z_image_samples,
-        )
-
-        decode_z_image_samples(accelerator, args, vae)
-        return
     from library.training.preview_decode import decode_anima_latent, decode_pending_samples as decode_shared_samples
 
     decode_shared_samples(accelerator, args, vae, decode_latent=decode_anima_latent, wandb_enabled=True)
+
+
+def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
+    """Compatibility entrypoint; dispatch through the active family plugin."""
+    from library.training.preview_live_decode import decode_pending_samples_for_family
+
+    return decode_pending_samples_for_family(accelerator, args, vae)
 
 
 def sample_image_to_tensor(

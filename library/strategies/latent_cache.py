@@ -389,4 +389,3 @@ class FamilyLatentCacheStrategy(LatentsCachingStrategy):
 
             if not datasets_base.HIGH_VRAM:
                 clean_memory_on_device(parameter.device)
-

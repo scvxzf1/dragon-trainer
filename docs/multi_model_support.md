@@ -14,12 +14,12 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `anima` | `anima` | 默认生产模型族（T2I） | 完整 LoRA 家族 + Method Adapters | 支持（T2I） | `single` / `batch` / `interactive`；`euler` / `er_sde` / `lcm` | `flash` / `torch` / `mem_efficient` / `sageattn` / `flex` / `xformers` / `sdpa` | **已接线**（28/40 `blocks` 均分） |
 | `krea2_raw` | `krea2`, `krea2_raw` | 第二生产模型族（T2I） | 开放网络变体选择（禁用 Method Adapters） | 支持（T2I） | `single` + `euler` | `flash` / `torch` / `sdpa`（含 `cudnn` 别名） | **已接线**（28 `blocks` 13/15 切分，支持 `pipeline_parallel_blocks_to_swap`） |
-| `z_image` | `zimage`, `z_image` | 训练与训练预览 v1（T2I） | 开放网络变体选择（禁用 Method Adapters；真机证据以 plain LoRA 为主） | 支持（T2I） | 未注册（空集合） | `flash` (`flash_varlen`) / `torch` / `sdpa`（BF16） | 仅拓扑规划（`runtime_available=False`，入口拒绝） |
+| `z_image` | `zimage`, `z_image` | 训练与训练预览 v1（T2I） | 开放网络变体选择（禁用 Method Adapters；真机证据以 plain LoRA 为主） | 支持（T2I） | `single` + `euler`（族 runner 入口） | `flash` (`flash_varlen`) / `torch` / `sdpa`（BF16） | 仅拓扑规划（`runtime_available=False`，入口拒绝） |
 | `qwen_image_2_1` | `qwen_image_2_1`, `qwen_image_21`, `qwen21` | T2I / Edit 训练与预览（Edit 支持 1–4 张参考图） | `plain_lora_only=True`：T2I 允许 `lora`/`lokr`/`loha`；Edit 与独立推理仅 `lora` | 支持（T2I / Edit，最多 4 图） | `single` + `euler`（T2I / Edit，最多 1 个 plain LoRA） | `torch` / `sdpa` / `flash`（BF16，默认 `torch`） | 未声明（`None`，入口拒绝） |
-| `moss_image` | `moss`, `moss_image` | 文生图 plain LoRA 首版（T2I） | `plain_lora_only=True`：仅 `lora` | 支持（T2I，Euler shift=5） | 未注册（空集合） | `torch` / `sdpa` | **已接线**（42 `layers` 21/21 均分） |
+| `moss_image` | `moss`, `moss_image` | 文生图 plain LoRA 首版（T2I） | `plain_lora_only=True`：仅 `lora` | 支持（T2I，Euler shift=5） | `single` + `euler`（族 runner 入口） | `torch` / `sdpa` | **已接线**（42 `layers` 21/21 均分） |
 
 说明：
-- WebUI 模型选择下拉框暴露全部 5 个模型族，但训练预览支持不代表通用生图测试（WebUI `image-test`）或 `batch`/`interactive` 独立推理已可用。
+- WebUI 模型选择下拉框暴露全部 5 个模型族；独立 CLI 推理目前只开放各族 runner 声明的 `single` 模式，`batch`/`interactive` 仍仅 Anima 支持，WebUI `image-test` 的族接线需单独验收。
 - Anima、Krea-2 与 Z-Image 的 `supported_network_specs=None` 表示接口层允许尝试网络变体（不套用“非 Anima 仅 plain LoRA”白名单），不代表所有变体组合已完成长训质量验收；`supports_method_adapters=False` 仍拦截 IP-Adapter、EasyControl、BYG 等依赖专属训练 hook 的方法。
 
 ## Pipeline Parallel（PP v0）现状与契约
@@ -71,7 +71,7 @@ LoRA checkpoint 通过 `ss_model_family` metadata stamp（未标记旧权重视�
 ### Z-Image (`z_image`)
 - 起始配置：`configs/methods/z_image_lora.toml`。
 - 官方 Diffusers 30-layer transformer + Qwen3 ChatML 倒数第二层 512-token 缓存 + Flux VAE（shift `6`）；`blocks_to_swap` 支持 `0` 或 `1..28`（仅交换 30 个 main layers，refiner 与首尾层常驻）。
-- 要求所有层级 `caption_dropout_rate = 0`；不支持 `torch.compile`、selective/offloaded checkpoint、`base_compute="nf4"`（预量化混合文件除外）及独立推理。
+- 要求所有层级 `caption_dropout_rate = 0`；不支持 `torch.compile`、selective/offloaded checkpoint、`base_compute="nf4"`（预量化混合文件除外）。独立 CLI 推理走 `library/models/z_image/inference_runner.py`，仅 `single` + `euler`；`batch`/`interactive` 与 LoRA 尚未开放。
 
 ### Qwen Image 2.1 (`qwen_image_2_1`)
 - 起始配置：`configs/methods/qwen_image_2_1_lora.toml`。组件为 32-block DiT、Qwen3-VL 8B 与 64-channel RGBA VAE。单文件 TE 需同级或上层存在匹配的 Qwen3-VL `tokenizer/` 目录（ComfyUI `qwen25_tokenizer` 仅作词表不等价的兼容回退）。
@@ -82,7 +82,7 @@ LoRA checkpoint 通过 `ss_model_family` metadata stamp（未标记旧权重视�
 ### MOSS-Image (`moss_image`)
 - 起始配置：`configs/methods/moss_image_lora.toml`（及分辨率/文本上限档位 `_t768`、`_t512`、`_tecap1024`，完整使用说明见 [MOSS-Image 配置](configuration/moss-image.md)）。
 - 42-layer 4D DiT（training shift=1，预览 Euler shift=5），仅支持文生图 plain LoRA、`torch`/`sdpa` attention、full checkpoint、`blocks_to_swap = 0..40` 及全层级 `caption_dropout_rate = 0`。
-- 文本编码器默认 `moss_te_quantization="nf4"`（可选 `"bf16"`），缓存保存真实 token 长度并将 `max_token_length`（`1..4096`）写入 `moss_image_te_v2` 身份；切换量化方式或 `max_token_length` 必须重建文本缓存。支持双卡 1F1B PP 训练会话，不支持 `torch.compile`、DiT NF4 或独立 CLI 推理。
+- 文本编码器默认 `moss_te_quantization="nf4"`（可选 `"bf16"`），缓存保存真实 token 长度并将 `max_token_length`（`1..4096`）写入 `moss_image_te_v2` 身份；切换量化方式或 `max_token_length` 必须重建文本缓存。支持双卡 1F1B PP 训练会话，不支持 `torch.compile` 或 DiT NF4。独立 CLI 推理走 `library/models/moss_image/inference_runner.py`，仅 `single` + `euler`，不支持 LoRA 与 `batch`/`interactive`。
 
 ## 仍存在的架构耦合与修改清单
 
@@ -91,6 +91,6 @@ LoRA checkpoint 通过 `ss_model_family` metadata stamp（未标记旧权重视�
 | Family Registry | 静态注册 5 个模型族，`dispatch_model_family` 强制全覆盖 | 新增或扩展模型族必须补齐全部 handler、前端 `model-family.js` 离线目录与 fail-closed 测试 |
 | 训练辅助层 | `model_loading.py`、`noise_target.py`、`train_session.py` 仍含显式模型族分支 | 新模型族走显式分支与专属 `family.py` 校验，不得伪装成 Anima 5D 布局或借用 Anima fallback |
 | 兼容门禁 | `compat_matrix.py` + `moss_compat.py` + `pp/gate.py` 共享 CLI/WebUI 预检 | 不支持的能力必须明确拒绝或纳入经审计的 `compat_unverified_policy` 分类，禁止无声忽略 |
-| 推理与预览 | Anima、Krea-2、Qwen 有独立推理；Z-Image、MOSS 仅有训练内预览 | `supported_inference_modes` 为空时必须拒绝，不得借用 Anima 采样器 |
+| 推理与预览 | Anima、Krea-2、Qwen、Z-Image、MOSS 各有族 runner；通用入口只通过插件构建并调用 `validate/prepare/generate_latent/save_output` | 新族必须补齐插件与 runner 方法面；`supported_inference_modes` 为空时必须拒绝，不得借用 Anima 采样器 |
 
 相关核心回归测试：`tests/test_model_family_registry.py`、`tests/test_model_family_fail_closed.py`、`tests/test_adapter_family_isolation.py`、`tests/test_pipeline_parallel_multimodel.py`、`tests/test_compat_unverified_policy.py`。

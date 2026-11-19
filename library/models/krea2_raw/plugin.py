@@ -70,6 +70,37 @@ class Krea2Plugin:
 
         return loss_weighting(sigmas, latents, args)
 
+    def build_inference_runner(self, args):
+        from library.models.krea2_raw.inference_runner import Krea2InferenceRunner
+
+        return Krea2InferenceRunner()
+
+    def decode_preview_samples(
+        self,
+        accelerator,
+        args,
+        vae,
+        *,
+        dit=None,
+        network=None,
+    ):
+        from library.models.krea2_raw.training_preview import decode_pending_samples
+        from library.training.preview_live_decode import decode_live_preview
+
+        return decode_live_preview(
+            accelerator,
+            args,
+            vae,
+            dit=dit,
+            network=network,
+            decode_pending_samples=decode_pending_samples,
+        )
+
+    def decode_pending_samples(self, accelerator, args, vae):
+        from library.models.krea2_raw.training_preview import decode_pending_samples
+
+        return decode_pending_samples(accelerator, args, vae)
+
     def build_tokenize_strategy(self, args):
         from library.models.krea2_raw.strategy import Krea2TokenizeStrategy
 

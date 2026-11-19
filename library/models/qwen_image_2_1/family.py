@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import torch
 from torch import Tensor
-from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -168,7 +168,9 @@ def prepare_training_conditions(trainer, ctx, batch, text_encoder_conds):
             )
         if hiddens.shape[0] != 1:
             raise ValueError("Qwen Image 2.1 Edit currently requires batch_size=1")
-        reference_latents = reference_latents.to(device=device, dtype=ctx.weight_dtype)
+        reference_latents = reference_latents.to(
+            device=device, dtype=ctx.weight_dtype
+        )
         image_slot_mask = text_encoder_conds[2].to(device=device, dtype=torch.bool)
     elif batch.get("qwen_edit_reference_latents") is not None:
         raise ValueError(

@@ -323,3 +323,19 @@ def sample_images(
         dit=dit,
         network=net,
     )
+
+
+def decode_pending_samples(accelerator, args, vae) -> None:
+    """Decode Krea-2's Anima-layout latents with the shared preview VAE policy."""
+    from library.training.preview_decode import (
+        decode_anima_latent,
+        decode_pending_samples as decode_shared_samples,
+    )
+
+    decode_shared_samples(
+        accelerator,
+        args,
+        vae,
+        decode_latent=decode_anima_latent,
+        wandb_enabled=True,
+    )

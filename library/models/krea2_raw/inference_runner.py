@@ -28,6 +28,9 @@ from typing import Any, Optional, Tuple
 
 import torch
 
+from library.inference.family_output import save_with_shared_qwen_vae
+from library.inference.family_runner import FamilyInferenceRunner
+from library.inference.precision import resolve_text_encoder_dtype
 from library.models.krea2_raw.dit import SingleStreamDiT
 from library.models.krea2_raw.family import Krea2TextEmbedding, forward_for_loss
 from library.models.krea2_raw.sampling import sample
@@ -41,9 +44,69 @@ from library.models.krea2_raw.attention_backend import (
     validate_krea2_attention_mode,
 )
 from library.models.krea2_raw.weights import load_krea2_dit
+from library.runtime.device import clean_memory_on_device
 from library.training.preview_lifecycle import apply_preview_router_conditioning
 
 logger = logging.getLogger(__name__)
+
+
+class Krea2InferenceRunner:
+    family = "krea2_raw"
+    supports_reference_conditioning = False
+
+    @staticmethod
+    def validate(args, *, mode: str = "single") -> None:
+        validate_krea2_inference_args(args, mode=mode)
+
+    @staticmethod
+    def prepare(args, *, mode: str = "single") -> None:
+        return None
+
+    def generate_latent(self, args, gen_settings):
+        self.validate(args, mode="single")
+        device = gen_settings.device
+        runtime_dtype = gen_settings.runtime_dtype
+        runtime = FamilyInferenceRunner(
+            self.family,
+            device,
+            cleanup=clean_memory_on_device,
+        )
+
+        cond_emb, uncond_emb = runtime.run_text(
+            lambda: load_krea2_text_encoder_for_inference(args, device),
+            lambda bundle: encode_krea2_prompts(
+                args,
+                bundle,
+                device,
+                runtime_dtype,
+            ),
+        )
+        return runtime.run_stage(
+            "dit",
+            lambda: load_krea2_dit_for_inference(
+                args,
+                device,
+                runtime_dtype,
+            ),
+            lambda loaded: generate_krea2(
+                args,
+                loaded[0],
+                loaded[1],
+                cond_emb,
+                uncond_emb,
+                device,
+                args.seed,
+                runtime_dtype,
+            ),
+        )
+
+    def save_output(self, args, latent, device):
+        return save_with_shared_qwen_vae(
+            args,
+            latent,
+            device,
+            family=self.family,
+        )
 
 
 # Krea-2 首日不支持的 anima-only 推理旁路. 触及即拒绝, 不静默跑错.
@@ -248,30 +311,58 @@ def prepare_krea2_text(
     因此本函数不依赖已加载的 DiT — runtime_dtype 由调用方从 args 解析传入.
     uncond 用空字符串 (走同一套 ChatML encode, 与 anima T5("")+LLM adapter 不同构).
     """
-    import gc
-
-    from library.inference.precision import resolve_text_encoder_dtype
-    from library.runtime.device import clean_memory_on_device
-
-    te_path = args.text_encoder
-    te_dtype = resolve_text_encoder_dtype(args)
-    # TE 在 CPU encode 慢但安全; 默认上 device 加速, 但若 DiT 已在 GPU 则必须 CPU.
-    te_device = torch.device("cpu") if getattr(args, "text_encoder_cpu", False) else device
-
-    te_model, tokenizer = load_krea2_text_encoder(
-        te_path, dtype=te_dtype, device=str(te_device)
+    runtime = FamilyInferenceRunner(
+        Krea2InferenceRunner.family,
+        device,
+        cleanup=clean_memory_on_device,
+    )
+    return runtime.run_text(
+        lambda: load_krea2_text_encoder_for_inference(args, device),
+        lambda bundle: encode_krea2_prompts(
+            args,
+            bundle,
+            device,
+            runtime_dtype,
+        ),
     )
 
-    prompt = args.prompt
-    negative_prompt = getattr(args, "negative_prompt", "") or ""
-    cond_emb = _encode_prompt(te_model, tokenizer, prompt, device, runtime_dtype)
-    uncond_emb = _encode_prompt(te_model, tokenizer, negative_prompt, device, runtime_dtype)
 
-    # TE 用完即释放 (26GB DiT 要腾显存), 复用 anima 的 clean_memory_on_device.
-    del te_model, tokenizer
-    gc.collect()
-    clean_memory_on_device(device)
+def load_krea2_text_encoder_for_inference(args, device: torch.device):
+    """Load the TE stage resource; release is owned by FamilyInferenceRunner."""
+    te_device = (
+        torch.device("cpu")
+        if getattr(args, "text_encoder_cpu", False)
+        else device
+    )
+    return load_krea2_text_encoder(
+        args.text_encoder,
+        dtype=resolve_text_encoder_dtype(args),
+        device=str(te_device),
+    )
 
+
+def encode_krea2_prompts(
+    args,
+    encoder_bundle,
+    device: torch.device,
+    runtime_dtype: torch.dtype,
+) -> Tuple[Krea2TextEmbedding, Krea2TextEmbedding]:
+    """Encode positive/negative prompts while one TE instance is resident."""
+    te_model, tokenizer = encoder_bundle
+    cond_emb = _encode_prompt(
+        te_model,
+        tokenizer,
+        args.prompt or "",
+        device,
+        runtime_dtype,
+    )
+    uncond_emb = _encode_prompt(
+        te_model,
+        tokenizer,
+        getattr(args, "negative_prompt", "") or "",
+        device,
+        runtime_dtype,
+    )
     return cond_emb, uncond_emb
 
 

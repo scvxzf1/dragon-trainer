@@ -85,7 +85,10 @@ class AnimaPlugin:
         timesteps = context.timesteps if context.timesteps is not None else sigmas
         noisy_5d = noisy_4d.unsqueeze(2)
         padding_mask = torch.zeros(
-            noisy_4d.shape[0], 1, noisy_4d.shape[-2], noisy_4d.shape[-1],
+            noisy_4d.shape[0],
+            1,
+            noisy_4d.shape[-2],
+            noisy_4d.shape[-1],
             dtype=train_context.weight_dtype,
             device=noisy_4d.device,
         )
@@ -119,6 +122,35 @@ class AnimaPlugin:
         from library.training.flow_step import loss_weighting
 
         return loss_weighting(sigmas, latents, args)
+
+    def build_inference_runner(self, args):
+        from library.inference.anima_legacy_runner import AnimaLegacyInferenceRunner
+
+        return AnimaLegacyInferenceRunner()
+
+    def decode_preview_samples(
+        self,
+        accelerator,
+        args,
+        vae,
+        *,
+        dit=None,
+        network=None,
+    ):
+        from library.anima.training import decode_samples_for_live_preview
+
+        return decode_samples_for_live_preview(
+            accelerator,
+            args,
+            vae,
+            dit=dit,
+            network=network,
+        )
+
+    def decode_pending_samples(self, accelerator, args, vae):
+        from library.anima.training import decode_anima_pending_samples
+
+        return decode_anima_pending_samples(accelerator, args, vae)
 
     def build_tokenize_strategy(self, args):
         from library.anima.strategy import AnimaTokenizeStrategy

@@ -40,7 +40,14 @@ Standalone CLI inference (`inference.py`) is registered per model family in
 - **`anima`**: `single`, `batch` (`--from_file`), and `interactive` modes; `euler`, `er_sde`, and `lcm` samplers.
 - **`krea2_raw`**: `single` mode + `euler` sampler (`library/models/krea2_raw/inference_runner.py`).
 - **`qwen_image_2_1`**: `single` mode + `euler` sampler for T2I, Edit (1–4 references), and saved-latent decoding.
-- **`z_image`** and **`moss_image`**: generic standalone CLI inference / `image-test` is **not** registered (they currently support training-time sample preview only).
+- **`z_image`**: `single` mode + `euler` sampler through `library/models/z_image/inference_runner.py`; `batch`/`interactive` and LoRA are not implemented.
+- **`moss_image`**: `single` mode + `euler` sampler through `library/models/moss_image/inference_runner.py`; `batch`/`interactive` and LoRA are not implemented.
+
+All five standalone runners are constructed through their family plugin. The
+generic entrypoint owns only mode dispatch and calls `validate`, `prepare`,
+`generate_latent`, and `save_output`; it does not contain a five-family handler
+table. WebUI `image-test` remains a separate integration surface and is not
+implied by CLI support.
 
 ### Krea-2-Raw standalone inference
 

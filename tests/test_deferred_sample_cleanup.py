@@ -73,16 +73,20 @@ def test_live_sample_preview_decode_runs_after_all_ranks_finish() -> None:
     assert "finish_preview_batch(" in sample_body
     assert "accelerator.wait_for_everyone()" in common
     assert "decode(accelerator, args, vae, dit=dit, network=network)" in common
-    assert common.index("accelerator.wait_for_everyone()") < common.index(
+    decode_call = common.index(
         "decode(accelerator, args, vae, dit=dit, network=network)"
     )
-    assert common.index(
-        "decode(accelerator, args, vae, dit=dit, network=network)"
-    ) < common.index("accelerator.wait_for_everyone()", common.index("decode("))
+    assert common.index("accelerator.wait_for_everyone()") < decode_call
+    assert decode_call < common.index(
+        "accelerator.wait_for_everyone()",
+        decode_call,
+    )
 
 
 def test_live_sample_preview_restores_block_swap_safely() -> None:
-    source = ANIMA_TRAINING.read_text(encoding="utf-8")
+    source = (
+        ROOT / "library" / "training" / "preview_live_decode.py"
+    ).read_text(encoding="utf-8")
 
     assert "def _restore_dit_training_device" in source
     assert "move_to_device_except_swap_blocks" in source
@@ -92,7 +96,11 @@ def test_live_sample_preview_restores_block_swap_safely() -> None:
 def test_training_sample_sampler_is_consumed_by_preview_loop() -> None:
     source = ANIMA_TRAINING.read_text(encoding="utf-8")
     sample_fn = _section(source, "def do_sample(", "def sample_images(")
-    inference_fn = _section(source, "def _sample_image_inference(", "def _module_device(")
+    inference_fn = _section(
+        source,
+        "def _sample_image_inference(",
+        "def decode_samples_for_live_preview(",
+    )
 
     assert '_TRAINING_SAMPLE_SAMPLERS = {"euler", "er_sde", "lcm"}' in source
     assert "def normalize_training_sample_sampler" in source
@@ -108,7 +116,11 @@ def test_training_sample_sampler_is_consumed_by_preview_loop() -> None:
 def test_training_sample_prompts_cfg_and_dual_schedule_are_used() -> None:
     source = ANIMA_TRAINING.read_text(encoding="utf-8")
     sample_images_fn = _section(source, "def sample_images(", "def _sample_image_inference(")
-    inference_fn = _section(source, "def _sample_image_inference(", "def _module_device(")
+    inference_fn = _section(
+        source,
+        "def _sample_image_inference(",
+        "def decode_samples_for_live_preview(",
+    )
 
     assert 'scale = prompt_dict.get("guidance_scale", prompt_dict.get("scale", 7.5))' in inference_fn
     assert "sample_this_call = False" in sample_images_fn
