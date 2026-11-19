@@ -31,6 +31,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from safetensors.torch import load_file
 
 from library.training.pp.errors import PipelineParallelError
 
@@ -237,7 +238,7 @@ class _SessionDatasetGroup(_FakeDatasetGroup):
         self.extend([dict(item) for _ in range(count)])
 
 
-def _handoff(args: Namespace, rank: int):
+def _handoff(args: Namespace, rank: int, batches_per_epoch: int):
     from library.training.pp.trainer_session import PpSessionHandoff
 
     model = tiny_model().to(dtype=torch.float16)
@@ -250,7 +251,7 @@ def _handoff(args: Namespace, rank: int):
         vae=None,
         vae_dtype=None,
         text_encoders=[],
-        train_dataset_group=_SessionDatasetGroup(),
+        train_dataset_group=_SessionDatasetGroup(count=batches_per_epoch),
         val_dataset_group=None,
         collator=lambda items: items[0],
         weight_dtype=torch.float16,
@@ -269,68 +270,25 @@ def _handoff(args: Namespace, rank: int):
     )
 
 
-def _adapter_digest(network) -> str:
-    import hashlib
+def _run_session_worker(
+    rank, init_path, steps, batches_per_epoch, save_every, resume, output_dir
+):
+    """Exercise the reported production session on both ranks."""
 
-    hasher = hashlib.sha256()
-    for lora in sorted(network.unet_loras, key=lambda m: m.lora_name):
-        for key, value in sorted(lora.state_dict().items()):
-            hasher.update(key.encode())
-            hasher.update(value.detach().cpu().contiguous().numpy().tobytes())
-    return hasher.hexdigest()
-
-
-def _latest_bundle_root(args: Namespace) -> str:
-    pointer = Path(args.output_dir) / "pp_runs" / "LATEST.json"
-    return str(json.loads(pointer.read_text())["root"])
-
-
-def _run_session_worker(rank, init_path, phase, tmp_path, resume=None, output_dir=None):
-    """One session run; ``phase`` picks train-straight / train-then-resume."""
-
+    from library.training import precision_report
     from library.training.pp.trainer_session import run_pp_trainer_session
 
     init_gloo(init_path, rank)
-    workdir = Path(tmp_path)
     try:
-        if phase == "straight":
-            args = _session_args(workdir, steps=6)
-            args.output_dir = str(workdir / "straight")
-            run_pp_trainer_session(_SessionTrainer(), args, _handoff(args, rank))
-            result = {
-                "digest": _adapter_digest(_handoff(args, rank).network),
-                "bundle": _latest_bundle_root(args),
-            }
-            (workdir / f"straight.rank{rank}.json").write_text(json.dumps(result))
-        elif phase == "split":
-            args = _session_args(workdir, steps=4)
-            args.output_dir = str(workdir / "split")
-            run_pp_trainer_session(_SessionTrainer(), args, _handoff(args, rank))
-            bundle = _latest_bundle_root(args)
-            manifest = json.loads((Path(bundle) / "pp_checkpoint.json").read_text())
-            trainer_state = torch.load(
-                Path(bundle) / f"trainer_state_rank{rank}.pt", weights_only=False
-            )
-            result = {
-                "bundle": bundle,
-                "manifest_step": manifest["step"],
-                "trainer_global_step": trainer_state["global_step"],
-                "trainer_effective_step": trainer_state["effective_step"],
-                "trainer_epoch": trainer_state["epoch"],
-                "trainer_batch_index": trainer_state["batch_index"],
-                "trainer_run_id": trainer_state["run_id"],
-                "has_scheduler": trainer_state["scheduler"] is not None,
-                "rng_torch": trainer_state["rng_torch_cpu"].numel(),
-            }
-            (workdir / f"split.rank{rank}.json").write_text(json.dumps(result))
-        elif phase == "resume":
-            args = _session_args(workdir, steps=6, resume=resume)
-            args.output_dir = str(workdir / "resumed")
-            run_pp_trainer_session(_SessionTrainer(), args, _handoff(args, rank))
-            result = {"digest": _adapter_digest(_handoff(args, rank).network)}
-            (workdir / f"resumed.rank{rank}.json").write_text(json.dumps(result))
-        else:  # pragma: no cover
-            raise AssertionError(f"unknown phase {phase}")
+        args = _session_args(Path(output_dir), steps=steps, resume=resume)
+        args.save_every_n_steps = save_every
+        handoff = _handoff(args, rank, batches_per_epoch)
+
+        def run(trainer, args):
+            precision_report.observe("accelerator_ready", handoff.accelerator)
+            run_pp_trainer_session(trainer, args, handoff)
+
+        precision_report.reported_session(_SessionTrainer(), args, run)
     finally:
         torch.distributed.destroy_process_group()
 
@@ -343,49 +301,79 @@ def _run_session_worker(rank, init_path, phase, tmp_path, resume=None, output_di
 def test_session_straight_run_saves_bundles_and_final_lora(tmp_path):
     from tests.moss_pp_test_support import run_pair
 
-    run_pair(tmp_path, _run_session_worker, "straight", str(tmp_path))
-    result = json.loads((tmp_path / "straight.rank0.json").read_text())
-    bundle = Path(result["bundle"])
+    run_pair(tmp_path, _run_session_worker, 6, 6, 2, None)
+    result = json.loads((tmp_path / "pp_runs" / "LATEST.json").read_text())
+    bundle = Path(result["root"])
     assert (bundle / "pp_checkpoint.json").is_file()
     assert (bundle / "pp_stage-rank0.pt").is_file()
     assert (bundle / "pp_stage-rank1.pt").is_file()
     assert (bundle / "trainer_state_rank0.pt").is_file()
     assert (bundle / "trainer_state_rank1.pt").is_file()
-    final = Path(tmp_path / "straight" / "pp-session-test.safetensors")
+    final = tmp_path / "pp-session-test.safetensors"
     assert final.is_file(), "the final LoRA must land in the ordinary output format"
-    from safetensors.torch import load_file
-
     state = load_file(str(final))
     assert len(state) > 0
+    report_path, = tmp_path.glob("precision_report*.json")
+    report = json.loads(report_path.read_text())
+    assert (report["status"], report["stage"]) == ("completed", "finish")
+    assert [report["updates"][key] for key in ("attempted", "effective", "skipped", "total_global_step")] == [6, 6, 0, 6]
+    assert report["amp"]["scaler_source"] == "pp_transaction"
+    assert report["amp"]["scaler_present"] is True
 
 
-def test_session_resume_lands_on_the_straight_run_state(tmp_path):
-    """split(4)+resume(2) == straight(6): the frozen resume equivalence."""
+@pytest.mark.parametrize("batches_per_epoch,checkpoint_step,total_steps", [(6, 4, 6), (1, 5, 10)])
+def test_session_resume_lands_on_the_straight_run_state(tmp_path, batches_per_epoch, checkpoint_step, total_steps):
+    """Resume both within an epoch and after the only batch of an epoch."""
     from tests.moss_pp_test_support import run_pair
 
     straight_dir = tmp_path / "straight"
     straight_dir.mkdir()
-    run_pair(straight_dir, _run_session_worker, "straight", str(straight_dir))
-    straight = json.loads((straight_dir / "straight.rank0.json").read_text())
+    run_pair(straight_dir, _run_session_worker, total_steps, batches_per_epoch, checkpoint_step, None)
+    bundle, = (straight_dir / "pp_runs").glob(f"*-step{checkpoint_step}")
+    trainer_state = torch.load(bundle / "trainer_state_rank0.pt", weights_only=False)
+    assert trainer_state["global_step"] == trainer_state["effective_step"] == checkpoint_step
+    assert trainer_state["epoch"] == (checkpoint_step - 1) // batches_per_epoch
+    assert trainer_state["batch_index"] == (checkpoint_step - 1) % batches_per_epoch + 1
+    assert trainer_state["scheduler"] is not None
 
-    run_pair(tmp_path, _run_session_worker, "split", str(tmp_path))
-    split = json.loads((tmp_path / "split.rank0.json").read_text())
-    assert split["manifest_step"] == 4
-    assert split["trainer_global_step"] == 4
-    assert split["trainer_effective_step"] == 4
-    assert split["trainer_epoch"] == 0
-    assert split["trainer_batch_index"] == 4
-    assert split["has_scheduler"] is True
-
-    # Point the resumed run at the split's step-4 bundle.
     resumed_dir = tmp_path / "resumed"
     resumed_dir.mkdir()
-    run_pair(resumed_dir, _run_session_worker, "resume", str(resumed_dir), split["bundle"])
-    resumed = json.loads((resumed_dir / "resumed.rank0.json").read_text())
-    assert resumed["digest"] == straight["digest"], (
-        "split(4)+resume(2) must reproduce straight(6): same batch cursor, "
-        "same RNG continuation, same LR plan, same optimizer state"
+    run_pair(resumed_dir, _run_session_worker, total_steps, batches_per_epoch, checkpoint_step, str(bundle))
+    straight = load_file(straight_dir / "pp-session-test.safetensors")
+    resumed = load_file(resumed_dir / "pp-session-test.safetensors")
+    assert resumed.keys() == straight.keys()
+    assert all(torch.equal(resumed[key], value) for key, value in straight.items())
+    assert json.loads((resumed_dir / "pp_runs" / "LATEST.json").read_text())["step"] == total_steps
+    report_path, = resumed_dir.glob("precision_report*.json")
+    report = json.loads(report_path.read_text())
+    new_steps = total_steps - checkpoint_step
+    assert (report["status"], report["stage"]) == ("completed", "finish")
+    assert report["resume"]["inherited_global_step"] == checkpoint_step
+    assert [report["updates"][key] for key in ("attempted", "effective", "skipped", "total_global_step")] == [
+        new_steps, new_steps, 0, total_steps,
+    ]
+
+
+def test_session_refuses_resume_at_target_without_publishing(tmp_path):
+    from tests.moss_pp_test_support import run_pair, run_pair_expect_failure
+
+    original = tmp_path / "original"
+    original.mkdir()
+    run_pair(original, _run_session_worker, 2, 1, 2, None)
+    bundle, = (original / "pp_runs").glob("*-step2")
+    refused = tmp_path / "refused"
+    refused.mkdir()
+    errors = run_pair_expect_failure(
+        refused, _run_session_worker, 2, 1, 2, str(bundle)
     )
+    assert all("pp_resume_no_work" in error for error in errors)
+    assert not (refused / "pp_runs").exists()
+    assert not list(refused.glob("*.safetensors"))
+    report_path, = refused.glob("precision_report*.json")
+    report = json.loads(report_path.read_text())
+    assert report["status"] == "failed"
+    assert report["updates"]["attempted"] == 0
+    assert report["updates"]["total_global_step"] == 2
 
 
 def test_session_resume_refuses_a_trainer_state_less_bundle(tmp_path):

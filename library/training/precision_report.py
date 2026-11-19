@@ -181,11 +181,35 @@ class PrecisionReport:
         self.data["fp32_guards"] = report_guards(model, getattr(self.args, "model_family", "anima"))
         self.phase("models_prepared")
 
-    def resumed(self, step):
+    def resumed(self, step, *, pp_scale=None):
         self.data["resume"]["inherited_global_step"] = int(step)
         self.data["updates"]["total_global_step"] = int(step)
-        self.data["amp"]["scaler_resumed"] = _scale(self.accelerator)
+        amp = self.data["amp"]
+        amp["scaler_resumed"] = _scale(self.accelerator) if pp_scale is None else _scalar(pp_scale)
+        if pp_scale is not None:
+            amp["scaler_final"] = amp["scaler_resumed"]
         self.phase("resume_ready")
+
+    def pp_runtime_ready(self, scale):
+        self.data["amp"].update(
+            scaler_source="pp_transaction", scaler_present=scale is not None,
+            scaler_initial=_scalar(scale), scaler_final=_scalar(scale),
+        )
+        self.data["updates"]["scope"] = (
+            "current invocation, one attempt per pipeline optimizer boundary; "
+            "effective/skipped use the unanimous PP verdict; "
+            "total_global_step includes inherited and skipped boundaries"
+        )
+        self.phase("models_prepared")
+
+    def pp_optimizer(self, counters, outcome=None):
+        updates = self.data["updates"]
+        if outcome is None:
+            updates["attempted"] += 1
+        else:
+            updates["skipped" if outcome.skipped else "effective"] += 1
+            updates["total_global_step"] = int(counters.global_step)
+            self.data["amp"]["scaler_final"] = _scalar(outcome.next_scale)
 
     def phase(self, event, state=None):
         self.data["stage"] = event
@@ -297,7 +321,7 @@ class PrecisionReport:
             self.data["exception"] = {"type": type(exc).__name__, "message": str(exc)[:2000]}
         if self.state is not None:
             self.data["updates"]["total_global_step"] = int(self.state.global_step)
-        if self.accelerator is not None:
+        if self.accelerator is not None and self.data["amp"].get("scaler_source") != "pp_transaction":
             try:
                 self.data["amp"]["scaler_final"] = _scale(self.accelerator)
             except Exception as error:

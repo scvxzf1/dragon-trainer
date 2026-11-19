@@ -17,6 +17,7 @@ What this file proves without a GPU:
 
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from types import SimpleNamespace
 
@@ -309,13 +310,17 @@ def _pair_inputs(rank, *, overflow: bool = False):
 
 
 def _worker_step_semantics(rank, init_path, output_dir):
-    init_gloo(init_path, rank)
-    try:
+    from library.training import precision_report
+
+    def run(trainer, args):
         runtime = _build_pair_runtime(rank)
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             runtime.optimizer, lambda step: 1.0
         )
         counters = PpLoopCounters()
+        precision_report.observe("accelerator_ready", _fake_accelerator(rank))
+        precision_report.observe("pp_runtime_ready", runtime.scale)
+        precision_report.notify("loop_ready", counters)
         pp_train_step(runtime, _pair_inputs(rank), counters, scheduler=scheduler)
         assert counters.global_step == 1 and counters.effective_step == 1
         assert counters.skipped == 0 and scheduler.last_epoch == 1
@@ -337,6 +342,11 @@ def _worker_step_semantics(rank, init_path, output_dir):
         params_after = [p.detach() for p in runtime.stage_module.parameters()]
         for before, after in zip(params_before, params_after):
             assert torch.equal(before, after), "a skipped step must not move parameters"
+        precision_report.notify("finish", counters)
+
+    init_gloo(init_path, rank)
+    try:
+        precision_report.reported_session(_FakeTrainer(), Namespace(output_dir=output_dir), run)
     finally:
         torch.distributed.destroy_process_group()
 
@@ -347,3 +357,8 @@ def test_step_semantics_global_effective_and_skip(tmp_path):
     from tests.moss_pp_test_support import run_pair
 
     run_pair(tmp_path, _worker_step_semantics)
+    report_path, = tmp_path.glob("precision_report*.json")
+    report = json.loads(report_path.read_text())
+    assert [report["updates"][key] for key in ("attempted", "effective", "skipped", "total_global_step")] == [2, 1, 1, 2]
+    assert report["amp"]["scaler_initial"] == 65536.0
+    assert report["amp"]["scaler_final"] == 32768.0

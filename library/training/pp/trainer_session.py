@@ -47,10 +47,12 @@ import torch.distributed as dist
 from library.training.pp.errors import (
     CODE_BACKEND_MULTIBACKEND_REQUIRED,
     CODE_CONFIG_INVALID,
+    CODE_RESUME_NO_WORK,
     CODE_STAGE_CONTRACT,
     CODE_WORLD_SIZE_MISMATCH,
     PipelineParallelError,
 )
+from library.training.precision_report import notify as precision_notify, observe as precision_observe
 
 logger = logging.getLogger(__name__)
 
@@ -512,9 +514,11 @@ def pp_train_step(runtime, inputs, counters: PpLoopCounters, *, scheduler=None) 
             f"vals={[round(float(v), 6) for v in losses]} is_last={runtime.is_last}",
             flush=True,
         )
+    precision_observe("pp_optimizer", counters)
     outcome = runtime.optimizer_step()
     counters.global_step += 1
     counters.skipped += 1 if outcome.skipped else 0
+    precision_observe("pp_optimizer", counters, outcome)
     # Reset before the per-rank loss is computed.  Only the trailing stage fills
     # it in, and the cross-rank SUM at the end of this function must see *only*
     # this step's contribution -- without the reset a non-trailing rank carried
@@ -795,9 +799,11 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
     from library.training.optimizers import get_optimizer_train_eval_fn
     from library.training.pp.trainer_adapters import resolve_trainer_adapter
     from library.training.pp.trainer_inputs import build_family_step_inputs
+    from library.training.pp.trainer_resume import resolve_resume_position
     from library.training.schedulers import get_scheduler_fix
 
     accelerator = handoff.accelerator
+    resuming = bool(getattr(args, "resume", None))
     adapter = resolve_trainer_adapter(args)
     adapter.admission(
         args, world_size=int(accelerator.num_processes),
@@ -810,6 +816,16 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
         handoff.unet.enable_gradient_checkpointing()
 
     loader = build_pp_train_dataloader(args, handoff.train_dataset_group, handoff.collator)
+    batches_per_epoch = len(loader)
+    # The LR plan is built from max_train_steps, so the steps budget is
+    # resolved (epochs -> steps when needed) *before* the scheduler exists.
+    total_steps = _resolve_max_steps(args, batches_per_epoch)
+    if total_steps <= 0 or not batches_per_epoch:
+        raise PipelineParallelError(
+            CODE_RESUME_NO_WORK if resuming else CODE_CONFIG_INVALID,
+            f"PP training requires a positive step budget and a non-empty loader; "
+            f"got max_train_steps={total_steps}, batches_per_epoch={batches_per_epoch}",
+        )
     first_batch = next(iter(loader))
     latent_shape, _raw_text_tokens = adapter.wire_shape_from_batch(first_batch)
     # The cached text-encoder outputs on disk carry the *real* token length (12
@@ -836,9 +852,6 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
     max_text_tokens = (
         int(_hiddens.shape[1]) if _hiddens is not None else int(_raw_text_tokens)
     )
-    # The LR plan is built from max_train_steps, so the steps budget is
-    # resolved (epochs -> steps when needed) *before* the scheduler exists.
-    total_steps = _resolve_max_steps(args, max(len(loader), 1))
     run_id = derive_run_id(args, family=adapter.name)
     # The run id names the checkpoint directory, so it must be one pipeline-wide
     # fact.  derive_run_id() reads only run material and is deterministic, but a
@@ -855,44 +868,44 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
         latent_shape=latent_shape, max_text_tokens=max_text_tokens,
         dtype=handoff.weight_dtype,
     )
+    precision_observe("pp_runtime_ready", runtime.scale)
     scheduler = get_scheduler_fix(args, runtime.optimizer, 1)
     optimizer_train_fn, optimizer_eval_fn = get_optimizer_train_eval_fn(
         runtime.optimizer, args
     )
 
     counters = PpLoopCounters()
-    resume_step = 0
-    resume_batch_index = 0
-    resume_epoch = 0
-    if getattr(args, "resume", None):
+    if resuming:
         state, payload = resume_pp_bundle(
             args, runtime, scheduler=scheduler, run_id=run_id, family=adapter.name
         )
-        resume_step = int(state.step)
-        resume_epoch = int(payload.get("epoch", 0))
-        resume_batch_index = int(payload.get("batch_index", 0))
-        counters.global_step = resume_step
-        counters.effective_step = int(payload.get("effective_step", resume_step))
-        counters.epoch = resume_epoch
-        logger.info(
-            "PP exact resume from %s at global_step=%s epoch=%s batch_index=%s",
-            args.resume, resume_step, resume_epoch, resume_batch_index,
+        counters.global_step = int(state.step)
+        precision_observe("resumed", counters.global_step, pp_scale=runtime.scale)
+        counters.epoch, counters.batch_index, counters.effective_step = resolve_resume_position(
+            payload, step=counters.global_step, batches_per_epoch=batches_per_epoch,
+            total_steps=total_steps,
         )
+        counters.skipped = counters.global_step - counters.effective_step
+        logger.info(
+            "PP exact resume from %s at global_step=%s, next epoch=%s batch_index=%s",
+            args.resume, counters.global_step, counters.epoch, counters.batch_index,
+        )
+    precision_notify("loop_ready", counters)
     metadata, minimum_metadata = _build_metadata(trainer, args, handoff, counters, loader)
 
     save_every = int(getattr(args, "save_every_n_steps", 0) or 0)
     save_at_end = bool(getattr(args, "save_state", False) or getattr(args, "save_state_on_train_end", False))
     optimizer_train_fn()
-    total_steps = int(args.max_train_steps)
+    inherited_step = counters.global_step
     start_epoch = counters.epoch
-    for epoch in range(start_epoch, math.ceil(total_steps / max(len(loader), 1))):
+    first_batch_index = counters.batch_index
+    for epoch in range(start_epoch, math.ceil(total_steps / batches_per_epoch)):
         loader.generator.manual_seed(int(getattr(args, "seed", 0) or 0) + epoch)
         counters.epoch = epoch
         counters.batch_index = 0
+        skip_batches = first_batch_index if epoch == start_epoch else 0
         for batch in iter(loader):
-            if counters.global_step >= total_steps:
-                break
-            if counters.batch_index < resume_batch_index:
+            if counters.batch_index < skip_batches:
                 counters.batch_index += 1
                 continue
             # Numerical soundness probe: re-seeding at the top of every step
@@ -917,15 +930,23 @@ def run_pp_trainer_session(trainer, args, handoff: PpSessionHandoff) -> None:
             )
             pp_train_step(runtime, inputs, counters, scheduler=scheduler)
             counters.batch_index += 1
-            resume_batch_index = 0
             _report_progress(accelerator, runtime, counters, scheduler, total_steps)
             if save_every and counters.global_step % save_every == 0:
                 save_pp_bundle(args, runtime, counters=counters, scheduler=scheduler, run_id=run_id, accelerator=accelerator, family=adapter.name)
-        else:
-            continue
-        break
+            if counters.global_step >= total_steps:
+                break
+        if counters.global_step >= total_steps:
+            break
+    if counters.global_step < total_steps:
+        no_resume_work = resuming and counters.global_step == inherited_step
+        raise PipelineParallelError(
+            CODE_RESUME_NO_WORK if no_resume_work else CODE_CONFIG_INVALID,
+            f"PP loader ended at step {counters.global_step} of {total_steps}",
+        )
+    precision_notify("final_save", counters)
     if save_at_end or save_every == 0:
         save_pp_bundle(args, runtime, counters=counters, scheduler=scheduler, run_id=run_id, accelerator=accelerator, family=adapter.name)
     save_final_lora(trainer, args, runtime, handoff, counters, metadata, minimum_metadata)
     optimizer_eval_fn()
     accelerator.end_training()
+    precision_notify("finish", counters)

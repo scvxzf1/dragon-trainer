@@ -71,6 +71,7 @@ CODE_CHECKPOINT_STEP_MISMATCH = "pp_checkpoint_step_mismatch"
 CODE_CHECKPOINT_STATE_MISMATCH = "pp_checkpoint_state_mismatch"
 #: The target run root already exists; PP checkpoints never overwrite a run.
 CODE_CHECKPOINT_RUN_ROOT_NOT_NEW = "pp_checkpoint_run_root_not_new"
+CODE_RESUME_NO_WORK = "pp_resume_no_work"
 
 
 class PipelineParallelError(RuntimeError):
@@ -103,6 +104,7 @@ __all__ = [
     "CODE_MIXED_PRECISION_UNSUPPORTED",
     "CODE_NOT_ENABLED",
     "CODE_QUANTIZATION_UNSUPPORTED",
+    "CODE_RESUME_NO_WORK",
     "CODE_RUNTIME_UNAVAILABLE",
     "CODE_SCALER_DECISION_ASYMMETRY",
     "CODE_SCHEDULE_UNSUPPORTED",

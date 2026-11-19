@@ -39,6 +39,7 @@ from .errors import (
     CODE_CHECKPOINT_INCOMPLETE,
     CODE_CHECKPOINT_STATE_MISMATCH,
     CODE_CHECKPOINT_STEP_MISMATCH,
+    CODE_RESUME_NO_WORK,
     PipelineParallelError,
 )
 
@@ -295,6 +296,48 @@ def require_exact_resume_or_opt_in(root, args, *, family: str) -> bool:
     )
 
 
+def resolve_resume_position(
+    payload: dict, *, step: int, batches_per_epoch: int, total_steps: int, group=None
+) -> tuple[int, int, int]:
+    """Validate the shared cursor and return the epoch, offset and effective step."""
+
+    raw_position = tuple(payload.get(key) for key in ("epoch", "batch_index", "effective_step"))
+    position = tuple(value if type(value) is int else None for value in raw_position)
+    if _distributed(group):
+        plan = (position, step, batches_per_epoch, total_steps)
+        plans = [None] * dist.get_world_size(group)
+        dist.all_gather_object(plans, plan, group=group)
+        if any(peer != plan for peer in plans):
+            raise PipelineParallelError(
+                CODE_CHECKPOINT_STATE_MISMATCH,
+                f"PP ranks disagree on the resume cursor or training budget: {plans}",
+            )
+    if step >= total_steps or batches_per_epoch == 0:
+        raise PipelineParallelError(
+            CODE_RESUME_NO_WORK,
+            f"checkpoint step={step}, target max_train_steps={total_steps}, "
+            f"batches_per_epoch={batches_per_epoch}; PP resume requires new training work",
+        )
+
+    epoch, batch_index, effective_step = position
+    if (
+        None in position
+        or epoch < 0
+        or not 0 <= batch_index <= batches_per_epoch
+        or not 0 <= effective_step <= step
+        or epoch * batches_per_epoch + batch_index != step
+    ):
+        raise PipelineParallelError(
+            CODE_CHECKPOINT_STATE_MISMATCH,
+            f"PP checkpoint step={step} has an invalid resume cursor "
+            f"(epoch, batch_index, effective_step)={raw_position!r} "
+            f"for batches_per_epoch={batches_per_epoch}",
+        )
+    if batch_index == batches_per_epoch:
+        return epoch + 1, 0, effective_step
+    return epoch, batch_index, effective_step
+
+
 __all__ = [
     "TRAINER_RESUME_FORMAT",
     "TRAINER_RESUME_VERSION",
@@ -302,6 +345,7 @@ __all__ = [
     "capture_trainer_payload",
     "load_trainer_resume",
     "require_exact_resume_or_opt_in",
+    "resolve_resume_position",
     "save_trainer_resume",
     "trainer_state_path",
     "trainer_state_present",
