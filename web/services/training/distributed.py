@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import subprocess
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from web.services.training.gpu import (
@@ -51,11 +53,60 @@ def normalize_distributed_mode(
 
 
 def item_distributed_mode(item: dict[str, Any] | None) -> str:
-    """Read a queue item's stored mode; old items without the field → DDP."""
+    """Project old queue items from their frozen config when it is available."""
 
     if not isinstance(item, dict):
         return DEFAULT_DISTRIBUTED_MODE
-    return normalize_distributed_mode(item.get("distributed_mode"))
+    stored = normalize_distributed_mode(item.get("distributed_mode"))
+    config_file = item.get("runtime_config_file")
+    if not isinstance(config_file, str) or not config_file.strip():
+        return stored
+
+    from web.services.training.runtime_paths import _resolve_display_path
+
+    extra_args = item.get("extra_args")
+    if extra_args is None:
+        extra_args = []
+    if not isinstance(extra_args, list) or any(not isinstance(arg, str) for arg in extra_args):
+        return stored
+    try:
+        path = _resolve_display_path(config_file)
+        if path is not None:
+            stat = path.stat()
+            version = (stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+            return _frozen_item_mode(path, version, tuple(extra_args), stored)
+    except (OSError, ValueError):
+        pass
+    return stored
+
+
+@lru_cache(maxsize=2048)
+def _frozen_item_mode(
+    path: Path, _version: tuple[int, ...], extra_args: tuple[str, ...], stored: str,
+) -> str:
+    """Avoid reparsing unchanged configs and argv on every queue poll."""
+
+    from library.training.pp.errors import PipelineParallelError
+    from web.services.training.launcher_runtime import load_training_launch_config
+
+    try:
+        config = load_training_launch_config(str(path), list(extra_args))
+        if config is not None:
+            return effective_distributed_mode(config, stored)
+    except (ValueError, PipelineParallelError):
+        pass
+    return stored
+
+
+def effective_distributed_mode(config: dict[str, Any], fallback: Any = None) -> str:
+    """Use the backend PP toggle and retain the legacy label policy for other runs."""
+
+    from library.training.pp.gate import pipeline_parallel_enabled
+
+    if pipeline_parallel_enabled(config):
+        return "pp"
+    mode = normalize_distributed_mode(fallback)
+    return DEFAULT_DISTRIBUTED_MODE if mode == "pp" else mode
 
 
 def wired_pp_families() -> list[dict[str, Any]]:
@@ -606,6 +657,7 @@ __all__ = [
     "diagnose_distributed_training",
     "diagnose_pp_config",
     "diagnose_pp_dataset_readiness",
+    "effective_distributed_mode",
     "hardware_diagnosis",
     "item_distributed_mode",
     "normalize_distributed_mode",

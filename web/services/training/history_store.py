@@ -371,10 +371,15 @@ def _history_summary(meta: dict[str, Any], task_dir: Path) -> dict[str, Any]:
     out["log_count"] = _history_jsonl_count(out, "log_count", task_dir / "logs.jsonl")
     out["metric_count"] = _history_metric_count(out, task_dir)
     out.update(_history_metric_summary(task_dir, out["metric_count"]))
+    command = out.get("command")
+    legacy_training = out.get("job") == "training" and not out.get("distributed_mode")
     chips = history_config_chips_for_task_dir(
         task_dir,
         variant=str(out.get("variant") or ""),
+        legacy_command=(command if isinstance(command, list) else []) if legacy_training else None,
     )
+    if chips["distributed_mode"]:
+        out["distributed_mode"] = chips["distributed_mode"]
     out["model_family"] = chips["model_family"] or str(out.get("model_family") or "")
     out["training_variant"] = chips["training_variant"]
     out["preprocess_precision"] = chips["preprocess_precision"]

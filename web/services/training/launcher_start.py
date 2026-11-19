@@ -17,6 +17,7 @@ from library.runtime.launch import (
 from web.services.data_cleanup_gate import guard_data_launch
 from web.services.training.risk_acknowledgement import pending_preflight, without_risk_flag
 from web.services.training.common import _format_ts
+from web.services.training.distributed import effective_distributed_mode
 from web.services.training.launch_support import (
     _normalize_continue_lora_info,
 )
@@ -34,6 +35,7 @@ from web.services.training.launcher_runtime import (
     _runtime_meta,
     _sample_config_from_cfg,
     _training_config_argument,
+    load_training_launch_config,
     preflight_training_config,
 )
 from web.services.training.gpu import ensure_gpu_whitelist_authorized
@@ -114,27 +116,21 @@ async def _start_unlocked(
         config_file = runtime["runtime_config_file"]
     elif source_config_file and not config_file:
         config_file = source_config_file
-    if config_file:
-        try:
-            launch_config = _load_config_file_config(config_file)
-        except Exception:  # noqa: BLE001 - unreadable config fails later anyway
-            launch_config = {}
-        if launch_config:
-            from web.services.training.extra_args import merge_training_extra_args
-
-            launch_config = merge_training_extra_args(launch_config, extra_args)
-            ensure_pipeline_parallel_family_pairing(launch_config)
-            from library.training.pp.gate import pipeline_parallel_enabled
+    launch_config = load_training_launch_config(config_file, extra_args)
+    distributed_mode = None
+    if launch_config:
+        ensure_pipeline_parallel_family_pairing(launch_config)
+        if effective_distributed_mode(launch_config) == "pp":
             from library.training.pp.trainer_admission import require_family_trainer_admission
 
-            if pipeline_parallel_enabled(launch_config):
-                require_family_trainer_admission(
-                    launch_config,
-                    world_size=resolve_training_world_size_for_gpu_selection(
-                        _normalize_gpu_whitelist(gpu_whitelist)
-                    ),
-                    where="webui_launcher",
-                )
+            require_family_trainer_admission(
+                launch_config,
+                world_size=resolve_training_world_size_for_gpu_selection(
+                    _normalize_gpu_whitelist(gpu_whitelist)
+                ),
+                where="webui_launcher",
+            )
+            distributed_mode = "pp"
 
     venv_python = str(_root() / ".venv" / "bin" / "python")
     if not Path(venv_python).exists():
@@ -223,6 +219,7 @@ async def _start_unlocked(
         gpu_whitelist=gpu_selection,
         runtime_info=runtime_info,
         queue_item_id=queue_item_id,
+        distributed_mode=distributed_mode,
     )
 
 async def start_preprocess(

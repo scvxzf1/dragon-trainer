@@ -7,6 +7,7 @@ from typing import Any
 
 from web.services.training.common import _format_ts, _positive_int_or_none
 from web.services.training.constants import max_queue_items, queue_dir
+from web.services.training.distributed import item_distributed_mode
 from web.services.training.queue_revision import queue_revision
 from web.services.training.service_state import (
     _normalize_queue_auto_retry,
@@ -46,11 +47,17 @@ def get_queue_snapshot(self) -> dict[str, Any]:
         "error": 0,
         "canceled": 0,
     }
+    items = []
     for item in self._queue_items():
         summary["total"] += 1
         state = str(item.get("state") or "")
         if state in summary:
             summary[state] += 1
+        snapshot_item = dict(item)
+        mode = item_distributed_mode(item)
+        if mode == "pp" or "distributed_mode" in item:
+            snapshot_item["distributed_mode"] = mode
+        items.append(snapshot_item)
     snapshot = {
         "ok": True,
         "paused": self._queue_paused,
@@ -63,7 +70,7 @@ def get_queue_snapshot(self) -> dict[str, Any]:
         "current_task_id": self.current_task_id,
         "launching_item_id": self._queue_launching_item_id,
         "summary": summary,
-        "items": [dict(item) for item in self._queue_items()],
+        "items": items,
     }
     snapshot["revision"] = queue_revision({
         **snapshot,

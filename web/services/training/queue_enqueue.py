@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from library.training.pp.errors import PipelineParallelError
 from web.services.training.anomalies import classify_training_failure, should_auto_retry_failure
 from web.services.training.service_state import (
     resolve_item_retry_policy,
@@ -13,12 +14,13 @@ from web.services.training.service_state import (
     _normalize_queue_retry_backoff,
 )
 from web.services.training.common import _format_ts, _int_or_none
-from web.services.training.distributed import normalize_distributed_mode
+from web.services.training.distributed import effective_distributed_mode
 from web.services.training.gpu import (
     ensure_gpu_whitelist_authorized,
     normalize_gpu_whitelist as _normalize_gpu_whitelist,
 )
 from web.services.training.launch_support import _normalize_continue_lora_info
+from web.services.training.launcher_runtime import load_training_launch_config
 from web.services.training.resume_pipeline_gate import (
     ensure_resume_pipeline_compatible,
 )
@@ -47,6 +49,15 @@ def _display_project_path(*args, **kwargs):
     from web.services import training_service as facade
 
     return facade._display_project_path(*args, **kwargs)
+
+
+def _planned_mode(config_file: str, extra_args: list[str] | None, fallback: Any) -> str:
+    try:
+        config = load_training_launch_config(config_file, extra_args)
+        return effective_distributed_mode(config or {}, fallback)
+    except PipelineParallelError as exc:
+        raise ValueError(str(exc)) from exc
+
 
 async def enqueue_training(
     self,
@@ -105,8 +116,7 @@ async def enqueue_training(
         "source_config_file": source_config_file,
         "extra_args": extra,
         "gpu_whitelist": gpu_selection,
-        # 分布式模式三态卡片：旧调用面/旧队列缺省 DDP 兼容。
-        "distributed_mode": normalize_distributed_mode(distributed_mode),
+        "distributed_mode": _planned_mode(runtime_config_file, extra, distributed_mode),
         "continue_info": continue_payload or {},
         "resume_info": {},
         "retry_of": "",
@@ -267,6 +277,7 @@ async def enqueue_resume_from_history_task(
         runtime.get("runtime_config_file")
         or snapshot_config_file
     )
+    extra_args = ["--resume", selected["path"], "--skip_until_initial_step"]
     now = time.time()
     item = {
         "id": _new_queue_item_id(
@@ -282,12 +293,9 @@ async def enqueue_resume_from_history_task(
         "methods_subdir": str(task.get("methods_subdir") or "gui-methods"),
         "runtime_config_file": config_file,
         "source_config_file": str(runtime.get("history_source_config_file") or task.get("history_source_config_file") or ""),
-        "extra_args": ["--resume", selected["path"], "--skip_until_initial_step"],
+        "extra_args": extra_args,
         "gpu_whitelist": _normalize_gpu_whitelist(gpu_whitelist),
-        # 旧队列 resume 无模式字段缺省 DDP；PP 快照仍由 pipeline_parallel 键决定。
-        "distributed_mode": normalize_distributed_mode(
-            "pp" if bool(runtime.get("pipeline_parallel")) else task.get("distributed_mode"),
-        ),
+        "distributed_mode": _planned_mode(config_file, extra_args, task.get("distributed_mode")),
         "continue_info": {},
         "resume_info": resume_info,
         "retry_of": "",
@@ -342,6 +350,9 @@ def _clone_queue_item_for_retry(self, item: dict[str, Any]) -> dict[str, Any]:
         "state": "queued",
         "runtime_config_file": runtime["runtime_config_file"],
         "source_config_file": str(item.get("source_config_file") or runtime.get("history_source_config_file") or ""),
+        "distributed_mode": _planned_mode(
+            runtime["runtime_config_file"], item.get("extra_args"), item.get("distributed_mode"),
+        ),
         "retry_of": retry_of,
         "attempt": attempt,
         "history_task_ids": [],

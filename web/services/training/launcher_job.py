@@ -52,6 +52,7 @@ async def _launch_job(
     gpu_whitelist: list[int] | None = None,
     runtime_info: dict[str, str] | None = None,
     queue_item_id: str = "",
+    distributed_mode: str | None = None,
 ):
     self._run_generation += 1
     generation = self._run_generation
@@ -144,6 +145,7 @@ async def _launch_job(
         gpu_whitelist=gpu_whitelist,
         runtime_info=self.current_runtime_info,
         queue_info=self._queue_history_meta(self._current_queue_item_id),
+        distributed_mode=distributed_mode,
     )
     try:
         self.process = await asyncio.create_subprocess_exec(

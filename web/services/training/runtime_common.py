@@ -82,16 +82,21 @@ def training_sample_sampler_status(*args, **kwargs):
 
 
 def _load_config_file_config(config_file: str) -> dict[str, Any]:
+    return read_config_file_config(config_file) or {}
+
+
+def read_config_file_config(config_file: str) -> dict[str, Any] | None:
+    """Read a runtime config, distinguishing an empty TOML file from a missing one."""
     path = _resolve_display_path(config_file)
     if path is None or not _path_exists(path):
-        return {}
+        return None
     try:
         parsed = toml.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         LOGGER.warning("failed to parse training config file %s: %s", path, exc)
-        return {}
+        return None
     expanded = expand_env_vars_in_obj(parsed)
-    return expanded if isinstance(expanded, dict) else {}
+    return expanded if isinstance(expanded, dict) else None
 
 
 def toml_dumps_sorted(data: dict[str, Any]) -> str:

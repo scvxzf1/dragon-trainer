@@ -276,6 +276,7 @@ def _start_history_task(
     gpu_whitelist: list[int] | None = None,
     runtime_info: dict[str, str] | None = None,
     queue_info: dict[str, Any] | None = None,
+    distributed_mode: str | None = None,
 ) -> None:
     task_dir = self.current_task_dir or self._reserve_history_task_dir(job, methods_subdir, variant)
     now = time.time()
@@ -332,6 +333,8 @@ def _start_history_task(
         "log_count": 0,
         "metric_count": 0,
     }
+    if distributed_mode is not None:
+        meta["distributed_mode"] = distributed_mode
     _write_json_atomic(task_dir / "meta.json", meta)
     _write_config_snapshot(
         task_dir / "config.snapshot.toml",

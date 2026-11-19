@@ -42,6 +42,17 @@ def _load_config_file_config(*args, **kwargs):
     return _training_facade()._load_config_file_config(*args, **kwargs)
 
 
+def load_training_launch_config(
+    config_file: str | None, extra_args: list[str] | None,
+) -> dict[str, Any] | None:
+    """Read the frozen launch config with the same overrides used by training."""
+    from web.services.training.extra_args import merge_training_extra_args
+    from web.services.training.runtime_common import read_config_file_config
+
+    config = read_config_file_config(config_file) if config_file else None
+    return merge_training_extra_args(config, extra_args) if config is not None else None
+
+
 def _normalize_gpu_whitelist(*args, **kwargs):
     return _training_facade()._normalize_gpu_whitelist(*args, **kwargs)
 

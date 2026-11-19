@@ -11,6 +11,10 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from library.training.pp.errors import PipelineParallelError
+from web.services.training.distributed import effective_distributed_mode
+from web.services.training.extra_args import merge_training_extra_args
+
 _KNOWN_VARIANTS = frozenset(
     {
         "lora",
@@ -38,10 +42,13 @@ _EMPTY = {
     "block_swap_precision": "",
     "base_compute": "",
     "precision_preference": "",
+    "distributed_mode": "",
 }
 
 
-def history_config_chips_for_task_dir(task_dir: Path, *, variant: str = "") -> dict[str, str]:
+def history_config_chips_for_task_dir(
+    task_dir: Path, *, variant: str = "", legacy_command: list[str] | None = None,
+) -> dict[str, str]:
     snapshot = Path(task_dir) / "config.snapshot.toml"
     try:
         if not snapshot.is_file():
@@ -49,10 +56,12 @@ def history_config_chips_for_task_dir(task_dir: Path, *, variant: str = "") -> d
         text = snapshot.read_text(encoding="utf-8")
     except OSError:
         return dict(_EMPTY)
-    return history_config_chips_from_snapshot_text(text, variant=variant)
+    return history_config_chips_from_snapshot_text(text, variant=variant, legacy_command=legacy_command)
 
 
-def history_config_chips_from_snapshot_text(text: str, *, variant: str = "") -> dict[str, str]:
+def history_config_chips_from_snapshot_text(
+    text: str, *, variant: str = "", legacy_command: list[str] | None = None,
+) -> dict[str, str]:
     raw = str(text or "")
     if not raw.strip():
         return dict(_EMPTY)
@@ -70,7 +79,23 @@ def history_config_chips_from_snapshot_text(text: str, *, variant: str = "") -> 
         "block_swap_precision": _norm_precision(flat.get("block_swap_transfer_dtype")),
         "base_compute": _norm_precision(flat.get("base_compute")),
         "precision_preference": _infer_precision_preference(flat),
+        "distributed_mode": _legacy_pipeline_mode(data, legacy_command) if legacy_command is not None else "",
     }
+
+
+def _legacy_pipeline_mode(config: dict[str, Any], command: list[str]) -> str:
+    """Recover PP from a historical config and any recorded Web launcher overrides."""
+
+    extra_args = []
+    for option in ("--config_file", "--methods_subdir"):
+        if option in command:
+            extra_args = command[command.index(option) + 2:]
+            break
+    try:
+        mode = effective_distributed_mode(merge_training_extra_args(config, extra_args))
+    except (ValueError, PipelineParallelError):
+        return ""
+    return "pp" if mode == "pp" else ""
 
 
 def _flatten_toml_dict(data: dict[str, Any]) -> dict[str, Any]:
