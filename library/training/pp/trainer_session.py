@@ -250,6 +250,7 @@ def build_moss_trainer_runtime(args, accelerator, network, unet, *, latent_shape
         stage_adapters_fn=moss_stage_adapter_modules,
         release_submodules_fn=release_moss_foreign_submodules,
         move_surviving_to_device=True,
+        freeze_non_adapter_base=True,
         max_text_tokens=max_text_tokens,
     )
 
@@ -390,6 +391,7 @@ def build_anima_trainer_runtime(args, accelerator, network, unet, *, latent_shap
         stage_adapters_fn=stage_adapter_modules,
         release_submodules_fn=release_anima_foreign_submodules,
         move_surviving_to_device=True,
+        freeze_non_adapter_base=True,
         log_moved=True,
     )
 

@@ -371,6 +371,10 @@ class AnimaLastStage(_AnimaStageBase):
             projected = finish_model(
                 model, hidden, embedding, adaln_lora, use_fp32=self.use_fp32
             )
+        # ``FinalLayer.fp32_residual`` intentionally projects in fp32 to avoid
+        # overflow, but the PP output contract is the activation dtype; cast at
+        # the stage boundary so PipelineStage's frozen output metadata matches.
+        projected = projected.to(dtype=self.compute_policy.prediction_dtype)
         return model_pred_to_loss_4d(projected)
 
     def _resolve_conditioning(self, frozen: Sequence[Tensor], *, timesteps, crossattn_emb):

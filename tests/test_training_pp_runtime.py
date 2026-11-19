@@ -603,6 +603,10 @@ def test_use_fp32_is_decided_once_from_the_pre_block_dtype():
     from library.anima.mini_forward import resolve_use_fp32
 
     model = _tiny_model()
+    # Production fp16 runs enable the fp32 residual guards.  This is the path
+    # where FinalLayer's fp32 projection must still be cast back to the
+    # pipeline's declared fp16 prediction dtype at the stage boundary.
+    model.enable_fp32_residual()
     latents, timesteps, context, padding_mask, _target = _tiny_batch(2)
     policy = PpComputePolicy.from_dtype(torch.float16)
     assert policy.use_fp32 is True

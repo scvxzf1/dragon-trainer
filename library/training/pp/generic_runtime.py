@@ -435,6 +435,14 @@ def _run_local_build_phase(
         **extra,
     )
     stage_parameters = list(stage_module.trainable_parameters())
+    # PP fp16's GradScaler transaction owns gradients, so the stage-local
+    # adapter masters must be fp32 even when the ordinary trainer built them
+    # from a fp16 compute-dtype model.  Promote only trainable stage
+    # parameters; the frozen base is not part of this list.
+    if config.mixed_precision == "fp16":
+        for parameter in stage_parameters:
+            if parameter.requires_grad and parameter.dtype != torch.float32:
+                parameter.data = parameter.data.to(dtype=torch.float32)
     if plugin.negotiate_build:
         validate_master_weight_dtype(
             stage_parameters, mixed_precision=config.mixed_precision, device=device

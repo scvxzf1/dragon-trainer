@@ -205,6 +205,17 @@ def test_wire_shape_from_batch_uses_the_full_padded_token_count():
     with pytest.raises(PipelineParallelError) as excinfo:
         adapter.wire_shape_from_batch({"latents": torch.randn(2, 4, 8, 6), "text_encoder_outputs_list": [None]})
     assert excinfo.value.code == "pp_config_invalid"
+    with pytest.raises(PipelineParallelError, match="cache_llm_adapter_outputs"):
+        adapter.wire_shape_from_batch({
+            "latents": torch.randn(2, 4, 8, 6),
+            "text_encoder_outputs_list": [
+                torch.randn(2, 12, 24),
+                None,
+                None,
+                None,
+                torch.tensor(0.0),
+            ],
+        })
 
 
 def test_padding_mask_is_all_zero_attention_sink():

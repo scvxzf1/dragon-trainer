@@ -169,6 +169,37 @@ class AnimaTrainerAdapter:
     #  stage, so each rank reads the cached conditions from its own batch.
     conditions_on_every_rank = True
 
+    @staticmethod
+    def _cached_crossattn(conds, *, where: str) -> Tensor:
+        """Return the cached max-padded Anima cross-attention tensor.
+
+        Anima's text cache may legitimately contain only the five-tuple
+        ``(prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask,
+        caption_dropout_rate)`` when ``cache_llm_adapter_outputs`` is off.  The
+        PP wire needs the separate ``crossattn_emb`` entry, so distinguish that
+        configuration error from a malformed cache instead of indexing a scalar
+        dropout rate as if it were a ``(B, T, C)`` tensor.
+        """
+
+        if len(conds) < 5 or conds[4] is None:
+            raise PipelineParallelError(
+                CODE_CONFIG_INVALID,
+                f"{where}: the Anima PP first stage consumes the cached "
+                "max-padded crossattn_emb; this batch's text cache has no "
+                "cached crossattn_emb entry (enable cache_llm_adapter_outputs "
+                "and rebuild the Anima text cache)",
+            )
+        crossattn = conds[4]
+        if not isinstance(crossattn, Tensor) or crossattn.ndim < 2:
+            raise PipelineParallelError(
+                CODE_CONFIG_INVALID,
+                f"{where}: the Anima PP first stage expects cached crossattn_emb "
+                "with shape (B, T, C); got "
+                f"{tuple(crossattn.shape) if isinstance(crossattn, Tensor) else type(crossattn).__name__} "
+                "(enable cache_llm_adapter_outputs and rebuild the Anima text cache)",
+            )
+        return crossattn
+
     def admission(self, config, *, world_size=None, where="trainer-admission"):
         from .trainer_admission import require_anima_trainer_admission
 
@@ -216,15 +247,11 @@ class AnimaTrainerAdapter:
                 "configuration; the first batch has no cached "
                 "text_encoder_outputs_list (rebuild the Anima text cache)",
             )
-        if len(conds) < 5 or conds[4] is None:
-            raise PipelineParallelError(
-                CODE_CONFIG_INVALID,
-                "the Anima PP first stage consumes the cached max-padded "
-                "crossattn_emb; this batch's text cache has no cached "
-                "crossattn_emb entry (live TE encoding is not wired)",
-            )
+        crossattn_emb = self._cached_crossattn(
+            conds, where="Anima PP wire-shape"
+        )
         # (B, T, C): T is the max-padded token count, never trimmed.
-        max_text_tokens = int(conds[4].shape[-2])
+        max_text_tokens = int(crossattn_emb.shape[-2])
         return tuple(int(v) for v in wire.shape), max_text_tokens
 
     def prepare_conditions(self, trainer, args, batch, *, accelerator, weight_dtype, text_encoding_strategy=None):
@@ -251,14 +278,9 @@ class AnimaTrainerAdapter:
                 "(the unconditional crossattn_emb would need the uncond cache "
                 "and a per-stage dropout contract); disable caption dropout",
             )
-        if len(conds) < 5 or conds[4] is None:
-            raise PipelineParallelError(
-                CODE_CONFIG_INVALID,
-                "the Anima PP first stage consumes the cached max-padded "
-                "crossattn_emb; live TE encoding is not wired (rebuild the "
-                "Anima text cache with crossattn_emb)",
-            )
-        crossattn_emb = conds[4].to(accelerator.device, dtype=weight_dtype)
+        crossattn_emb = self._cached_crossattn(
+            conds, where="Anima PP cached conditions"
+        ).to(accelerator.device, dtype=weight_dtype)
         return {"crossattn_emb": crossattn_emb}
 
     def finalize_conditions(self, latents: Tensor, conditions: dict) -> dict:

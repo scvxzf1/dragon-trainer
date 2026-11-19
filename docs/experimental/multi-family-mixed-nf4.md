@@ -1,7 +1,7 @@
 # 多模型族 BF16/NF4 混合基座
 
-状态：实验，2026-10-03。三个新增模型族的格式、加载与 CUDA 小模型训练验收通过；
-尚未转换这三族的完整权重，也未做真实数据集热训练、采样质量或显存收益对照。
+状态：实验，2026-11-19。四族主 DiT 的 canonical 格式、加载与 CUDA 小模型训练验收通过；
+尚未转换这四族的完整权重，也未做真实数据集热训练、采样质量或显存收益对照。
 
 相关代码：`library/quantization/`、各模型族的 `weights.py`、
 `scripts/quantization/convert_mixed_nf4.py`。
@@ -15,12 +15,13 @@
 
 | 模型族 | NF4 模块 | 保留 BF16 |
 | --- | --- | --- |
-| Anima | 原有49个MLP矩阵固定策略 | 原热点层与其他模块，文件格式不变 |
+| Anima | 原有49个MLP矩阵固定策略 | 原热点层与其他模块；新导出使用 canonical manifest |
 | Krea-2 Raw | `blocks.*.mlp.{gate,up,down}` | attention、embedding、调制、norm、输入输出等 |
 | Z-Image | `layers.*.feed_forward.{w1,w2,w3}` | attention、全部refiners、embedding、norm、输入输出等 |
 | Qwen Image 2.1 | `transformer_blocks.*.img_mlp.{gate_layer,proj,out}` | attention、文本处理、调制、norm、输入输出等 |
 
-新增三族使用 `main-mlp-nf4-v1`，NF4 blocksize64、double quant、BF16 compute。
+新增三族使用 `main-mlp-nf4-v1`，NF4 blocksize64、double quant、BF16 compute；Anima
+继续使用 selective policy，canonical manifest 与旧 Anima manifest 只读兼容。
 这是按模块划分的首版策略，没有照搬Anima热点层号，也不宣称三族全部MLP均不敏感。
 各族后续的层敏感度、量化误差与长期质量需要分别评估。
 
@@ -45,33 +46,12 @@ canonical keys，packed字节不会进入普通dense拆分逻辑。
   --output /path/krea2-mixed-nf4.safetensors --threads 4
 ```
 
-`--family` 还可取 `anima`、`z_image`、`qwen_image_2_1`。Anima 通过同一入口调用
-固定 selective MLP canonical converter；Anima 也接受统一入口的 `--threads`。其它族转换在CPU加载完整普通模型，逐矩阵
+`--family` 还可取 `z_image`、`qwen_image_2_1`。转换在CPU加载完整普通模型，逐矩阵
 量化并保存新文件，需要足够主机内存同时容纳源模型和输出payload；不是流式低内存
 转换器。不会下载模型，不覆盖源文件或已有目标，发布采用同目录临时文件与原子无覆盖链接。
 
-Anima 的旧专用入口 `scripts/anima/quantize_mixed_nf4.py` 继续保留，用于兼容已有
-自动化脚本和进度输出；新任务统一使用 `scripts/quantization/convert_mixed_nf4.py`。
-两个入口都发布同一个 `diffusion.mixed_nf4.manifest` canonical 格式。统一入口的
-`--verify-only` 不加载模型、不改写 artifact，并以 JSON 输出验证结果：
-
-```bash
-.venv/bin/python scripts/quantization/convert_mixed_nf4.py \
-  --family anima --source /path/anima-bf16.safetensors \
-  --output /path/anima-mixed-nf4.safetensors --threads 4
-.venv/bin/python scripts/quantization/convert_mixed_nf4.py \
-  --family anima --output /path/anima-mixed-nf4.safetensors --verify-only
-```
-
-已发布的 canonical artifact 可以不加载模型直接验证：
-
-```bash
-.venv/bin/python scripts/quantization/convert_mixed_nf4.py \
-  --family anima --output /path/mixed.safetensors --verify-only
-```
-
-新metadata `diffusion.mixed_nf4.manifest` 包含family、版本、固定策略、完整源张量
-库存、源SHA256、计算精度及bnb版本。加载器以实际模型结构校验全部key、shape、
+新 metadata `diffusion.mixed_nf4.manifest` 包含 family、版本、prefix、固定策略、
+完整源张量库存、源 SHA256、计算精度、qstate 与 bnb 版本。加载器以实际模型结构校验全部 key、shape、
 保留张量dtype与qstate，拒绝未知族、缺失矩阵、多余tensor及损坏量化状态。
 double-quant二级scale decode dtype必须是FP32。直接恢复packed权重，不重复量化。
 Z-Image的refiner保持原实现，Qwen保留派生频率恢复步骤。
