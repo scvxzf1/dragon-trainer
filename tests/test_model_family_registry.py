@@ -301,3 +301,63 @@ def test_family_plugins_declare_text_preprocess_contracts() -> None:
     for family, (runner, module) in expected.items():
         spec = get_family_plugin(family).text_preprocess_spec
         assert (spec.runner, spec.module) == (runner, module)
+
+
+def test_family_plugin_loader_fails_closed_for_incomplete_plugin(monkeypatch) -> None:
+    import library.models.family_plugins as family_plugins
+
+    class IncompletePlugin:
+        family = "z_image"
+        text_preprocess_spec = family_plugins.TextPreprocessSpec(runner="module")
+
+    monkeypatch.delitem(family_plugins._PLUGINS, "z_image", raising=False)
+    monkeypatch.setitem(family_plugins._PLUGIN_MODULES, "z_image", "test.plugin")
+    monkeypatch.setattr(
+        family_plugins.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(PLUGIN=IncompletePlugin()),
+    )
+
+    with pytest.raises(TypeError, match="missing callable contract methods"):
+        family_plugins.get_family_plugin("z_image")
+
+
+def test_family_latent_cache_strategies_use_registry_spec_and_plugin_encoder() -> None:
+    from library.models.family_plugins import get_family_plugin
+    from library.strategies.latent_cache import FamilyLatentCacheStrategy
+
+    args = SimpleNamespace(
+        cache_latents_to_disk=False,
+        vae_batch_size=1,
+        skip_cache_check=False,
+        vae="local-vae",
+        require_cache_identity=False,
+    )
+    for family in MODEL_FAMILY_REGISTRY:
+        plugin = get_family_plugin(family)
+        strategy = plugin.build_latent_cache_strategy(args)
+        spec = get_model_family_spec(family).latent_space
+
+        assert strategy.MODEL_FAMILY == family
+        assert strategy.latent_space_spec is spec
+        assert strategy.latents_stride == spec.vae_spatial_compression
+        assert strategy.cache_suffix == spec.cache_suffix
+        assert callable(strategy._encode_by_vae)
+
+
+def test_non_anima_latent_cache_strategy_has_no_anima_strategy_ancestry() -> None:
+    from library.anima.strategy import AnimaLatentsCachingStrategy
+    from library.models.family_plugins import get_family_plugin
+    from library.strategies.latent_cache import FamilyLatentCacheStrategy
+
+    args = SimpleNamespace(
+        cache_latents_to_disk=False,
+        vae_batch_size=1,
+        skip_cache_check=False,
+        vae="local-vae",
+        require_cache_identity=False,
+    )
+    for family in ("krea2_raw", "z_image", "qwen_image_2_1", "moss_image"):
+        strategy = get_family_plugin(family).build_latent_cache_strategy(args)
+        assert not isinstance(strategy, AnimaLatentsCachingStrategy)
+        assert isinstance(strategy, FamilyLatentCacheStrategy)

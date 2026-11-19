@@ -23,7 +23,7 @@ from library.anima.text_strategies import (
     TextEncoderOutputsCachingStrategy,
 )
 from library.strategies.text_cache import VariantSafetensorsTextCacheStrategy
-from library.models import qwen_vae as qwen_image_autoencoder_kl
+from library.strategies.latent_cache import FamilyLatentCacheStrategy
 from library.models.family_registry import (
     get_model_family_spec,
     validate_text_cache_metadata,
@@ -657,15 +657,8 @@ class AnimaTextEncoderOutputsCachingStrategy(
                     outputs.append(caption_dropout_rate)
                     info.text_encoder_outputs = tuple(outputs)
 
-class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
-    """Latent caching strategy for Anima using WanVAE.
-
-    WanVAE produces 16-channel latents with spatial downscale 8x.
-    Latent shape for images: (B, 16, 1, H/8, W/8)
-    """
-
-    ANIMA_LATENTS_NPZ_SUFFIX = "_anima.npz"
-
+class AnimaLatentsCachingStrategy(FamilyLatentCacheStrategy):
+    """Anima cache specialization using the registered latent-space spec."""
     def __init__(
         self,
         cache_to_disk: bool,
@@ -674,55 +667,21 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         *,
         cache_identity: dict | None = None,
         require_cache_identity: bool = False,
+        encode_by_vae=None,
     ) -> None:
         super().__init__(
             cache_to_disk,
             batch_size,
             skip_disk_cache_validity_check,
+            model_family="anima",
+            encode_by_vae=encode_by_vae or self.encode_vae,
             cache_identity=cache_identity,
             require_cache_identity=require_cache_identity,
         )
 
-    @property
-    def cache_suffix(self) -> str:
-        return self.ANIMA_LATENTS_NPZ_SUFFIX
-
-    def get_latents_npz_path(
-        self,
-        absolute_path: str,
-        image_size: Tuple[int, int],
-        cache_dir: Optional[str] = None,
-        image_dir: Optional[str] = None,
-    ) -> str:
-        suffix = (
-            f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + self.ANIMA_LATENTS_NPZ_SUFFIX
-        )
-        return resolve_cache_path(
-            absolute_path, suffix, cache_dir=cache_dir, image_dir=image_dir
-        )
-
-    def is_disk_cached_latents_expected(
-        self,
-        bucket_reso: Tuple[int, int],
-        npz_path: str,
-        flip_aug: bool,
-        alpha_mask: bool,
-    ):
-        return self._default_is_disk_cached_latents_expected(
-            8, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True
-        )
-
-    def load_latents_from_disk(
-        self, npz_path: str, bucket_reso: Tuple[int, int]
-    ) -> Tuple[
-        Optional[np.ndarray],
-        Optional[List[int]],
-        Optional[List[int]],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-    ]:
-        return self._default_load_latents_from_disk(8, npz_path, bucket_reso)
+    @staticmethod
+    def encode_vae(vae, images):
+        return vae.encode_pixels_to_latents(images)
 
     def cache_batch_latents(
         self,
@@ -732,37 +691,9 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         alpha_mask: bool,
         random_crop: bool,
     ):
-        """Cache batch of latents using Qwen Image VAE.
-
-        vae is expected to be the Qwen Image VAE (AutoencoderKLQwenImage).
-        The encoding function handles the mean/std normalization.
-        """
-        vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage = vae
-        vae_device = vae.device
-        vae_dtype = vae.dtype
-
-        def encode_by_vae(img_tensor):
-            """Encode image tensor to latents.
-
-            img_tensor: (B, C, H, W) in [-1, 1] range (already normalized by IMAGE_TRANSFORMS)
-            Qwen Image VAE accepts inputs in (B, C, H, W) or (B, C, 1, H, W) shape.
-            Returns latents in (B, 16, 1, H/8, W/8) shape on CPU.
-            """
-            latents = vae.encode_pixels_to_latents(
-                img_tensor
-            )  # Keep 4D for input/output
-            return latents.to("cpu")
-
-        self._default_cache_batch_latents(
-            encode_by_vae,
-            vae_device,
-            vae_dtype,
-            image_infos,
-            flip_aug,
-            alpha_mask,
-            random_crop,
-            multi_resolution=True,
+        super().cache_batch_latents(
+            vae, image_infos, flip_aug, alpha_mask, random_crop
         )
-
+        vae_device = next(vae.parameters()).device
         if not _datasets_base.HIGH_VRAM:
             clean_memory_on_device(vae_device)

@@ -149,8 +149,8 @@ def test_flow_noising_target_and_timestep_contract(monkeypatch):
     torch.testing.assert_close(seen["hidden_states"][0], 0.75 * latents[0] + 0.25 * noise[0])
     torch.testing.assert_close(seen["hidden_states"][1], 0.25 * latents[1] + 0.75 * noise[1])
     torch.testing.assert_close(target, noise - latents)
-    torch.testing.assert_close(times, torch.tensor([250., 750.]))
-    torch.testing.assert_close(seen["timestep"], times)
+    torch.testing.assert_close(times, sigma)
+    torch.testing.assert_close(seen["timestep"], times * 1000)
     assert pred.shape == target.shape == latents.shape
     assert weights.shape == (2, 1, 1, 1) and weights.eq(1).all()
     with pytest.raises(ValueError, match="128"):

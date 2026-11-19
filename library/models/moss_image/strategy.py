@@ -6,9 +6,9 @@ import torch
 from safetensors import SafetensorError, safe_open
 from safetensors.torch import save_file
 
-from library.anima.strategy import AnimaLatentsCachingStrategy
 from library.anima.text_strategies import TextEncoderOutputsCachingStrategy
 from library.io.cache import resolve_cache_path
+from library.strategies.latent_cache import FamilyLatentCacheStrategy
 from .cache_policy import (
     MOSS_HIDDEN_SIZE, MOSS_MAX_LENGTH, resolve_text_token_cap, text_cache_metadata,
     validate_cache_metadata, validate_quantization,
@@ -113,27 +113,33 @@ class MossImageTextCache(TextEncoderOutputsCachingStrategy):
                 info.text_encoder_outputs = list(tensors.values())
 
 
-class MossImageLatentCache(AnimaLatentsCachingStrategy):
-    ANIMA_LATENTS_NPZ_SUFFIX = "_moss_image.npz"
-
-    def get_image_size_from_disk_cache_path(self, absolute_path, npz_path):
-        width, height = npz_path[:-len(self.cache_suffix)].rsplit("_", 1)[-1].split("x")
-        return int(width), int(height)
-
-    def is_disk_cached_latents_expected(self, bucket_reso, npz_path, flip_aug, alpha_mask):
-        return self._default_is_disk_cached_latents_expected(
-            16, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True,
-        )
-
-    def load_latents_from_disk(self, npz_path, bucket_reso):
-        return self._default_load_latents_from_disk(16, npz_path, bucket_reso)
-
-    def cache_batch_latents(self, vae, image_infos, flip_aug, alpha_mask, random_crop):
+class MossImageLatentCache(FamilyLatentCacheStrategy):
+    def __init__(
+        self,
+        cache_to_disk,
+        batch_size,
+        skip_disk_cache_validity_check,
+        *,
+        cache_identity=None,
+        require_cache_identity=False,
+        encode_by_vae=None,
+    ):
         from .latent import encode_moss_latents
 
+        super().__init__(
+            cache_to_disk,
+            batch_size,
+            skip_disk_cache_validity_check,
+            model_family="moss_image",
+            encode_by_vae=encode_by_vae or encode_moss_latents,
+            cache_identity=cache_identity,
+            require_cache_identity=require_cache_identity,
+        )
+
+    def cache_batch_latents(self, vae, image_infos, flip_aug, alpha_mask, random_crop):
         parameter = next(vae.parameters())
         self._default_cache_batch_latents(
-            lambda images: encode_moss_latents(vae, images).to("cpu"),
+            lambda images: self.encode_vae(vae, images).to("cpu"),
             parameter.device, parameter.dtype, image_infos, flip_aug, alpha_mask,
             random_crop, multi_resolution=True,
         )

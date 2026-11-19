@@ -7,6 +7,15 @@ from collections.abc import Sequence
 
 import torch
 from torch import Tensor
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class QwenTrainingConditions:
+    hiddens: Tensor
+    mask: Tensor
+    reference_latents: Tensor | None = None
+    image_slot_mask: Tensor | None = None
 
 
 def sample_sigmas(batch_size: int, image_tokens: int, *, device: torch.device) -> Tensor:
@@ -122,11 +131,17 @@ def forward_for_loss(
 def compute_noise_pred_and_target(
     trainer, ctx, latents: Tensor, batch, text_encoder_conds, *, is_train: bool = True,
 ):
-    if latents.ndim == 5 and latents.shape[2] == 1:
-        latents = latents.squeeze(2)
-    if latents.ndim != 4 or latents.shape[1] != 64:
-        raise ValueError("Qwen Image 2.1 requires its own 64-channel VAE latent cache")
-    dropout_rates = batch.get("caption_dropout_rates") if isinstance(batch, dict) else None
+    from library.models.family_registry import get_family_plugin
+
+    return get_family_plugin("qwen_image_2_1").compute_noise_pred_and_target(
+        trainer, ctx, latents, batch, text_encoder_conds, is_train=is_train
+    )
+
+
+def prepare_training_conditions(trainer, ctx, batch, text_encoder_conds):
+    dropout_rates = (
+        batch.get("caption_dropout_rates") if isinstance(batch, dict) else None
+    )
     if dropout_rates is not None and torch.as_tensor(dropout_rates).gt(0).any():
         raise ValueError("Qwen Image 2.1 training requires caption_dropout_rate=0")
     if not text_encoder_conds or text_encoder_conds[0] is None:
@@ -134,11 +149,14 @@ def compute_noise_pred_and_target(
         with torch.no_grad(), ctx.accelerator.autocast():
             text_encoder_conds = ctx.text_encoding_strategy.encode_tokens(
                 ctx.tokenize_strategy,
-                trainer.get_models_for_text_encoding(ctx.args, ctx.accelerator, ctx.text_encoders),
+                trainer.get_models_for_text_encoding(
+                    ctx.args, ctx.accelerator, ctx.text_encoders
+                ),
                 tokens,
             )
-    hiddens = text_encoder_conds[0].to(device=latents.device, dtype=ctx.weight_dtype)
-    mask = text_encoder_conds[1].to(device=latents.device, dtype=torch.bool)
+    device = ctx.accelerator.device
+    hiddens = text_encoder_conds[0].to(device=device, dtype=ctx.weight_dtype)
+    mask = text_encoder_conds[1].to(device=device, dtype=torch.bool)
     edit_task = getattr(ctx.args, "qwen_image_2_1_task", "t2i") == "edit"
     reference_latents = None
     image_slot_mask = None
@@ -148,34 +166,12 @@ def compute_noise_pred_and_target(
             raise ValueError(
                 "Qwen Image 2.1 Edit requires paired reference latents and cached image-slot masks"
             )
-        if latents.shape[0] != 1:
+        if hiddens.shape[0] != 1:
             raise ValueError("Qwen Image 2.1 Edit currently requires batch_size=1")
-        reference_latents = reference_latents.to(
-            device=latents.device, dtype=ctx.weight_dtype
-        )
-        image_slot_mask = text_encoder_conds[2].to(
-            device=latents.device, dtype=torch.bool
-        )
+        reference_latents = reference_latents.to(device=device, dtype=ctx.weight_dtype)
+        image_slot_mask = text_encoder_conds[2].to(device=device, dtype=torch.bool)
     elif batch.get("qwen_edit_reference_latents") is not None:
         raise ValueError(
             "Qwen edit reference images are configured but qwen_image_2_1_task is not 'edit'"
         )
-    noise = torch.randn_like(latents)
-    sigmas = sample_sigmas(latents.shape[0], latents.shape[2] * latents.shape[3], device=latents.device)
-    from library.training.flow_step import mix_latents, velocity_target, unit_weighting
-
-    noisy = mix_latents(latents, noise, sigmas)
-    if getattr(ctx.args, "gradient_checkpointing", False):
-        noisy.requires_grad_(True)
-    with torch.set_grad_enabled(is_train), ctx.accelerator.autocast():
-        model_pred = forward_for_loss(
-            ctx.unet,
-            noisy,
-            hiddens,
-            mask,
-            sigmas,
-            reference_latents=reference_latents,
-            image_slot_mask=image_slot_mask,
-        )
-    target = velocity_target(noise, latents)
-    return model_pred, target, sigmas, unit_weighting(sigmas, latents)
+    return QwenTrainingConditions(hiddens, mask, reference_latents, image_slot_mask)

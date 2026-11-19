@@ -216,9 +216,9 @@ def test_latent_cache_uses_sixteen_pixel_stride(monkeypatch) -> None:
     strategy = QwenImage21LatentCache(True, 1, False)
     called = []
     monkeypatch.setattr(strategy, "_default_is_disk_cached_latents_expected",
-                        lambda stride, *args, **kwargs: called.append(stride) or True)
+                        lambda *args, **kwargs: called.append(strategy.latents_stride) or True)
     monkeypatch.setattr(strategy, "_default_load_latents_from_disk",
-                        lambda stride, *args: called.append(stride))
+                        lambda *args: called.append(strategy.latents_stride))
     assert strategy.is_disk_cached_latents_expected((32, 32), "cache.npz", False, False)
     strategy.load_latents_from_disk("cache.npz", (32, 32))
     assert called == [16, 16]

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import numpy as np
 import torch
 
 from library import cache_identity as _identity
+from library.models.family_registry import get_model_family_spec
+from library.io.cache import resolve_cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +19,50 @@ logger = logging.getLogger(__name__)
 class GenericLatentCacheStrategy:
     """Reusable NPZ cache mechanics independent of a VAE family.
 
-    Family strategies keep ownership of cache suffixes, latent encoding and
-    shape-specific validation. This mixin owns only the shared sidecar layout:
-    optional resolution keys, flip latents, alpha masks, and VAE identity.
+    Family strategies keep ownership of VAE encoding and shape-specific
+    validation. Geometry and cache naming come from the registered latent
+    space; this mixin owns resolution keys, flip latents, alpha masks, and VAE
+    identity.
     """
+
+    MODEL_FAMILY = ""
+
+    @property
+    def latent_space_spec(self):
+        if not self.MODEL_FAMILY:
+            raise RuntimeError("latent-cache strategy must declare MODEL_FAMILY")
+        return get_model_family_spec(self.MODEL_FAMILY).latent_space
+
+    @property
+    def latents_stride(self) -> int:
+        return self.latent_space_spec.vae_spatial_compression
+
+    @property
+    def cache_suffix(self) -> str:
+        return self.latent_space_spec.cache_suffix
+
+    def get_latents_npz_path(
+        self,
+        absolute_path: str,
+        image_size: Tuple[int, int],
+        cache_dir: Optional[str] = None,
+        image_dir: Optional[str] = None,
+    ) -> str:
+        suffix = f"_{image_size[0]:04d}x{image_size[1]:04d}{self.cache_suffix}"
+        return resolve_cache_path(
+            absolute_path, suffix, cache_dir=cache_dir, image_dir=image_dir
+        )
+
+    def get_image_size_from_disk_cache_path(
+        self, absolute_path: str, npz_path: str
+    ) -> Tuple[int, int]:
+        del absolute_path
+        stem = npz_path[: -len(self.cache_suffix)]
+        width, height = stem.rsplit("_", 1)[-1].split("x")
+        return int(width), int(height)
 
     def _default_is_disk_cached_latents_expected(
         self,
-        latents_stride: int,
         bucket_reso: Tuple[int, int],
         npz_path: str,
         flip_aug: bool,
@@ -35,8 +73,8 @@ class GenericLatentCacheStrategy:
             return False
 
         expected_latents_size = (
-            bucket_reso[1] // latents_stride,
-            bucket_reso[0] // latents_stride,
+            bucket_reso[1] // self.latents_stride,
+            bucket_reso[0] // self.latents_stride,
         )
         key_reso_suffix = (
             f"_{expected_latents_size[0]}x{expected_latents_size[1]}"
@@ -111,6 +149,16 @@ class GenericLatentCacheStrategy:
 
         with torch.no_grad():
             latents_tensors = encode_by_vae(img_tensor).to("cpu")
+        if (
+            not isinstance(latents_tensors, torch.Tensor)
+            or latents_tensors.ndim < 4
+            or latents_tensors.shape[1] != self.latent_space_spec.latent_channels
+        ):
+            raise ValueError(
+                f"{self.MODEL_FAMILY} VAE encoder returned invalid latent shape "
+                f"{getattr(latents_tensors, 'shape', None)}; expected channel axis "
+                f"{self.latent_space_spec.latent_channels}"
+            )
         if flip_aug:
             img_tensor = torch.flip(img_tensor, dims=[3])
             with torch.no_grad():
@@ -153,18 +201,18 @@ class GenericLatentCacheStrategy:
 
     def _default_load_latents_from_disk(
         self,
-        latents_stride: Optional[int],
         npz_path: str,
         bucket_reso: Tuple[int, int],
+        multi_resolution: bool = True,
     ):
-        if latents_stride is None:
-            key_reso_suffix = ""
-        else:
+        if multi_resolution:
             latents_size = (
-                bucket_reso[1] // latents_stride,
-                bucket_reso[0] // latents_stride,
+                bucket_reso[1] // self.latents_stride,
+                bucket_reso[0] // self.latents_stride,
             )
             key_reso_suffix = f"_{latents_size[0]}x{latents_size[1]}"
+        else:
+            key_reso_suffix = ""
 
         with np.load(npz_path) as npz:
             if "latents" + key_reso_suffix not in npz:
@@ -185,7 +233,7 @@ class GenericLatentCacheStrategy:
         return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
 
     def load_latents_from_disk(self, npz_path: str, bucket_reso: Tuple[int, int]):
-        return self._default_load_latents_from_disk(None, npz_path, bucket_reso)
+        return self._default_load_latents_from_disk(npz_path, bucket_reso)
 
     def save_latents_to_disk(
         self,
@@ -227,4 +275,118 @@ class GenericLatentCacheStrategy:
         if alpha_mask is not None:
             kwargs["alpha_mask" + key_reso_suffix] = alpha_mask.float().cpu().numpy()
         np.savez(npz_path, **kwargs)
+
+
+class _LatentsCachingStrategyContract:
+    _strategy = None
+
+    def __init__(
+        self,
+        cache_to_disk: bool,
+        batch_size: int,
+        skip_disk_cache_validity_check: bool,
+        *,
+        cache_identity: Optional[dict] = None,
+        require_cache_identity: bool = False,
+    ) -> None:
+        self._cache_to_disk = cache_to_disk
+        self._batch_size = batch_size
+        self.skip_disk_cache_validity_check = skip_disk_cache_validity_check
+        self.cache_identity = cache_identity
+        self.require_cache_identity = bool(require_cache_identity)
+
+    @classmethod
+    def set_strategy(cls, strategy):
+        if cls._strategy is not None:
+            raise RuntimeError(
+                f"Internal error. {cls.__name__} strategy is already set"
+            )
+        cls._strategy = strategy
+
+    @classmethod
+    def get_strategy(cls):
+        return cls._strategy
+
+    @property
+    def cache_to_disk(self):
+        return self._cache_to_disk
+
+    @property
+    def batch_size(self):
+        return self._batch_size
+
+    def get_latents_npz_path(self, absolute_path, image_size, cache_dir=None, image_dir=None):
+        raise NotImplementedError
+
+    def is_disk_cached_latents_expected(self, bucket_reso, npz_path, flip_aug, alpha_mask):
+        raise NotImplementedError
+
+    def cache_batch_latents(self, model, batch, flip_aug, alpha_mask, random_crop):
+        raise NotImplementedError
+
+
+class LatentsCachingStrategy(GenericLatentCacheStrategy, _LatentsCachingStrategyContract):
+    """Family-neutral public strategy contract used by dataset loaders."""
+
+
+class FamilyLatentCacheStrategy(LatentsCachingStrategy):
+    """Spec-driven cache strategy with only VAE encoding left to each family."""
+
+    MODEL_FAMILY = ""
+
+    def __init__(
+        self,
+        cache_to_disk: bool,
+        batch_size: int,
+        skip_disk_cache_validity_check: bool,
+        *,
+        model_family: str,
+        encode_by_vae: Callable,
+        clean_after_cache: bool = False,
+        cache_identity: Optional[dict] = None,
+        require_cache_identity: bool = False,
+    ) -> None:
+        super().__init__(
+            cache_to_disk,
+            batch_size,
+            skip_disk_cache_validity_check,
+            cache_identity=cache_identity,
+            require_cache_identity=require_cache_identity,
+        )
+        self.MODEL_FAMILY = model_family
+        self._encode_by_vae = encode_by_vae
+        self._clean_after_cache = bool(clean_after_cache)
+
+    def is_disk_cached_latents_expected(
+        self, bucket_reso, npz_path, flip_aug, alpha_mask
+    ):
+        return self._default_is_disk_cached_latents_expected(
+            bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True
+        )
+
+    def encode_vae(self, vae, images):
+        return self._encode_by_vae(vae, images)
+
+    def cache_batch_latents(self, vae, image_infos, flip_aug, alpha_mask, random_crop):
+        parameters = iter(vae.parameters())
+        try:
+            parameter = next(parameters)
+        except StopIteration as exc:
+            raise ValueError(f"{self.MODEL_FAMILY} VAE has no parameters") from exc
+        self._default_cache_batch_latents(
+            lambda images: self.encode_vae(vae, images).to("cpu"),
+            parameter.device,
+            parameter.dtype,
+            image_infos,
+            flip_aug,
+            alpha_mask,
+            random_crop,
+            multi_resolution=True,
+        )
+        if self._clean_after_cache:
+            from library.datasets import base as datasets_base
+            from library.runtime.device import clean_memory_on_device
+
+            if not datasets_base.HIGH_VRAM:
+                clean_memory_on_device(parameter.device)
 

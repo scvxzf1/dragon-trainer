@@ -458,12 +458,14 @@ def text_encoder_cache_session(
     because it has stronger cleanup and partial-install failure semantics.
     """
     target = torch.device(device)
-    parameters = list(model.parameters())
-    buffers = list(model.buffers())
-    tensors = parameters + buffers
     original_specs = {
-        id(tensor): (tensor.device, tensor.dtype) for tensor in tensors
+        name: (tensor.device, tensor.dtype)
+        for name, tensor in (
+            *model.named_parameters(),
+            *model.named_buffers(),
+        )
     }
+    original_devices = {device for device, _dtype in original_specs.values()}
     try:
         if dtype is None:
             model.to(target)
@@ -471,12 +473,23 @@ def text_encoder_cache_session(
             model.to(device=target, dtype=dtype)
         yield model
     finally:
-        if restore:
-            for tensor in (*model.parameters(), *model.buffers()):
-                original_device, original_dtype = original_specs[id(tensor)]
-                tensor.data = tensor.data.to(
-                    device=original_device,
-                    dtype=original_dtype,
+        try:
+            if restore:
+                if len(original_devices) == 1:
+                    model.to(device=next(iter(original_devices)))
+                current_tensors = (
+                    *model.named_parameters(),
+                    *model.named_buffers(),
                 )
-        if target.type == "cuda":
-            torch.cuda.empty_cache()
+                for name, tensor in current_tensors:
+                    original_spec = original_specs.get(name)
+                    if original_spec is None:
+                        continue
+                    original_device, original_dtype = original_spec
+                    tensor.data = tensor.data.to(
+                        device=original_device,
+                        dtype=original_dtype,
+                    )
+        finally:
+            if target.type == "cuda":
+                torch.cuda.empty_cache()

@@ -1,13 +1,13 @@
 """Shared cache strategies used by model-family training pipelines.
 
-The package intentionally keeps imports lazy: the Anima compatibility facade
-imports ``library.strategies.latent_cache`` while the text-cache engine uses
-Anima's base protocol. Eager re-exports would create a circular import during
-legacy strategy loading.
+The package intentionally keeps imports lazy so dataset and strategy startup
+paths do not eagerly load unrelated model-family implementations.
 """
 
 __all__ = [
     "GenericLatentCacheStrategy",
+    "FamilyLatentCacheStrategy",
+    "LatentsCachingStrategy",
     "FamilySafetensorsTextCacheStrategy",
     "VariantSafetensorsTextCacheStrategy",
     "text_encoder_cache_session",
@@ -15,10 +15,18 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name == "GenericLatentCacheStrategy":
-        from .latent_cache import GenericLatentCacheStrategy
+    if name in {
+        "GenericLatentCacheStrategy",
+        "FamilyLatentCacheStrategy",
+        "LatentsCachingStrategy",
+    }:
+        from .latent_cache import (
+            FamilyLatentCacheStrategy,
+            GenericLatentCacheStrategy,
+            LatentsCachingStrategy,
+        )
 
-        return GenericLatentCacheStrategy
+        return locals()[name]
     if name in {
         "FamilySafetensorsTextCacheStrategy",
         "VariantSafetensorsTextCacheStrategy",

@@ -2,7 +2,6 @@
 
 import argparse
 import gc
-import math
 import os
 import random
 import time
@@ -606,28 +605,15 @@ def compute_loss_weighting_for_anima(
 
         SNR(σ) = ((1 - σ) / σ)²
     """
-    sigmas_f = sigmas.float()
-    if weighting_scheme == "sigma_sqrt":
-        weighting = (sigmas_f**-2.0).float()
-    elif weighting_scheme == "cosmap":
-        bot = 1 - 2 * sigmas_f + 2 * sigmas_f**2
-        weighting = 2 / (math.pi * bot)
-    elif weighting_scheme == "min_snr":
-        gamma = 5.0 if min_snr_gamma is None else float(min_snr_gamma)
-        sigma_safe = sigmas_f.clamp(1e-6, 1.0 - 1e-6)
-        snr = ((1.0 - sigma_safe) / sigma_safe).pow(2)
-        weighting = torch.minimum(snr, torch.full_like(snr, gamma)) / snr.clamp_min(
-            1e-12
-        )
-    elif weighting_scheme == "p2":
-        sigma_safe = sigmas_f.clamp(1e-6, 1.0 - 1e-6)
-        snr = ((1.0 - sigma_safe) / sigma_safe).pow(2)
-        weighting = (float(p2_k) + snr).pow(-float(p2_gamma))
-    elif weighting_scheme == "none" or weighting_scheme is None:
-        weighting = torch.ones_like(sigmas_f)
-    else:
-        weighting = torch.ones_like(sigmas_f)
-    return weighting
+    from library.training.flow_step import compute_flow_loss_weighting
+
+    return compute_flow_loss_weighting(
+        weighting_scheme,
+        sigmas,
+        min_snr_gamma=min_snr_gamma,
+        p2_gamma=p2_gamma,
+        p2_k=p2_k,
+    )
 
 
 # Parameter groups (6 groups with separate LRs)

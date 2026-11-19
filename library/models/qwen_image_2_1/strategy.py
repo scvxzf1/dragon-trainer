@@ -11,11 +11,11 @@ from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from library.anima import strategy as anima_strategy
 from library.anima.text_strategies import TextEncodingStrategy, TokenizeStrategy
 from library.io.cache import resolve_cache_path
 from library.models.family_registry import get_model_family_spec
 from library.strategies.text_cache import FamilySafetensorsTextCacheStrategy
+from library.strategies.latent_cache import FamilyLatentCacheStrategy
 from library.models.latent_space import QWEN_IMAGE_21_F16C64_P1
 from library.models.qwen_image_2_1.latent import encode_qwen_image_2_1_latents
 from library.datasets.qwen_image_edit import (
@@ -393,29 +393,35 @@ class QwenImage21EditTextCache(QwenImage21TextCache):
                 info.text_encoder_outputs = list(tensors.values())
 
 
-class QwenImage21LatentCache(anima_strategy.AnimaLatentsCachingStrategy):
-    ANIMA_LATENTS_NPZ_SUFFIX = QWEN_IMAGE_21_F16C64_P1.cache_suffix
+class QwenImage21LatentCache(FamilyLatentCacheStrategy):
     EDIT_LATENT_CACHE_SCHEMA = "qwen-image-2.1-edit-reference-v1"
 
-    def is_disk_cached_latents_expected(self, bucket_reso, npz_path, flip_aug, alpha_mask):
-        return self._default_is_disk_cached_latents_expected(
-            16, bucket_reso, npz_path, flip_aug, alpha_mask, multi_resolution=True
+    def __init__(
+        self,
+        cache_to_disk,
+        batch_size,
+        skip_disk_cache_validity_check,
+        *,
+        cache_identity=None,
+        require_cache_identity=False,
+        encode_by_vae=encode_qwen_image_2_1_latents,
+    ):
+        super().__init__(
+            cache_to_disk,
+            batch_size,
+            skip_disk_cache_validity_check,
+            model_family="qwen_image_2_1",
+            encode_by_vae=encode_by_vae,
+            cache_identity=cache_identity,
+            require_cache_identity=require_cache_identity,
         )
-
-    def load_latents_from_disk(self, npz_path, bucket_reso):
-        return self._default_load_latents_from_disk(16, npz_path, bucket_reso)
-
-    def get_image_size_from_disk_cache_path(self, absolute_path, npz_path):
-        stem = npz_path[: -len(self.cache_suffix)]
-        width, height = stem.rsplit("_", 1)[-1].split("x")
-        return int(width), int(height)
 
     def cache_batch_latents(self, vae, image_infos: List, flip_aug: bool, alpha_mask: bool, random_crop: bool):
         vae_device = next(vae.parameters()).device
         vae_dtype = next(vae.parameters()).dtype
 
         def encode(images):
-            return encode_qwen_image_2_1_latents(vae, images).to("cpu")
+            return self.encode_vae(vae, images).to("cpu")
 
         self._default_cache_batch_latents(
             encode, vae_device, vae_dtype, image_infos,
@@ -436,7 +442,7 @@ class QwenImage21LatentCache(anima_strategy.AnimaLatentsCachingStrategy):
                     device=vae_device, dtype=vae_dtype
                 )
                 with torch.no_grad():
-                    latent = encode_qwen_image_2_1_latents(vae, tensor)[0].to("cpu")
+                    latent = self.encode_vae(vae, tensor)[0].to("cpu")
                 if self.cache_to_disk:
                     if not info.edit_reference_latent_path:
                         raise ValueError("Qwen edit reference latent cache path was not initialized")

@@ -9,8 +9,24 @@ from typing import Any, Protocol
 from library.models.family_registry import normalize_registered_family
 
 
-class ModelFamilyPlugin(Protocol):
-    """Small strategy-factory surface shared by family plugins."""
+class FlowFamilyPlugin(Protocol):
+    """Model-family-specific hooks around the shared flow-matching engine."""
+
+    def sample_sigmas(
+        self, batch_size: int, height: int, width: int, args: Any, device: Any, *, context: Any
+    ): ...
+
+    def prepare_conditions(
+        self, batch: Any, conditions: Any, *, context: Any, is_train: bool
+    ): ...
+
+    def forward_velocity_4d(
+        self, dit: Any, noisy_4d: Any, conditions: Any, sigmas: Any, *, context: Any
+    ): ...
+
+
+class ModelFamilyPlugin(FlowFamilyPlugin, Protocol):
+    """Lazy strategy, preprocessing, and flow surface for a model family."""
 
     family: str
 
@@ -19,6 +35,8 @@ class ModelFamilyPlugin(Protocol):
     def build_text_encoding_strategy(self, args: Any): ...
 
     def build_latent_cache_strategy(self, args: Any): ...
+
+    def encode_vae(self, vae: Any, pixels: Any): ...
 
     def build_text_cache_strategy(self, args: Any, weight_dtype: Any): ...
 
@@ -68,6 +86,30 @@ def get_family_plugin(family: str) -> ModelFamilyPlugin:
         if plugin.family != canonical:
             raise RuntimeError(
                 f"family plugin identity mismatch: {canonical!r} != {plugin.family!r}"
+            )
+        required_methods = (
+            "build_tokenize_strategy",
+            "build_text_encoding_strategy",
+            "build_latent_cache_strategy",
+            "encode_vae",
+            "build_text_cache_strategy",
+            "compute_noise_pred_and_target",
+            "sample_sigmas",
+            "prepare_conditions",
+            "forward_velocity_4d",
+            "load_preprocess_vae",
+        )
+        missing_methods = [
+            name for name in required_methods if not callable(getattr(plugin, name, None))
+        ]
+        if missing_methods:
+            raise TypeError(
+                f"family plugin {canonical!r} is missing callable contract methods: "
+                + ", ".join(missing_methods)
+            )
+        if not isinstance(plugin.text_preprocess_spec, TextPreprocessSpec):
+            raise TypeError(
+                f"family plugin {canonical!r} must expose a TextPreprocessSpec"
             )
         _PLUGINS[canonical] = plugin
     return plugin

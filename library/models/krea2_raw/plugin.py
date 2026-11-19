@@ -28,12 +28,47 @@ class Krea2Plugin:
             spatial_chunk_size=getattr(args, "chunk_size", 64),
             disable_cache=getattr(args, "disable_cache", True),
         )
-        return vae, None
+        return vae, self.encode_vae
 
-    def compute_noise_pred_and_target(self, *args, **kwargs):
-        from library.models.krea2_raw.family import compute_noise_pred_and_target
+    def encode_vae(self, vae, pixels):
+        return vae.encode_pixels_to_latents(pixels)
 
-        return compute_noise_pred_and_target(*args, **kwargs)
+    def compute_noise_pred_and_target(
+        self, trainer, ctx, latents, batch, text_encoder_conds, *, is_train=True
+    ):
+        from library.training.flow_step import run_family_flow_step
+
+        return run_family_flow_step(
+            trainer,
+            ctx,
+            self,
+            latents,
+            batch,
+            text_encoder_conds,
+            is_train=is_train,
+        )
+
+    def sample_sigmas(self, batch_size, height, width, args, device, *, context):
+        from library.models.krea2_raw.family import sample_krea2_sigmas
+
+        return sample_krea2_sigmas(context)
+
+    def prepare_conditions(self, batch, conditions, *, context, is_train):
+        from library.models.krea2_raw.family import prepare_krea2_conditions
+
+        return prepare_krea2_conditions(
+            context.trainer, context.train_context, batch, conditions
+        )
+
+    def forward_velocity_4d(self, dit, noisy_4d, conditions, sigmas, *, context):
+        from library.models.krea2_raw.family import forward_krea2_velocity
+
+        return forward_krea2_velocity(dit, noisy_4d, conditions, sigmas, context)
+
+    def compute_loss_weighting(self, sigmas, latents, args):
+        from library.training.flow_step import loss_weighting
+
+        return loss_weighting(sigmas, latents, args)
 
     def build_tokenize_strategy(self, args):
         from library.models.krea2_raw.strategy import Krea2TokenizeStrategy
@@ -46,13 +81,16 @@ class Krea2Plugin:
         return Krea2TextEncodingStrategy()
 
     def build_latent_cache_strategy(self, args):
-        from library.anima.strategy import AnimaLatentsCachingStrategy
+        from library.strategies.latent_cache import FamilyLatentCacheStrategy
         from library import cache_identity
 
-        return AnimaLatentsCachingStrategy(
+        return FamilyLatentCacheStrategy(
             args.cache_latents_to_disk,
             args.vae_batch_size,
             args.skip_cache_check,
+            model_family=self.family,
+            encode_by_vae=self.encode_vae,
+            clean_after_cache=True,
             cache_identity=cache_identity.latent_cache_identity(
                 family=self.family, vae=getattr(args, "vae", None)
             ),

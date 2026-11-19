@@ -179,30 +179,23 @@ def compute_noise_pred_and_target(
     *,
     is_train: bool = True,
 ):
-    """Krea-2 训练 noise pred + target (阶段 6 配置收口).
+    from library.models.family_registry import get_family_plugin
+    from library.training.flow_step import run_family_flow_step
 
-    与 anima ``library.training.noise_target.compute_noise_pred_and_target``
-    同返回契约: ``(model_pred, target, timesteps, weighting)`` — 这样
-    batch_step 的下游 (loss composer, prior-preservation observer) 可保持
-    共享. Krea-2 首日不实现 crossattn_emb / postfix / method-adapter extra
-    forwards / VR loss / affine / observer (那些是 anima-only 能力, 见提案 §1
-    非目标); 只做最简 rectified-flow 训练路径.
+    return run_family_flow_step(
+        trainer,
+        ctx,
+        get_family_plugin("krea2_raw"),
+        latents,
+        batch,
+        text_encoder_conds,
+        is_train=is_train,
+    )
 
-    复用 anima 的 sampler registry (M1) 取 noisy_input + timesteps + sigmas —
-    sampler 只做 ``x_t = (1-σ)x0 + σ·noise``, 与 family 无关. target 走
-    rectified-flow velocity (``noise - latents``), 与 anima flow-matching 同构.
-    """
+
+def sample_krea2_sigmas(context):
+    ctx = context.train_context
     args = ctx.args
-    accelerator = ctx.accelerator
-    unet = ctx.unet
-    network = ctx.network
-    weight_dtype = ctx.weight_dtype
-
-    # 5D 不变量: 4D cache → 5D. 老 5D cache 兼容 squeeze.
-    if latents.ndim == 5:
-        latents = latents.squeeze(2)
-    noise = torch.randn_like(latents)
-
     from library.training.samplers import SAMPLER_REGISTRY, SamplerContext
 
     sampler_fn = SAMPLER_REGISTRY[getattr(args, "sampler", "default") or "default"]
@@ -210,85 +203,40 @@ def compute_noise_pred_and_target(
         SamplerContext(
             args=args,
             noise_scheduler=ctx.noise_scheduler,
-            latents=latents,
-            noise=noise,
-            device=accelerator.device,
-            weight_dtype=weight_dtype,
+            latents=context.latents,
+            noise=context.noise,
+            device=ctx.accelerator.device,
+            weight_dtype=ctx.weight_dtype,
         )
     )
-    noisy_model_input = sampler_out.noisy_input
-    timesteps = sampler_out.timesteps
-    sigmas = sampler_out.sigmas
+    context.noisy_input = sampler_out.noisy_input
+    context.timesteps = sampler_out.timesteps.reshape(-1)
+    return sampler_out.sigmas.reshape(-1)
 
-    # Per-step network conditioning (timestep masks / σ-FEI routers). Krea-2
-    # 复用 anima LoRA network — apply_router_conditioning 对 SingleStreamBlock
-    # 的 Linear 透明 (只 set_timestep_mask / set_fei by reference).
-    from library.training.router_conditioning import apply_router_conditioning
 
-    trainer._hydra_warmup_step = apply_router_conditioning(
-        network=network,
-        noisy_model_input=noisy_model_input,
-        timesteps=timesteps,
-        is_train=is_train,
-        warmup_step=int(getattr(trainer, "_hydra_warmup_step", 0)),
-        max_train_steps=int(getattr(args, "max_train_steps", 0) or 0),
-        gradient_accumulation_steps=int(
-            getattr(args, "gradient_accumulation_steps", 1) or 1
-        ),
-    )
-
-    if args.gradient_checkpointing:
-        noisy_model_input.requires_grad_(True)
-
-    # Unpack Krea-2 text conds. Cache format: [hiddens (B,L,12,2560),
-    # mask (B,L) bool]; live-encode path returns the same via
-    # Krea2TextEncodingStrategy.encode_tokens.
+def prepare_krea2_conditions(trainer, ctx, batch, text_encoder_conds):
+    accelerator = ctx.accelerator
     if not text_encoder_conds or text_encoder_conds[0] is None:
-        # Live encode (uncached / TE training) — reuses the shared singleton.
-        text_encoding_strategy = ctx.text_encoding_strategy
-        tokenize_strategy = ctx.tokenize_strategy
-        with torch.set_grad_enabled(is_train and False), accelerator.autocast():
-            input_ids = [
-                ids.to(accelerator.device) for ids in batch["input_ids_list"]
-            ]
-            encoded = text_encoding_strategy.encode_tokens(
-                tokenize_strategy,
+        input_ids = [ids.to(accelerator.device) for ids in batch["input_ids_list"]]
+        with torch.no_grad(), accelerator.autocast():
+            text_encoder_conds = ctx.text_encoding_strategy.encode_tokens(
+                ctx.tokenize_strategy,
                 trainer.get_models_for_text_encoding(
-                    args, accelerator, ctx.text_encoders
+                    ctx.args, accelerator, ctx.text_encoders
                 ),
                 input_ids,
             )
-        text_encoder_conds = encoded
-    hiddens, mask = prepare_text_embedding_for_training(
+    return prepare_text_embedding_for_training(
         text_encoder_conds,
         batch,
         ctx.text_encoding_strategy,
         device=accelerator.device,
-        weight_dtype=weight_dtype,
+        weight_dtype=ctx.weight_dtype,
     )
 
-    # 4D → 5D (anima 5D 不变量, DiT 承重接口入参).
-    noisy_model_input = noisy_model_input.unsqueeze(2)
 
-    with torch.set_grad_enabled(is_train), accelerator.autocast():
-        model_pred = forward_for_loss(
-            unet, noisy_model_input, (hiddens, mask), timesteps
-        )
-    model_pred = model_pred.squeeze(2)  # 5D → 4D
-
-    from library.training.flow_step import velocity_target
-
-    # Rectified-flow target: noise - latents (velocity; anima 同构).
-    target = velocity_target(noise, latents)
-
-    # Loss weighting (复用 anima 的 min-snr / p2 加权; Krea-2 首日沿用).
-    from library.anima import training as anima_train_utils
-
-    weighting = anima_train_utils.compute_loss_weighting_for_anima(
-        weighting_scheme=args.weighting_scheme,
-        sigmas=sigmas,
-        min_snr_gamma=getattr(args, "min_snr_gamma", None),
-        p2_gamma=getattr(args, "p2_gamma", 1.0),
-        p2_k=getattr(args, "p2_k", 1.0),
-    )
-    return model_pred, target, timesteps, weighting
+def forward_krea2_velocity(dit, noisy_4d, conditions, sigmas, context):
+    timesteps = context.timesteps if context.timesteps is not None else sigmas
+    return forward_for_loss(
+        dit, noisy_4d.unsqueeze(2), conditions, timesteps
+    ).squeeze(2)

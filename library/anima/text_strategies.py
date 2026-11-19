@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from transformers import CLIPTokenizer
 
-from library.strategies.latent_cache import GenericLatentCacheStrategy
+from library.strategies.latent_cache import LatentsCachingStrategy
 from library.log import setup_logging
 
 setup_logging()
@@ -433,87 +433,3 @@ class TextEncoderOutputsCachingStrategy:
         batch: List,
     ):
         raise NotImplementedError
-
-
-class _LatentsCachingStrategyContract:
-    _strategy = None  # strategy instance: actual strategy class
-
-    def __init__(
-        self,
-        cache_to_disk: bool,
-        batch_size: int,
-        skip_disk_cache_validity_check: bool,
-        *,
-        cache_identity: Optional[dict] = None,
-        require_cache_identity: bool = False,
-    ) -> None:
-        self._cache_to_disk = cache_to_disk
-        self._batch_size = batch_size
-        self.skip_disk_cache_validity_check = skip_disk_cache_validity_check
-        # Model-identity stamp (library.cache_identity). None keeps the legacy
-        # behaviour for callers that never build one (tests, smoke harnesses).
-        self.cache_identity = cache_identity
-        self.require_cache_identity = bool(require_cache_identity)
-
-    @classmethod
-    def set_strategy(cls, strategy):
-        if cls._strategy is not None:
-            raise RuntimeError(
-                f"Internal error. {cls.__name__} strategy is already set"
-            )
-        cls._strategy = strategy
-
-    @classmethod
-    def get_strategy(cls) -> Optional["LatentsCachingStrategy"]:
-        return cls._strategy
-
-    @property
-    def cache_to_disk(self):
-        return self._cache_to_disk
-
-    @property
-    def batch_size(self):
-        return self._batch_size
-
-    @property
-    def cache_suffix(self):
-        raise NotImplementedError
-
-    def get_image_size_from_disk_cache_path(
-        self, absolute_path: str, npz_path: str
-    ) -> Tuple[Optional[int], Optional[int]]:
-        w, h = os.path.splitext(npz_path)[0].split("_")[-2].split("x")
-        return int(w), int(h)
-
-    def get_latents_npz_path(
-        self,
-        absolute_path: str,
-        image_size: Tuple[int, int],
-        cache_dir: Optional[str] = None,
-        image_dir: Optional[str] = None,
-    ) -> str:
-        raise NotImplementedError
-
-    def is_disk_cached_latents_expected(
-        self,
-        bucket_reso: Tuple[int, int],
-        npz_path: str,
-        flip_aug: bool,
-        alpha_mask: bool,
-    ) -> bool:
-        raise NotImplementedError
-
-    def cache_batch_latents(
-        self,
-        model: Any,
-        batch: List,
-        flip_aug: bool,
-        alpha_mask: bool,
-        random_crop: bool,
-    ):
-        raise NotImplementedError
-
-class LatentsCachingStrategy(GenericLatentCacheStrategy, _LatentsCachingStrategyContract):
-    """Compatibility facade backed by the family-neutral latent cache engine."""
-
-    pass

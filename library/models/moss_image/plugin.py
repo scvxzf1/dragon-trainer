@@ -14,15 +14,46 @@ class MossImagePlugin:
     )
 
     def load_preprocess_vae(self, args, dtype):
-        from library.models.moss_image.latent import encode_moss_latents
         from library.models.moss_image.weights import load_moss_vae
 
-        return load_moss_vae(args.vae, dtype=dtype, device="cpu"), encode_moss_latents
+        return load_moss_vae(args.vae, dtype=dtype, device="cpu"), self.encode_vae
 
-    def compute_noise_pred_and_target(self, *args, **kwargs):
-        from library.models.moss_image.family import compute_noise_pred_and_target
+    def encode_vae(self, vae, pixels):
+        from library.models.moss_image.latent import encode_moss_latents
 
-        return compute_noise_pred_and_target(*args, **kwargs)
+        return encode_moss_latents(vae, pixels)
+
+    def compute_noise_pred_and_target(
+        self, trainer, ctx, latents, batch, text_encoder_conds, *, is_train=True
+    ):
+        from library.training.flow_step import run_family_flow_step
+
+        return run_family_flow_step(
+            trainer,
+            ctx,
+            self,
+            latents,
+            batch,
+            text_encoder_conds,
+            is_train=is_train,
+        )
+
+    def sample_sigmas(self, batch_size, height, width, args, device, *, context):
+        from library.models.moss_image.family import uniform_grid_sigmas
+
+        return uniform_grid_sigmas(batch_size, device=device)
+
+    def prepare_conditions(self, batch, conditions, *, context, is_train):
+        from library.models.moss_image.family import _prepare_text_conditions
+
+        return _prepare_text_conditions(
+            context.trainer, context.train_context, batch, conditions
+        )
+
+    def forward_velocity_4d(self, dit, noisy_4d, conditions, sigmas, *, context):
+        from library.models.moss_image.family import forward_for_loss
+
+        return forward_for_loss(dit, noisy_4d, conditions, sigmas)
 
     def build_tokenize_strategy(self, args):
         from library.models.moss_image.strategy import MossImageTokenizeStrategy
@@ -44,6 +75,7 @@ class MossImagePlugin:
             args.cache_latents_to_disk,
             args.vae_batch_size,
             args.skip_cache_check,
+            encode_by_vae=self.encode_vae,
             cache_identity=cache_identity.latent_cache_identity(
                 family=self.family, vae=getattr(args, "vae", None)
             ),

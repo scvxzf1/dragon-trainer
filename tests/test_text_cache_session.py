@@ -33,6 +33,26 @@ def test_text_encoder_cache_session_restores_after_encoder_error() -> None:
     assert next(model.parameters()).device.type == "cpu"
 
 
+def test_text_encoder_cache_session_restores_moss_runtime_anchor(tmp_path) -> None:
+    from library.models.moss_image.text_encoder_runtime import load_moss_text_encoder
+
+    encoder_path = tmp_path / "encoder"
+    encoder_path.mkdir()
+    (encoder_path / "config.json").write_text("{}", encoding="utf-8")
+    model = load_moss_text_encoder(
+        str(encoder_path), dtype=torch.bfloat16, device="cpu", quantization="bf16"
+    )
+    original_anchor = model._anchor
+
+    with text_encoder_cache_session(model, "cpu") as prepared:
+        assert prepared is model
+
+    assert model._anchor is not original_anchor
+    assert model._anchor.device.type == "cpu"
+    assert model._anchor.dtype is torch.bfloat16
+    assert model._encoder is None
+
+
 def test_family_text_cache_facade_stamps_and_checks_identity(tmp_path) -> None:
     encoder = tmp_path / "encoder.safetensors"
     encoder.write_bytes(b"encoder-v1")

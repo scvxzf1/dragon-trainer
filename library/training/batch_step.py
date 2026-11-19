@@ -13,7 +13,6 @@ from library.training.losses import (
 )
 from library.training import numerical_observation
 from library.training.method_adapter import ComputeLossCtx
-from library.training.noise_target import compute_noise_pred_and_target
 from library.training.contexts import TrainCtx
 from library.models.family_registry import get_family_plugin
 

@@ -80,21 +80,15 @@ def _prepare_text_conditions(trainer, ctx, batch, conditions):
 def compute_noise_pred_and_target(
     trainer, ctx, latents, batch, text_encoder_conds, *, is_train=True
 ):
-    if latents.ndim != 4 or latents.shape[1] != 128:
-        raise ValueError("MOSS cached latents must be [B,128,H,W]")
-    noise, sigmas, noisy_input = sample_moss_flow(latents)
-    from library.training.router_conditioning import apply_router_conditioning
-    trainer._hydra_warmup_step = apply_router_conditioning(
-        network=ctx.network, noisy_model_input=noisy_input, timesteps=sigmas,
-        is_train=is_train, warmup_step=int(getattr(trainer, "_hydra_warmup_step", 0)),
-        max_train_steps=int(getattr(ctx.args, "max_train_steps", 0) or 0),
-        gradient_accumulation_steps=int(getattr(ctx.args, "gradient_accumulation_steps", 1) or 1),
-    )
-    if getattr(ctx.args, "gradient_checkpointing", False):
-        noisy_input.requires_grad_(True)
-    text_emb = _prepare_text_conditions(trainer, ctx, batch, text_encoder_conds)
-    with torch.set_grad_enabled(is_train), ctx.accelerator.autocast():
-        pred = forward_for_loss(ctx.unet, noisy_input, text_emb, sigmas)
-    from library.training.flow_step import unit_weighting, velocity_target
+    from library.models.family_registry import get_family_plugin
+    from library.training.flow_step import run_family_flow_step
 
-    return pred, velocity_target(noise, latents), sigmas * 1000, unit_weighting(sigmas, latents)
+    return run_family_flow_step(
+        trainer,
+        ctx,
+        get_family_plugin("moss_image"),
+        latents,
+        batch,
+        text_encoder_conds,
+        is_train=is_train,
+    )

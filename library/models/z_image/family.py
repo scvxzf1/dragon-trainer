@@ -139,53 +139,8 @@ def compute_noise_pred_and_target(
     *,
     is_train: bool = True,
 ):
-    args = ctx.args
-    if latents.ndim == 5:
-        latents = latents.squeeze(2)
-    if latents.ndim != 4:
-        raise ValueError(f"Z-Image expects 4D cached latents; got {latents.ndim}D")
+    from library.models.family_registry import get_family_plugin
 
-    noise = torch.randn_like(latents)
-    sigmas = shifted_uniform_sigmas(
-        latents.shape[0],
-        device=ctx.accelerator.device,
-        dtype=torch.float32,
-        shift=float(
-            getattr(args, "discrete_flow_shift", Z_IMAGE_FLOW_SHIFT)
-            or Z_IMAGE_FLOW_SHIFT
-        ),
+    return get_family_plugin("z_image").compute_noise_pred_and_target(
+        trainer, ctx, latents, batch, text_encoder_conds, is_train=is_train
     )
-    from library.training.flow_step import mix_latents, velocity_target, unit_weighting
-
-    noisy_input = mix_latents(latents, noise, sigmas)
-
-    from library.training.router_conditioning import apply_router_conditioning
-
-    trainer._hydra_warmup_step = apply_router_conditioning(
-        network=ctx.network,
-        noisy_model_input=noisy_input,
-        timesteps=sigmas,
-        is_train=is_train,
-        warmup_step=int(getattr(trainer, "_hydra_warmup_step", 0)),
-        max_train_steps=int(getattr(args, "max_train_steps", 0) or 0),
-        gradient_accumulation_steps=int(
-            getattr(args, "gradient_accumulation_steps", 1) or 1
-        ),
-    )
-    if getattr(args, "gradient_checkpointing", False):
-        noisy_input.requires_grad_(True)
-
-    prompt_embeds = _prepare_text_conditions(
-        trainer, ctx, batch, text_encoder_conds, is_train=is_train
-    )
-    with torch.set_grad_enabled(is_train), ctx.accelerator.autocast():
-        model_pred = forward_for_loss(
-            ctx.unet,
-            noisy_input.unsqueeze(2),
-            prompt_embeds,
-            sigmas,
-        )
-    model_pred = model_pred.squeeze(2)
-    target = velocity_target(noise, latents)
-    weighting = unit_weighting(sigmas, latents)
-    return model_pred, target, sigmas, weighting

@@ -6,12 +6,11 @@ from typing import Any, List, Optional, Union
 
 import torch
 
-from library.anima import strategy as anima_strategy
 from library.anima.text_strategies import TextEncodingStrategy, TokenizeStrategy
 from library.io.cache import resolve_cache_path
 from library.models.family_registry import get_model_family_spec
 from library.strategies.text_cache import FamilySafetensorsTextCacheStrategy
-from library.models.latent_space import Z_IMAGE_F8C16_P2
+from library.strategies.latent_cache import FamilyLatentCacheStrategy
 from library.models.z_image.latent import encode_z_image_latents
 from library.models.z_image.weights import resolve_z_image_tokenizer_path
 
@@ -99,35 +98,23 @@ class ZImageTextEncoderOutputsCachingStrategy(FamilySafetensorsTextCacheStrategy
         )
 
 
-class ZImageLatentsCachingStrategy(anima_strategy.AnimaLatentsCachingStrategy):
-    ANIMA_LATENTS_NPZ_SUFFIX = Z_IMAGE_F8C16_P2.cache_suffix
-
-    def get_image_size_from_disk_cache_path(self, absolute_path, npz_path):
-        stem = npz_path[: -len(self.cache_suffix)]
-        width, height = stem.rsplit("_", 1)[-1].split("x")
-        return int(width), int(height)
-
-    def cache_batch_latents(
+class ZImageLatentsCachingStrategy(FamilyLatentCacheStrategy):
+    def __init__(
         self,
-        vae,
-        image_infos: List,
-        flip_aug: bool,
-        alpha_mask: bool,
-        random_crop: bool,
+        cache_to_disk,
+        batch_size,
+        skip_disk_cache_validity_check,
+        *,
+        cache_identity=None,
+        require_cache_identity=False,
+        encode_by_vae=encode_z_image_latents,
     ):
-        vae_device = next(vae.parameters()).device
-        vae_dtype = next(vae.parameters()).dtype
-
-        def encode_by_vae(images):
-            return encode_z_image_latents(vae, images).to("cpu")
-
-        self._default_cache_batch_latents(
-            encode_by_vae,
-            vae_device,
-            vae_dtype,
-            image_infos,
-            flip_aug,
-            alpha_mask,
-            random_crop,
-            multi_resolution=True,
+        super().__init__(
+            cache_to_disk,
+            batch_size,
+            skip_disk_cache_validity_check,
+            model_family="z_image",
+            encode_by_vae=encode_by_vae,
+            cache_identity=cache_identity,
+            require_cache_identity=require_cache_identity,
         )
