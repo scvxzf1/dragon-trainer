@@ -11,6 +11,7 @@ import torch
 
 from library import cache_identity as _identity
 from library.models.family_registry import get_model_family_spec
+from library.strategies.latent_geometry import validate_latent_batch_geometry, validate_latent_shape
 from library.io.cache import resolve_cache_path
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,8 @@ class GenericLatentCacheStrategy:
             key_reso_suffix,
             flip_aug,
             apply_alpha_mask,
+            bucket_reso=bucket_reso,
+            latent_space_spec=self.latent_space_spec,
             cache_identity=self.cache_identity,
             require_cache_identity=self.require_cache_identity,
         )
@@ -97,6 +100,8 @@ class GenericLatentCacheStrategy:
         flip_aug: bool,
         apply_alpha_mask: bool,
         *,
+        bucket_reso: Tuple[int, int],
+        latent_space_spec,
         cache_identity: Optional[dict] = None,
         require_cache_identity: bool = False,
     ) -> bool:
@@ -104,6 +109,21 @@ class GenericLatentCacheStrategy:
             with np.load(npz_path) as npz:
                 keys = set(npz.files)
                 recorded = _identity.read_npz_stamp(npz)
+                latent_key = "latents" + key_reso_suffix
+                flipped_key = "latents_flipped" + key_reso_suffix
+                required_keys = {
+                    latent_key,
+                    "original_size" + key_reso_suffix,
+                    "crop_ltrb" + key_reso_suffix,
+                }
+                if flip_aug:
+                    required_keys.add(flipped_key)
+                if apply_alpha_mask:
+                    required_keys.add("alpha_mask" + key_reso_suffix)
+                if not required_keys.issubset(keys):
+                    return False
+                latent_shape = npz[latent_key].shape
+                flipped_shape = npz[flipped_key].shape if flip_aug else None
 
             if cache_identity is not None:
                 state = _identity.evaluate(
@@ -116,16 +136,46 @@ class GenericLatentCacheStrategy:
                 if _identity.compare(recorded, cache_identity) == "absent":
                     _identity.warn_legacy("VAE latent", npz_path)
 
-            if "latents" + key_reso_suffix not in keys:
-                return False
-            if flip_aug and "latents_flipped" + key_reso_suffix not in keys:
-                return False
-            if apply_alpha_mask and "alpha_mask" + key_reso_suffix not in keys:
+            try:
+                validate_latent_shape(
+                    latent_shape,
+                    bucket_reso,
+                    latent_space_spec,
+                    label=f"{npz_path} latent cache",
+                )
+                if flipped_shape is not None:
+                    validate_latent_shape(
+                        flipped_shape,
+                        bucket_reso,
+                        latent_space_spec,
+                        label=f"{npz_path} flipped latent cache",
+                    )
+                    if flipped_shape != latent_shape:
+                        return False
+            except ValueError as exc:
+                logger.warning("Invalid latent cache geometry in %s: %s", npz_path, exc)
                 return False
         except Exception:
             logger.exception("Error loading latent cache: %s", npz_path)
             raise
         return True
+
+    def _validate_encoded_latents(self, latents, image_infos, *, label: str) -> None:
+        bucket_sizes = []
+        for index, info in enumerate(image_infos):
+            bucket_reso = getattr(info, "bucket_reso", None)
+            if bucket_reso is None or len(bucket_reso) != 2:
+                raise ValueError(
+                    f"{self.MODEL_FAMILY} latent cache requires image_info.bucket_reso "
+                    f"(width, height) at index {index}"
+                )
+            bucket_sizes.append(tuple(map(int, bucket_reso)))
+        if not isinstance(latents, torch.Tensor):
+            raise TypeError(f"{self.MODEL_FAMILY} VAE encoder must return a tensor")
+        validate_latent_batch_geometry(
+            latents, bucket_sizes, self.latent_space_spec,
+            label=f"{self.MODEL_FAMILY} VAE encoder {label} latent",
+        )
 
     def _default_cache_batch_latents(
         self,
@@ -149,20 +199,16 @@ class GenericLatentCacheStrategy:
 
         with torch.no_grad():
             latents_tensors = encode_by_vae(img_tensor).to("cpu")
-        if (
-            not isinstance(latents_tensors, torch.Tensor)
-            or latents_tensors.ndim < 4
-            or latents_tensors.shape[1] != self.latent_space_spec.latent_channels
-        ):
-            raise ValueError(
-                f"{self.MODEL_FAMILY} VAE encoder returned invalid latent shape "
-                f"{getattr(latents_tensors, 'shape', None)}; expected channel axis "
-                f"{self.latent_space_spec.latent_channels}"
-            )
+        self._validate_encoded_latents(latents_tensors, image_infos, label="encoded")
         if flip_aug:
             img_tensor = torch.flip(img_tensor, dims=[3])
             with torch.no_grad():
                 flipped_latents = encode_by_vae(img_tensor).to("cpu")
+            self._validate_encoded_latents(
+                flipped_latents,
+                image_infos,
+                label="flipped",
+            )
         else:
             flipped_latents = [None] * len(latents_tensors)
 
@@ -230,6 +276,14 @@ class GenericLatentCacheStrategy:
                 if "alpha_mask" + key_reso_suffix in npz
                 else None
             )
+        spec = self.latent_space_spec
+        validate_latent_shape(latents.shape, bucket_reso, spec, label=f"{npz_path} latent")
+        if flipped_latents is not None:
+            validate_latent_shape(
+                flipped_latents.shape, bucket_reso, spec, label=f"{npz_path} flipped latent"
+            )
+            if flipped_latents.shape != latents.shape:
+                raise ValueError(f"{npz_path} flipped latent shape differs from the regular latent")
         return latents, original_size, crop_ltrb, flipped_latents, alpha_mask
 
     def load_latents_from_disk(self, npz_path: str, bucket_reso: Tuple[int, int]):

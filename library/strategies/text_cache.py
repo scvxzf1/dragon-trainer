@@ -445,19 +445,32 @@ class FamilySafetensorsTextCacheStrategy(VariantSafetensorsTextCacheStrategy):
 
 @contextmanager
 def text_encoder_cache_session(
-    model: torch.nn.Module,
+    model: torch.nn.Module | None,
     device: torch.device | str,
     *,
     dtype: torch.dtype | None = None,
     restore: bool = True,
+    load=None,
+    manage=None,
 ) -> Iterator[torch.nn.Module]:
-    """Temporarily place a regular text encoder on a cache device.
-
-    This session deliberately handles only eager, non-offloaded encoders. Qwen
-    Image 2.1's meta-parameter/Accelerate path remains in its dedicated runtime
-    because it has stronger cleanup and partial-install failure semantics.
-    """
+    """Prepare an eager encoder or delegate placement and cleanup to its owner."""
     target = torch.device(device)
+    if (model is None) == (load is None):
+        raise ValueError("provide an existing text encoder or a loader")
+    if load is not None:
+        try:
+            model = load()
+        except BaseException:
+            if target.type == "cuda":
+                torch.cuda.empty_cache()
+            raise
+    if not isinstance(model, torch.nn.Module):
+        raise TypeError("text cache loader must return a torch.nn.Module")
+    if manage is not None:
+        with manage(model, target, dtype) as prepared:
+            yield prepared
+        return
+
     original_specs = {
         name: (tensor.device, tensor.dtype)
         for name, tensor in (

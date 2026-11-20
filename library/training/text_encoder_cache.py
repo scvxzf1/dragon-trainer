@@ -11,7 +11,7 @@ import torch
 from accelerate import Accelerator
 
 from library import train_util
-from library.anima import text_strategies
+from library import strategies as text_strategies
 from library.datasets import DatasetGroup
 from library.runtime.device import clean_memory_on_device
 from library.training.sample_prompt_cache import save_sample_prompt_cache
@@ -57,29 +57,30 @@ def cache_text_encoder_outputs_if_needed(
         text_encoding_strategy = text_strategies.TextEncodingStrategy.get_strategy()
 
         from library.env import resolve_model_family
+        from library.models.family_registry import get_family_plugin, get_model_family_spec
 
-        if resolve_model_family(args) == "qwen_image_2_1":
-            from library.models.qwen_image_2_1.preview_conditions import cache_preview_text
-            from library.models.qwen_image_2_1.text_encoder_runtime import loaded_text_encoder_for_cache
+        family = resolve_model_family(args)
+        preview_capability = (
+            "qwen_preview_text" if family == "qwen_image_2_1" else "cache"
+        )
+        plugin = get_family_plugin(family, capability=preview_capability)
+        cache_preview = getattr(plugin, "cache_preview_text", None)
+        if family == "qwen_image_2_1":
             from library.training.sample_preview_common import failed_on_any_process
 
             error = None
             try:
-                policy = getattr(args, "qwen_text_encoder_cache_policy", "auto")
-                with loaded_text_encoder_for_cache(
-                    text_encoders[0],
-                    dtype=next(text_encoders[0].parameters()).dtype,
-                    device="cpu" if policy == "cpu" else str(accelerator.device),
-                    cache_policy=policy,
-                ) as model:
-                    with accelerator.autocast(), torch.no_grad():
-                        cache_preview_text(trainer, args, model, tokenize_strategy, text_encoding_strategy)
+                cache_preview(
+                    trainer, args, accelerator, text_encoders[0],
+                    tokenize_strategy, text_encoding_strategy,
+                )
             except Exception as exc:
                 error = exc
             finally:
                 clean_memory_on_device(accelerator.device)
             if failed_on_any_process(accelerator, error is not None, getattr(accelerator, "num_processes", 1)):
-                raise RuntimeError("Qwen preview text caching failed on at least one process") from error
+                name = get_model_family_spec(family).display_name
+                raise RuntimeError(f"{name} preview text caching failed on at least one process") from error
             accelerator.wait_for_everyone()
             return
 

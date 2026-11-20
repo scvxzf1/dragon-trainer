@@ -79,7 +79,7 @@ def main() -> None:
     dtype = str_to_dtype(args.dtype or ("float32" if args.model_family == "moss_image" else "bfloat16"))
 
     print(f"Loading VAE from {args.vae} ...")
-    plugin = get_family_plugin(args.model_family)
+    plugin = get_family_plugin(args.model_family, capability="cache")
     vae, encode_fn = plugin.load_preprocess_vae(args, dtype)
     latent_spec = get_model_family_spec(args.model_family).latent_space
     vae.to(device, dtype=dtype)
@@ -102,6 +102,7 @@ def main() -> None:
         latent_space_name=latent_spec.name if latent_spec.name != "anima" else None,
         vae_spatial_compression=latent_spec.vae_spatial_compression,
         encode_fn=encode_fn,
+        latent_spec=latent_spec,
     )
     print(
         f"\nLatent caching complete: {stats.written} cached, "

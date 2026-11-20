@@ -24,10 +24,12 @@ from PIL import Image
 from library import cache_identity as _identity
 from library.io.cache import resolve_cache_path
 from library.io.cache_names import latent_cache_suffix
+from library.models.latent_space import LatentSpaceSpec
 from library.datasets.image_utils import IMAGE_TRANSFORMS
 from library.preprocess._dataset import PreprocessStats, group_by_shape, walk_images
 from library.preprocess._progress import ProgressFn
 from library.preprocess.adaptive_batch import AutoBatcher, batch_size_arg, iter_batches
+from library.strategies.latent_geometry import validate_latent_batch_geometry
 
 
 def get_latents_npz_path(
@@ -261,6 +263,7 @@ def cache_latents(
     encode_fn=None,
     cache_identity: dict | None = None,
     require_cache_identity: bool = False,
+    latent_spec: LatentSpaceSpec | None = None,
 ) -> PreprocessStats:
     """Encode every image under ``data_dir`` through ``vae`` → latent NPZs.
 
@@ -355,6 +358,13 @@ def cache_latents(
             else:
                 latents = _encode_latent_batch(vae, img_batch, encode_fn)
 
+            if latent_spec is not None:
+                validate_latent_batch_geometry(
+                    latents,
+                    [size for _, size in kept],
+                    latent_spec,
+                    label=f"{latent_spec.name} preprocess latent",
+                )
             items: list[tuple[Path, np.ndarray, tuple[int, int]]] = []
             for i, (p, size) in enumerate(kept):
                 npz_path = get_latents_npz_path(

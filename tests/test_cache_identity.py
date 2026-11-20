@@ -218,8 +218,9 @@ def _write_latent_npz(path, latent_dims, cache_identity=None):
     """Write an NPZ with one latents_<H>x<W> key per (latent H, latent W) pair."""
     payload = {}
     for h, w in latent_dims:
-        payload[f"latents_{h}x{w}"] = np.zeros((1, 16, h, w), dtype=np.float32)
+        payload[f"latents_{h}x{w}"] = np.zeros((16, 1, h, w), dtype=np.float32)
         payload[f"original_size_{h}x{w}"] = np.array([w * 8, h * 8])
+        payload[f"crop_ltrb_{h}x{w}"] = np.zeros(4, dtype=np.int64)
     if cache_identity is not None:
         payload[identity.NPZ_KEY] = identity.encode_npz(cache_identity)
     np.savez(path, **payload)

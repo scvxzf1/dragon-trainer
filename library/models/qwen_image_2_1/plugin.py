@@ -74,6 +74,27 @@ class QwenImage21Plugin:
 
         return QwenImage21InferenceRunner()
 
+    def cache_preview_text(self, trainer, args, accelerator, model, tokenizer, encoder):
+        import torch
+
+        from library.models.qwen_image_2_1.preview_conditions import cache_preview_text
+        from library.models.qwen_image_2_1.text_encoder_runtime import loaded_text_encoder_for_cache
+        from library.strategies.text_cache import text_encoder_cache_session
+
+        policy = getattr(args, "qwen_text_encoder_cache_policy", "auto")
+
+        def manage(encoder_model, device, dtype):
+            return loaded_text_encoder_for_cache(
+                encoder_model, dtype=dtype, device=str(device), cache_policy=policy,
+            )
+
+        target = "cpu" if policy == "cpu" else accelerator.device
+        with text_encoder_cache_session(
+            model, target, dtype=next(model.parameters()).dtype, manage=manage,
+        ) as prepared:
+            with accelerator.autocast(), torch.no_grad():
+                cache_preview_text(trainer, args, prepared, tokenizer, encoder)
+
     def decode_preview_samples(
         self,
         accelerator,

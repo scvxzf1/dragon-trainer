@@ -287,7 +287,7 @@ def test_training_preview_uses_loaded_encoder_offload_without_whole_model_cuda(
     trainer = SimpleNamespace(sample_prompts_snapshot=None, sample_prompts_te_outputs=None)
     args = SimpleNamespace(cache_text_encoder_outputs=True, sample_prompts="unused", qwen_text_encoder_cache_policy="cpu_offload")
     if preview_error:
-        with pytest.raises(RuntimeError, match="Qwen preview text caching failed") as error:
+        with pytest.raises(RuntimeError, match="Qwen.*preview text caching failed") as error:
             text_encoder_cache.cache_text_encoder_outputs_if_needed(trainer, args, Accelerator(), [model], Dataset())
         assert isinstance(error.value.__cause__, ValueError)
     else:

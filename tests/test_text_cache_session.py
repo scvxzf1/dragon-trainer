@@ -33,6 +33,29 @@ def test_text_encoder_cache_session_restores_after_encoder_error() -> None:
     assert next(model.parameters()).device.type == "cpu"
 
 
+@pytest.mark.parametrize("fail_encode", [False, True])
+def test_lazy_text_encoder_cache_session_restores_loader_resource(fail_encode) -> None:
+    from contextlib import nullcontext
+
+    events = []
+    model = nn.Linear(2, 2)
+
+    def load():
+        events.append("load")
+        return model
+
+    session = text_encoder_cache_session(None, "cpu", dtype=torch.float64, load=load)
+    assert events == []
+    expectation = pytest.raises(ValueError, match="encode failed") if fail_encode else nullcontext()
+    with expectation:
+        with session as prepared:
+            assert events == ["load"]
+            assert next(prepared.parameters()).dtype is torch.float64
+            if fail_encode:
+                raise ValueError("encode failed")
+    assert next(model.parameters()).dtype is torch.float32
+
+
 def test_text_encoder_cache_session_restores_moss_runtime_anchor(tmp_path) -> None:
     from library.models.moss_image.text_encoder_runtime import load_moss_text_encoder
 
