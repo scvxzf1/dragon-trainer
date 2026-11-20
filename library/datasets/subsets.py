@@ -402,7 +402,7 @@ class DreamBoothSubset(BaseSubset):
             model_family,
             allow_aliases=True,
         )
-        from library.anima.text_strategies import TextEncoderOutputsCachingStrategy
+        from library.strategies.text import TextEncoderOutputsCachingStrategy
         from library.io.cache_names import text_cache_suffix
 
         self.text_cache_suffix = text_cache_suffix(

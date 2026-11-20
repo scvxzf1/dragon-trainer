@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 
 import torch
 
-from library.anima.text_strategies import (
+from library.strategies import (
     LatentsCachingStrategy,
     TextEncoderOutputsCachingStrategy,
     TokenizeStrategy,

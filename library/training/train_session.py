@@ -12,7 +12,7 @@ from accelerate.utils import set_seed
 
 from library import train_util
 from library.datasets import debug_dataset
-from library.anima import text_strategies
+from library import strategies as text_strategies
 from library.runtime.accelerator import prepare_accelerator, prepare_dtype, resume_from_local_or_hf_if_specified
 from library.runtime.device import clean_memory_on_device
 from library.training.adapter_resolver import resolve_adapters

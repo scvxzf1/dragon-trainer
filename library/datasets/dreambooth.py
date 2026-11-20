@@ -7,7 +7,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from tqdm import tqdm
 
-from library.anima.text_strategies import LatentsCachingStrategy
+from library.strategies.latent_cache import LatentsCachingStrategy
 from library.datasets import base as _base
 from library.datasets.base import BaseDataset
 from library.datasets.image_utils import (
@@ -437,7 +437,7 @@ class DreamBoothDataset(BaseDataset):
                 )
                 te_suffix = subset.text_cache_suffix
                 if subset.model_family == "moss_image":
-                    from library.anima.text_strategies import TextEncoderOutputsCachingStrategy
+                    from library.strategies.text import TextEncoderOutputsCachingStrategy
                     from library.io.cache_names import text_cache_suffix
 
                     te_suffix = text_cache_suffix(

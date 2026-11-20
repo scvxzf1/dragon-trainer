@@ -4,7 +4,7 @@ from typing import Any, List, Sequence
 import torch
 from accelerate import Accelerator
 
-from library.anima.text_strategies import TextEncoderOutputsCachingStrategy
+from library.strategies.text import TextEncoderOutputsCachingStrategy
 from library.datasets.dreambooth import DreamBoothDataset
 
 logger = logging.getLogger(__name__)

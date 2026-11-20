@@ -103,6 +103,7 @@ class ModelFamilySpec:
     training_task_key: str | None = None
     supported_preview_tasks: frozenset[str] = frozenset({"t2i"})
     max_preview_references: int = 0
+    supported_inference_option_groups: frozenset[str] = frozenset()
     topology: TopologyCapabilitySpec = _DEFAULT_TOPOLOGY
     attention: AttentionCapabilitySpec = _DEFAULT_ATTENTION
     compile_spec: CompileCapabilitySpec = _DEFAULT_COMPILE
@@ -124,6 +125,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         plain_lora_only=False,
         supported_inference_modes=frozenset({"single", "batch", "interactive"}),
         supported_inference_samplers=frozenset({"euler", "er_sde", "lcm"}),
+        supported_inference_option_groups=frozenset({"ip_adapter", "easycontrol"}),
         supported_attention_modes=frozenset(
             {"flash", "torch", "mem_efficient", "sageattn", "flex", "xformers", "sdpa"}
         ),
@@ -318,6 +320,7 @@ MODEL_FAMILY_REGISTRY: dict[str, ModelFamilySpec] = {
         training_task_key="qwen_image_2_1_task",
         supported_preview_tasks=frozenset({"t2i", "edit"}),
         max_preview_references=4,
+        supported_inference_option_groups=frozenset({"qwen_reference"}),
         supported_inference_modes=frozenset({"single"}),
         supported_inference_samplers=frozenset({"euler"}),
         supported_attention_modes=frozenset({"torch", "sdpa", "flash"}),
@@ -563,12 +566,12 @@ def dispatch_model_family(
     return handlers[canonical]
 
 
-def get_family_plugin(family):
+def get_family_plugin(family, *, capability=None):
     """Lazily load a family plugin without importing runtime implementations."""
 
     from library.models.family_plugins import get_family_plugin as _get_family_plugin
 
-    return _get_family_plugin(family)
+    return _get_family_plugin(family, capability=capability)
 
 
 def validate_text_cache_metadata(

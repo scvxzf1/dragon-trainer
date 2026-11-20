@@ -6,7 +6,7 @@ import torch
 from safetensors import SafetensorError, safe_open
 from safetensors.torch import save_file
 
-from library.anima.text_strategies import TextEncoderOutputsCachingStrategy
+from library.strategies.text import TextEncoderOutputsCachingStrategy
 from library.io.cache import resolve_cache_path
 from library.strategies.latent_cache import FamilyLatentCacheStrategy
 from .cache_policy import (

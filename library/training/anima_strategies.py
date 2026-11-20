@@ -60,7 +60,7 @@ def _anima_tokenize_strategy(args):
 
 
 def get_tokenize_strategy(args):
-    return get_family_plugin(resolve_model_family(args)).build_tokenize_strategy(args)
+    return get_family_plugin(resolve_model_family(args), capability="cache").build_tokenize_strategy(args)
 
 
 def get_tokenizers(tokenize_strategy):
@@ -91,11 +91,11 @@ def get_latents_caching_strategy(args):
     # VAE / latent cache is shared (same AutoencoderKLQwenImage); anima's
     # caching strategy is family-agnostic.
     family = resolve_model_family(args)
-    return get_family_plugin(family).build_latent_cache_strategy(args)
+    return get_family_plugin(family, capability="cache").build_latent_cache_strategy(args)
 
 
 def get_text_encoding_strategy(args):
-    return get_family_plugin(resolve_model_family(args)).build_text_encoding_strategy(args)
+    return get_family_plugin(resolve_model_family(args), capability="cache").build_text_encoding_strategy(args)
 
 
 def get_text_encoder_outputs_caching_strategy(args, weight_dtype: torch.dtype):
@@ -108,7 +108,7 @@ def get_text_encoder_outputs_caching_strategy(args, weight_dtype: torch.dtype):
         raise ValueError("Qwen Image 2.1 Edit requires cached Qwen3-VL outputs")
     if not args.cache_text_encoder_outputs:
         return None
-    return get_family_plugin(resolve_model_family(args)).build_text_cache_strategy(
+    return get_family_plugin(resolve_model_family(args), capability="cache").build_text_cache_strategy(
         args, weight_dtype
     )
 

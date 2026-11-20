@@ -322,6 +322,27 @@ def test_family_plugin_loader_fails_closed_for_incomplete_plugin(monkeypatch) ->
         family_plugins.get_family_plugin("z_image")
 
 
+def test_inference_plugin_check_does_not_require_unrelated_cache_hooks(monkeypatch) -> None:
+    from library.models import family_plugins
+
+    plugin = SimpleNamespace(family="z_image", build_inference_runner=lambda args: object())
+    monkeypatch.setitem(family_plugins._PLUGINS, "z_image", plugin)
+
+    assert family_plugins.get_family_plugin("z_image", capability="inference") is plugin
+    with pytest.raises(TypeError, match=r"\(flow\).*sample_sigmas"):
+        family_plugins.get_family_plugin("z_image", capability="flow")
+
+
+def test_qwen_preview_text_capability_fails_closed_when_missing_hook(monkeypatch) -> None:
+    from library.models import family_plugins
+
+    plugin = SimpleNamespace(family="qwen_image_2_1")
+    monkeypatch.setitem(family_plugins._PLUGINS, "qwen_image_2_1", plugin)
+
+    with pytest.raises(TypeError, match=r"\(qwen_preview_text\).*cache_preview_text"):
+        family_plugins.get_family_plugin("qwen_image_2_1", capability="qwen_preview_text")
+
+
 def test_family_latent_cache_strategies_use_registry_spec_and_plugin_encoder() -> None:
     from library.models.family_plugins import get_family_plugin
     from library.strategies.latent_cache import FamilyLatentCacheStrategy

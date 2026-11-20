@@ -15,7 +15,7 @@ from accelerate import Accelerator
 from tqdm import tqdm
 
 from library.runtime.device import clean_memory_on_device
-from library.anima.text_strategies import (
+from library.strategies import (
     LatentsCachingStrategy,
     TextEncoderOutputsCachingStrategy,
     TextEncodingStrategy,

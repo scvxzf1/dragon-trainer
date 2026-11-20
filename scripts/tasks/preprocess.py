@@ -678,7 +678,7 @@ def _run_preprocess_te(
     family = _model_family()
     from library.models.family_registry import get_family_plugin
 
-    plugin = get_family_plugin(family)
+    plugin = get_family_plugin(family, capability="cache")
     spec = plugin.text_preprocess_spec
     if spec.runner == "special":
         if family == "qwen_image_2_1":

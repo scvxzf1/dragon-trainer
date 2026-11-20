@@ -9,6 +9,7 @@ import torch
 from library.inference.family_runtime import (
     build_inference_runner,
     prepare_inference_family,
+    validate_family_inference_options,
 )
 from library.inference.family_runner import FamilyInferenceRunner
 from library.models.family_plugins import (
@@ -29,7 +30,7 @@ def test_every_family_runner_exposes_the_generic_contract(family):
     plugin = get_family_plugin(family)
     validate_runner_contract(runner, family)
     assert runner.supports_reference_conditioning is (
-        family == "qwen_image_2_1"
+        family in {"anima", "qwen_image_2_1"}
     )
     for attribute in (
         "encode_vae",
@@ -94,6 +95,103 @@ def test_runner_prepare_is_called_once_by_generic_entrypoint(monkeypatch):
     assert calls == [("validate", "single"), ("prepare", "single")]
 
 
+def test_main_generates_through_family_runner_only_in_single_mode(
+    monkeypatch,
+    tmp_path,
+):
+    import inference
+
+    calls = []
+
+    class Runner:
+        family = "anima"
+        supports_reference_conditioning = False
+
+        def generate_latent(self, args, gen_settings):
+            calls.append("generate")
+            return object()
+
+        def save_output(self, args, latent, device):
+            calls.append("save")
+
+    def prepare(args, family, mode):
+        calls.append(("prepare", family, mode))
+        return Runner()
+
+    prompt_file = tmp_path / "prompts.txt"
+    prompt_file.write_text("prompt\n", encoding="utf-8")
+
+    def run_case(args):
+        calls.clear()
+        monkeypatch.setattr(inference, "parse_args", lambda: args)
+        monkeypatch.setattr(inference, "validate_inference_family_options", lambda *_: None)
+        monkeypatch.setattr(inference, "resolve_model_family", lambda _args: "anima")
+        monkeypatch.setattr(inference, "prepare_inference_family", prepare)
+        monkeypatch.setattr(
+            inference,
+            "get_generation_settings",
+            lambda _args: SimpleNamespace(
+                device=torch.device("cpu"),
+                runtime_dtype=torch.bfloat16,
+            ),
+        )
+        monkeypatch.setattr(inference, "resolve_seed", lambda _args: 7)
+        monkeypatch.setattr(
+            inference,
+            "preprocess_prompts_for_batch",
+            lambda _lines, _args: ["prompt"],
+        )
+        monkeypatch.setattr(
+            inference,
+            "process_batch_prompts",
+            lambda _prompts, _args: calls.append("batch"),
+        )
+        monkeypatch.setattr(
+            inference,
+            "process_interactive",
+            lambda _args: calls.append("interactive"),
+        )
+        inference.main()
+        return list(calls)
+
+    base = {
+        "latent_path": None,
+        "device": "cpu",
+        "seed": 7,
+    }
+    single_calls = run_case(
+        SimpleNamespace(
+            **base,
+            from_file=None,
+            interactive=False,
+            prompt="prompt",
+        )
+    )
+    batch_calls = run_case(
+        SimpleNamespace(
+            **base,
+            from_file=str(prompt_file),
+            interactive=False,
+            prompt=None,
+        )
+    )
+    interactive_calls = run_case(
+        SimpleNamespace(
+            **base,
+            from_file=None,
+            interactive=True,
+            prompt=None,
+        )
+    )
+
+    assert single_calls == [("prepare", "anima", "single"), "generate", "save"]
+    assert batch_calls == [("prepare", "anima", "batch"), "batch"]
+    assert interactive_calls == [
+        ("prepare", "anima", "interactive"),
+        "interactive",
+    ]
+
+
 def test_runtime_and_family_runners_do_not_restore_reverse_dependencies():
     runtime = (
         ROOT / "library" / "inference" / "family_runtime.py"
@@ -134,6 +232,60 @@ def test_every_family_plugin_exposes_a_preview_decoder(family, tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "family,option",
+    [
+        ("krea2_raw", "ip_image"),
+        ("z_image", "ip_adapter_weight"),
+        ("moss_image", "ip_scale"),
+        ("qwen_image_2_1", "easycontrol_image"),
+        ("z_image", "easycontrol_weight"),
+        ("moss_image", "easycontrol_image_match_size"),
+        ("anima", "reference_image"),
+        ("krea2_raw", "qwen_image_2_1_task"),
+    ],
+)
+def test_inference_option_groups_reject_unowned_options(family, option):
+    value = True if option.endswith("match_size") else "reference-or-weight"
+    with pytest.raises(SystemExit, match="does not support these options"):
+        validate_family_inference_options(SimpleNamespace(**{option: value}), family)
+
+
+@pytest.mark.parametrize(
+    "family,options",
+    [
+        (
+            "anima",
+            {"ip_adapter_weight": "adapter.safetensors", "ip_image": "reference.png", "ip_scale": 0.5},
+        ),
+        (
+            "anima",
+            {"easycontrol_weight": "adapter.safetensors", "easycontrol_image": "reference.png", "easycontrol_scale": 0.5},
+        ),
+        (
+            "qwen_image_2_1",
+            {"qwen_image_2_1_task": "edit", "reference_image": "reference.png"},
+        ),
+    ],
+)
+def test_inference_option_groups_allow_family_owned_options(family, options):
+    validate_family_inference_options(SimpleNamespace(**options), family)
+
+
+@pytest.mark.parametrize(
+    "family,options",
+    [
+        ("anima", {"ip_adapter_weight": "adapter.safetensors"}),
+        ("anima", {"ip_image": "reference.png"}),
+        ("anima", {"easycontrol_weight": "adapter.safetensors"}),
+        ("anima", {"easycontrol_image": "reference.png"}),
+    ],
+)
+def test_reference_adapter_and_image_options_must_be_paired(family, options):
+    with pytest.raises(SystemExit, match="must be supplied together"):
+        validate_family_inference_options(SimpleNamespace(**options), family)
+
+
 @pytest.mark.parametrize("family", ("anima", "krea2_raw", "z_image", "moss_image"))
 def test_reference_options_are_fail_closed_for_non_reference_runners(family):
     args = SimpleNamespace(
@@ -143,7 +295,7 @@ def test_reference_options_are_fail_closed_for_non_reference_runners(family):
     )
     args.qwen_image_2_1_task = None
     args.reference_images = ["reference.png"]
-    with pytest.raises(SystemExit, match="Qwen task/reference flags"):
+    with pytest.raises(SystemExit, match="does not support these options"):
         prepare_inference_family(args, family, "single")
 
 

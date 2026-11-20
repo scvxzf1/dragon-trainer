@@ -11,7 +11,7 @@ from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-from library.anima.text_strategies import TextEncodingStrategy, TokenizeStrategy
+from library.strategies.text import TextEncodingStrategy, TokenizeStrategy
 from library.io.cache import resolve_cache_path
 from library.models.family_registry import get_model_family_spec
 from library.strategies.text_cache import FamilySafetensorsTextCacheStrategy

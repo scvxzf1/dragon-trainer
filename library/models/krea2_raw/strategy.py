@@ -30,7 +30,7 @@ from typing import Any, List, Optional, Union
 
 import torch
 
-from library.anima.text_strategies import (
+from library.strategies import (
     TextEncodingStrategy,
     TokenizeStrategy,
 )

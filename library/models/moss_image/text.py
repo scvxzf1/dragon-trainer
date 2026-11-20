@@ -2,7 +2,7 @@
 
 import torch
 
-from library.anima.text_strategies import TextEncodingStrategy, TokenizeStrategy
+from library.strategies.text import TextEncodingStrategy, TokenizeStrategy
 from .cache_policy import MOSS_HIDDEN_SIZE, MOSS_MAX_LENGTH, resolve_tokenizer_path
 
 

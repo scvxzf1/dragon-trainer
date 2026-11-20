@@ -58,11 +58,7 @@ class FlowFamilyPlugin(Protocol):
     ): ...
 
 
-class ModelFamilyPlugin(FlowFamilyPlugin, Protocol):
-    """Small strategy-factory surface shared by family plugins."""
-
-    family: str
-
+class CacheFamilyPlugin(Protocol):
     def build_tokenize_strategy(self, args: Any): ...
 
     def build_text_encoding_strategy(self, args: Any): ...
@@ -73,10 +69,18 @@ class ModelFamilyPlugin(FlowFamilyPlugin, Protocol):
 
     def build_text_cache_strategy(self, args: Any, weight_dtype: Any): ...
 
-    def compute_noise_pred_and_target(self, *args: Any, **kwargs: Any): ...
+    def load_preprocess_vae(self, args: Any, dtype: Any): ...
+
+    @property
+    def text_preprocess_spec(self) -> "TextPreprocessSpec": ...
+
+
+class InferenceFamilyPlugin(Protocol):
 
     def build_inference_runner(self, args: Any) -> InferenceRunner: ...
 
+
+class PreviewFamilyPlugin(Protocol):
     def decode_preview_samples(
         self,
         accelerator: Any,
@@ -89,10 +93,27 @@ class ModelFamilyPlugin(FlowFamilyPlugin, Protocol):
 
     def decode_pending_samples(self, accelerator: Any, args: Any, vae: Any) -> None: ...
 
-    def load_preprocess_vae(self, args: Any, dtype: Any): ...
 
-    @property
-    def text_preprocess_spec(self) -> "TextPreprocessSpec": ...
+class QwenPreviewTextPlugin(Protocol):
+    def cache_preview_text(
+        self,
+        trainer: Any,
+        args: Any,
+        accelerator: Any,
+        model: Any,
+        tokenizer: Any,
+        encoder: Any,
+    ) -> None: ...
+
+
+class ModelFamilyPlugin(
+    FlowFamilyPlugin, CacheFamilyPlugin, InferenceFamilyPlugin, PreviewFamilyPlugin, Protocol
+):
+    """Compatibility view of the complete plugin surface."""
+
+    family: str
+
+    def compute_noise_pred_and_target(self, *args: Any, **kwargs: Any): ...
 
 
 @dataclass(frozen=True)
@@ -122,21 +143,17 @@ _PLUGIN_MODULES = {
 _PLUGINS: dict[str, ModelFamilyPlugin] = {}
 
 
-_REQUIRED_PLUGIN_METHODS = (
-    "build_tokenize_strategy",
-    "build_text_encoding_strategy",
-    "build_latent_cache_strategy",
-    "build_text_cache_strategy",
-    "compute_noise_pred_and_target",
-    "build_inference_runner",
-    "decode_preview_samples",
-    "decode_pending_samples",
-    "encode_vae",
-    "sample_sigmas",
-    "prepare_conditions",
-    "forward_velocity_4d",
-    "load_preprocess_vae",
-)
+_CAPABILITY_METHODS = {
+    "cache": (
+        "build_tokenize_strategy", "build_text_encoding_strategy", "build_latent_cache_strategy",
+        "build_text_cache_strategy", "encode_vae", "load_preprocess_vae",
+    ),
+    "flow": ("compute_noise_pred_and_target", "sample_sigmas", "prepare_conditions", "forward_velocity_4d"),
+    "inference": ("build_inference_runner",),
+    "preview": ("decode_preview_samples", "decode_pending_samples"),
+    "qwen_preview_text": ("cache_preview_text",),
+}
+_DEFAULT_CAPABILITIES = ("cache", "flow", "inference", "preview")
 
 _REQUIRED_RUNNER_METHODS = (
     "validate",
@@ -161,26 +178,32 @@ def _require_callable(
         raise RuntimeError(f"{owner} has no callable {attribute}()")
 
 
-def validate_plugin_contract(plugin: Any, family: str) -> None:
-    """Validate the complete family-plugin surface before first use."""
+def validate_plugin_contract(plugin: Any, family: str, *, capability: str | None = None) -> None:
+    """Validate the capability used by the caller, or the full legacy surface."""
     if getattr(plugin, "family", None) != family:
         raise RuntimeError(
             f"family plugin identity mismatch: {family!r} != {getattr(plugin, 'family', None)!r}"
         )
+    if capability is not None and capability not in _CAPABILITY_METHODS:
+        raise ValueError(f"unknown plugin capability {capability!r}")
+    groups = (capability,) if capability is not None else _DEFAULT_CAPABILITIES
     missing = [
         attribute
-        for attribute in _REQUIRED_PLUGIN_METHODS
+        for group in groups
+        for attribute in _CAPABILITY_METHODS[group]
         if not callable(getattr(plugin, attribute, None))
     ]
     if missing:
         raise FamilyPluginContractError(
-            f"family plugin {family!r} missing callable contract methods: "
+            f"family plugin {family!r} missing callable contract methods ({capability or 'all'}): "
             + ", ".join(
                 f"{attribute} (no callable {attribute}())"
                 for attribute in missing
             )
         )
-    if not isinstance(plugin.text_preprocess_spec, TextPreprocessSpec):
+    if capability in (None, "cache") and not isinstance(
+        getattr(plugin, "text_preprocess_spec", None), TextPreprocessSpec
+    ):
         raise FamilyPluginContractError(
             f"family plugin {family!r} must expose a TextPreprocessSpec"
         )
@@ -208,7 +231,7 @@ def validate_runner_contract(runner: Any, family: str) -> InferenceRunner:
     return runner
 
 
-def get_family_plugin(family: str) -> ModelFamilyPlugin:
+def get_family_plugin(family: str, *, capability: str | None = None) -> ModelFamilyPlugin:
     """Load exactly one registered family plugin on first use."""
 
     canonical = normalize_registered_family(family, source="family plugin")
@@ -216,6 +239,6 @@ def get_family_plugin(family: str) -> ModelFamilyPlugin:
     if plugin is None:
         module = importlib.import_module(_PLUGIN_MODULES[canonical])
         plugin = module.PLUGIN
-        validate_plugin_contract(plugin, canonical)
-        _PLUGINS[canonical] = plugin
+    validate_plugin_contract(plugin, canonical, capability=capability)
+    _PLUGINS[canonical] = plugin
     return plugin
