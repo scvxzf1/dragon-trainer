@@ -27,6 +27,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [通用层与族插件修复及复审表](plugin_contract_release_audit_20261120.md) | P0–P3 修复、集成验收及发布证据 |
+| [pp-runtime-evidence-20261120.md](pp-runtime-evidence-20261120.md) | 2026-11-20：P2 门禁②③真机证据——WebUI 极小 MOSS-Image PP 队列 + 续训（双 V100 fp16、报告计数、具名拒绝、卡位自证与复现命令） |
 | [uncommitted_audit_closure_20260913.md](uncommitted_audit_closure_20260913.md) | 未提交更新审计修正、本地提交序列、验证证据与未关闭风险 |
 | [test_suite_audit_20260831.md](test_suite_audit_20260831.md) | 2026-08-31 测试集规模、分层、重复、source-probe 与默认门禁审计 |
 | [test_script_audit_20260809.md](test_script_audit_20260809.md) | 2026-08-09 测试脚本审计、精简结果与 probe 保护边界 |
