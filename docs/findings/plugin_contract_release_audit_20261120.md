@@ -63,8 +63,11 @@
 - **历史 WebUI 证据已丢失**：原表引用的 `/tmp/p4-fullflow-summary.json`、`/tmp/p4-fullflow-evidence.jsonl` 在本机已不存在（`ls` 退出码 2）；仓库内也没有 `configs/web-training-queue`。「9 个 PP 用例标 `ddp`」「14 个 DDP 用例仅单卡」「8 个 PP 报告停在 `incomplete/setup`」「`M-PP-01-corrected` 0 步」「`M-PP-01b-resume` 5 步」「23 项含 21 项有实际训练步」等结论**当前无证据支撑**，需重新采集后才能作为发布依据。
 - **P2-5 只到单元/CPU 级**：分段释放的行为断言通过，但真实 Anima 权重的驻留峰值、批量与交互路径、需 DiT 预处理的 adapter 路径均未实机验证。
 - **P3-1 只到 CPU 级**：`manage=` 托管路径在 Qwen 分支上以 mock 验证，真实 Qwen meta/offload 安装与卸载、异常恢复未实机验证。
-- **工作区改动未提交**：P2-1/P2-2/P2-3/P2-5/P3-1/P3-2/P3-3 的实现与测试差异共 51 个源码/测试文件（另有 5 个 `docs/` 文件，含本文件）+ 6 个未跟踪文件（`library/anima/inference_references.py`、`library/strategies/latent_geometry.py`、`library/strategies/text.py`、`tests/test_latent_cache_geometry.py`、`tests/test_moss_image_inference_contract.py`、`tests/test_phase5_closure.py`）。未提交即等于未入基线，未跟踪文件尤其容易在切分支/清理时丢失。
-- **GPU 数值验证**：P2-2 的 CUDA `_assert_async` 分支已完成 L2 坏值冒烟（独立子进程、gpu-gate 放行），见下方「复核记录」；涉及精度/dtype、真实显存与 fp16 GradScaler、PP 两卡通信的其余改动（P1-1/P1-2、MOSS NF4/BF16 TE 契约）仍**未做 GPU 数值验证**。
+- **逐提交隔离回放未做**：四个修复提交的验收套件是在"全树含后续提交内容"的状态下跑的，没有对每条提交单独回放验证。因此这些 SHA 目前不能直接用于 `git bisect` 判定。
+- **L2 冒烟脚本未入库**：P2-2 冒烟脚本为会话临时文件（`/tmp/t3_smoke.py`，不入库），是当前唯一的复现入口，存在随临时目录清理而丢失的风险。
+- **fp16 GradScaler 实跑未验**：本仓 fp16 训练走 GradScaler 跳步，P2-2 只证明"坏值被设备端断言拦住、合法 inf 输出不被误拦"，未在真实训练步中观察一次真实的溢出跳步。
+
+缺漏汇总（2026-11-20，不含本表已关闭项）：影响交付 2 项（② WebUI/PP 运行证据重采、③ 真实权重与 PP 两卡 GPU 验收）；证据完整性 4 项（P3-1 真实 meta/offload、P2-5 批量与 adapter 路径、P4/P5 原树数字、逐提交隔离回放）；工程卫生 3 项（冒烟脚本入库、vLLM 恢复、旧工作树 P5 遗留 13 个未提交改动按用户选择 A 暂不动）。
 
 ## 复核记录（2026-11-20）
 
