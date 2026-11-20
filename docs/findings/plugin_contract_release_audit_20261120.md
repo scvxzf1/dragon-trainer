@@ -67,7 +67,7 @@
 - ~~L2 冒烟脚本未入库~~ **已关闭（t5，`4fa96cb5`）**：`tests/test_flow_step_assert_async.py`（FLOW_STEP_CUDA 门控 + 子进程隔离）已入库。
 - **fp16 GradScaler 实跑未验**：本仓 fp16 训练走 GradScaler 跳步，P2-2 只证明"坏值被设备端断言拦住、合法 inf 输出不被误拦"，门禁②③实跑全 effective，未在真实训练步中观察一次真实的溢出跳步。
 - **PP 语义残余分支未验（t10 保留清单）**：`weights_only` 放行路径、`pp_resume_no_work` 分支、真实 overflow skip、收敛性/长训练均未验证。
-- **待复核改进项（本轮新发现，未修）**：`library/training/train_session.py:143-144` 在 `seed=None` 时静默 `random.randint`，而 PP run identity = `sha256(family|seed|output_name)` → 跨进程续训要求显式固定 seed，未钉 seed 会静默随机化并导致 identity 不匹配（本轮实测撞到 `pp_checkpoint_identity_mismatch`）。属可用性缺陷，本审计未修，列为待复核改进项。
+- **待复核改进项（本轮新发现，未修）**：`library/training/train_session.py:143-144` 在 `seed=None` 时静默 `random.randint`，而 PP run identity = `sha256(family|seed|output_name)` → 跨进程续训要求显式固定 seed，未钉 seed 会静默随机化并导致 identity 不匹配（本轮实测撞到 `pp_checkpoint_identity_mismatch`）。属可用性缺陷，本审计未修；用户决定按 B 方案处理——合入 `dev` 后单独立项修复，本轮只登记。
 
 缺漏汇总（2026-11-20 第二轮更新，不含已关闭项）：影响交付 1 项（真实 Anima 权重 GPU 验收与显存驻留——含 fp16 溢出跳步真机观察，缺 Anima DiT safetensors 资产）；证据完整性 2 项（P3-1 缺 Qwen3-VL 8B ComfyUI 风格权重资产，需单独立项补齐；P2-5 批量与 adapter 路径、收敛性/长训练与 PP 残余分支）；工程卫生 2 项（vLLM 恢复、旧工作树 P5 遗留 13 个未提交改动按用户选择 A 暂不动）；待复核改进 1 项（train_session seed=None 静默随机化 vs PP identity）。
 
@@ -139,6 +139,7 @@ CUDA 语义备注：CUDA 分支走 `torch._assert_async`，坏值不立即抛 Py
 
 ## 复审与发布
 
+- **合入记录（2026-11-20 17:0x）**：`codex/plugin-contract-integration` 快进推送到 `origin/dev`（`github.com/scvxzf1/dragon-trainer`），`7901d68a..4e6bbd07`，推送退出码 0；远端 `dev` 现指向 `4e6bbd07`。推送前核对：`origin/dev` 为 `7901d68a`、本分支为其线性后继（fast-forward）、14 条提交内无 `models/`、`output/`、`logs/`、`configs/web-training*`、凭证类路径。**本地主工作树的 `dev` 仍停在 `7901d68a`**，需要时自行 `git -C <主仓> merge --ff-only 4e6bbd07`（本审计不代为改动用户工作树）。
 - 在集成版本核对实际执行入口和依赖方向，并处理独立复审发现。
 - 按设备记录验证。GPU 验收保留 FP16 训练和 MOSS NF4/BF16 TE 契约，经 WebUI 启动并关联任务证据。
 - 发布前登记提交、目标分支与验证结果，核对远端和本地 `dev` 指向集成结果。
