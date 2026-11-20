@@ -40,83 +40,37 @@ class AnimaPlugin:
 
         return compute_noise_pred_and_target(*args, **kwargs)
 
-    def sample_sigmas(self, batch_size, height, width, args, device, *, context):
-        from library.training.samplers import SAMPLER_REGISTRY, SamplerContext
+    route_before_conditions = True
 
-        train_context = context.train_context
-        sampler_fn = SAMPLER_REGISTRY[getattr(args, "sampler", "default") or "default"]
-        sampler_out = sampler_fn(
-            SamplerContext(
-                args=args,
-                noise_scheduler=train_context.noise_scheduler,
-                latents=context.latents,
-                noise=context.noise,
-                device=device,
-                weight_dtype=train_context.weight_dtype,
-            )
-        )
-        context.noisy_input = sampler_out.noisy_input
-        context.timesteps = sampler_out.timesteps.reshape(-1)
-        return sampler_out.sigmas.reshape(-1)
+    def sample_sigmas(self, batch_size, height, width, args, device, *, context):
+        from library.anima.noise_target import sample_anima_sigmas
+
+        return sample_anima_sigmas(context, args, device)
+
+    def prepare_flow_inputs(self, context):
+        from library.anima.noise_target import prepare_anima_flow_inputs
+
+        prepare_anima_flow_inputs(context)
 
     def prepare_conditions(self, batch, conditions, *, context, is_train):
-        from library.training.forward.text_conds import prepare_text_conds
+        from library.anima.noise_target import prepare_anima_conditions
 
-        del is_train
-        train_context = context.train_context
-        return prepare_text_conds(
-            text_encoder_conds=conditions,
-            batch=batch,
-            text_encoding_strategy=train_context.text_encoding_strategy,
-            network=train_context.network,
-            device=train_context.accelerator.device,
-            weight_dtype=train_context.weight_dtype,
-            uncond_crossattn_emb=getattr(
-                getattr(context.trainer, "_state", None), "uncond_crossattn_1", None
-            ),
-        )
+        return prepare_anima_conditions(context, batch, conditions)
 
     def forward_velocity_4d(self, dit, noisy_4d, conditions, sigmas, *, context):
-        import torch
+        from library.anima.noise_target import forward_anima_velocity
 
-        from library.training.forward import build_forward_kwargs
+        return forward_anima_velocity(dit, noisy_4d, conditions, sigmas, context=context)
 
-        train_context = context.train_context
-        timesteps = context.timesteps if context.timesteps is not None else sigmas
-        noisy_5d = noisy_4d.unsqueeze(2)
-        padding_mask = torch.zeros(
-            noisy_4d.shape[0],
-            1,
-            noisy_4d.shape[-2],
-            noisy_4d.shape[-1],
-            dtype=train_context.weight_dtype,
-            device=noisy_4d.device,
-        )
-        if conditions.crossattn_emb is None:
-            prediction = dit(
-                noisy_5d,
-                timesteps,
-                conditions.prompt_embeds,
-                padding_mask=padding_mask,
-                target_input_ids=conditions.t5_input_ids,
-                target_attention_mask=conditions.t5_attn_mask,
-                source_attention_mask=conditions.attn_mask,
-            )
-        else:
-            forward = build_forward_kwargs(
-                network=train_context.network,
-                crossattn_emb=conditions.crossattn_emb,
-                t5_attn_mask=conditions.t5_attn_mask,
-                timesteps=timesteps,
-            )
-            prediction = dit(
-                noisy_5d,
-                timesteps,
-                forward.crossattn_emb,
-                padding_mask=padding_mask,
-                **forward.kw,
-            )
-        return prediction.squeeze(2)
+    def observe_flow_step(self, context, prediction, target):
+        from library.anima.noise_target import observe_anima_flow
+
+        observe_anima_flow(context, prediction, target)
+
+    def adjust_flow_weighting(self, context, weighting):
+        from library.anima.noise_target import adjust_anima_weighting
+
+        return adjust_anima_weighting(context, weighting)
 
     def compute_loss_weighting(self, sigmas, latents, args):
         from library.training.flow_step import loss_weighting

@@ -404,6 +404,82 @@ def test_anima_forward_uses_sampler_timesteps_not_sigma(monkeypatch):
     assert prediction.shape == (2, 4, 2, 2)
 
 
+@pytest.mark.parametrize("is_train", [True, False])
+def test_anima_batch_entry_uses_shared_flow_and_preserves_order(monkeypatch, is_train):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from library.anima import noise_target
+    from library.training import flow_step
+    from library.training.batch_step import _get_noise_pred_and_target
+    from library.training.samplers import SAMPLER_REGISTRY, SamplerOut
+
+    device = _flow_test_device()
+    events = []
+    latents = torch.ones(2, 16, 2, 2, device=device)
+    sigmas = torch.tensor([0.25, 0.75], device=device)
+    timesteps = torch.tensor([0.2, 0.8], device=device)
+
+    def sample(context):
+        events.append("sampler")
+        return SamplerOut(mix_latents(context.latents, context.noise, sigmas), timesteps, sigmas)
+
+    def forward(noisy, sampled_timesteps, text, *, padding_mask, **kwargs):
+        events.append("forward")
+        assert noisy.shape == (2, 16, 1, 2, 2)
+        assert text.shape[1] == 5
+        assert padding_mask.shape == (2, 1, 2, 2)
+        assert torch.is_grad_enabled() == is_train
+        torch.testing.assert_close(sampled_timesteps, timesteps)
+        return noisy * parameter
+
+    parameter = torch.nn.Parameter(torch.ones((), device=device))
+    adapter = SimpleNamespace(
+        prime_for_forward=lambda *args, **kwargs: events.append("prime"),
+        extra_forwards=lambda *args: events.append("extras") or {"example": 1},
+    )
+    network = SimpleNamespace(
+        set_sigma=lambda _value: events.append("sigma_router"),
+        use_crossattn_router=True,
+        set_crossattn_routing=lambda _text: events.append("text_router"),
+    )
+    trainer = SimpleNamespace(
+        _state=SimpleNamespace(personalization_observer={}, uncond_crossattn_1=None),
+        _adapters=[adapter], _padding_mask_cache={},
+    )
+    ctx = SimpleNamespace(
+        args=SimpleNamespace(model_family="anima", sampler="anima-test", weighting_scheme="cosmap"),
+        accelerator=SimpleNamespace(device=device, autocast=nullcontext),
+        network=network, unet=forward, weight_dtype=torch.float32,
+        noise_scheduler=None, text_encoding_strategy=None,
+    )
+    run_flow = flow_step.run_family_flow_step
+
+    def trace_flow(*args, **kwargs):
+        events.append("shared_flow")
+        return run_flow(*args, **kwargs)
+
+    monkeypatch.setattr(flow_step, "run_family_flow_step", trace_flow)
+    monkeypatch.setitem(SAMPLER_REGISTRY, "anima-test", sample)
+    monkeypatch.setattr(torch, "randn_like", lambda tensor: torch.full_like(tensor, 3.0))
+    monkeypatch.setattr(noise_target, "affine_probabilities", lambda *_: None)
+    text = torch.zeros(2, 5, 8, device=device)
+    prediction, target, returned_time, weight = _get_noise_pred_and_target(
+        trainer, ctx, latents.unsqueeze(2), {}, (None, None, None, None, text), is_train=is_train,
+    )
+
+    assert events == ["shared_flow", "sampler", "prime", "sigma_router", "text_router", "forward", "extras"]
+    assert trainer._state.extras_for_step == {"example": 1}
+    assert len(trainer._padding_mask_cache) == 1
+    torch.testing.assert_close(prediction, mix_latents(latents, torch.full_like(latents, 3.0), sigmas))
+    torch.testing.assert_close(target, torch.full_like(latents, 2.0))
+    torch.testing.assert_close(returned_time, timesteps)
+    torch.testing.assert_close(weight, torch.full_like(weight, 2.0 / (torch.pi * 0.625)))
+    if is_train:
+        prediction.mean().backward()
+        torch.testing.assert_close(parameter.grad, torch.tensor(2.0, device=device))
+
+
 @pytest.mark.parametrize("family", ["moss_image", "qwen_image_2_1", "z_image"])
 def test_family_plugin_executes_through_shared_flow_engine(monkeypatch, family):
     from contextlib import nullcontext

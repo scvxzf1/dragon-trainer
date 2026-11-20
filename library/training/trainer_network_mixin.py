@@ -178,7 +178,7 @@ class TrainerNetworkMixin:
         from library.env import resolve_model_family
         from library.models.family_registry import get_family_plugin
 
-        plugin = get_family_plugin(resolve_model_family(ctx.args))
+        plugin = get_family_plugin(resolve_model_family(ctx.args), capability="flow")
         return plugin.compute_noise_pred_and_target(
             self, ctx, latents, batch, text_encoder_conds, is_train=is_train
         )

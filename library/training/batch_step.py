@@ -58,7 +58,8 @@ def _qwen_image_2_1_noise_pred_and_target(*args, **kwargs):
 
 def _get_noise_pred_and_target(trainer, ctx, latents, batch, text_encoder_conds, *, is_train=True):
     from library.env import resolve_model_family
-    return get_family_plugin(resolve_model_family(ctx.args)).compute_noise_pred_and_target(
+    plugin = get_family_plugin(resolve_model_family(ctx.args), capability="flow")
+    return plugin.compute_noise_pred_and_target(
         trainer, ctx, latents, batch, text_encoder_conds, is_train=is_train
     )
 

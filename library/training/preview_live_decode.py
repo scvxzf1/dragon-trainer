@@ -120,7 +120,7 @@ def decode_live_preview_for_family(
     from library.models.family_plugins import get_family_plugin
 
     family = resolve_model_family(args)
-    get_family_plugin(family).decode_preview_samples(
+    get_family_plugin(family, capability="preview").decode_preview_samples(
         accelerator,
         args,
         vae,
@@ -135,4 +135,4 @@ def decode_pending_samples_for_family(accelerator, args, vae) -> None:
     from library.models.family_plugins import get_family_plugin
 
     family = resolve_model_family(args)
-    get_family_plugin(family).decode_pending_samples(accelerator, args, vae)
+    get_family_plugin(family, capability="preview").decode_pending_samples(accelerator, args, vae)
