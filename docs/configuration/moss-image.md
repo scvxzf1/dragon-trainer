@@ -105,6 +105,26 @@ runtime 并接线专用训练会话（仅限 `PP=2` / `1F1B` / `FP16` / plain Lo
 
 修改 `max_token_length` 或 `moss_te_quantization` 后必须重新运行文本缓存预处理或切换独立缓存目录。
 
+## 独立 CLI 推理的文本编码器放置
+
+独立 CLI 使用 `--moss_te_quantization {nf4,bf16}`（默认 `nf4`）选择文本编码器量化。
+NF4 模式会把 TE stage 放到当前 CUDA 推理设备，并在文本编码结束后释放，再加载 DiT；
+`--text_encoder_cpu` 或 `--device cpu` 与 NF4 组合会在启动前 fail-closed。CPU 推理必须
+显式同时使用 `--moss_te_quantization bf16` 与 BF16 文本编码器精度：
+
+```bash
+python inference.py --model_family moss_image \
+    --device cpu --text_encoder_cpu \
+    --moss_te_quantization bf16 --text_encoder_dtype bf16 \
+    --dit /path/to/MOSS-Image-DiT \
+    --text_encoder /path/to/MOSS-Image-TextEncoder-BF16 \
+    --vae /path/to/MOSS-Image-VAE \
+    --prompt "your prompt" --sampler euler \
+    --save_path output/tests
+```
+
+该路径不会把 NF4 静默降级为 BF16；需要 CPU 推理时必须显式选择 BF16。
+
 ## 分辨率 / token 预算档位
 
 默认 `moss_image_lora.toml` 的 `resolution = 1024` 会解析为 24 个常量 token bucket

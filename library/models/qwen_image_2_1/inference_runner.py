@@ -40,6 +40,9 @@ class QwenImage21InferenceRunner:
 
     @staticmethod
     def validate(args, *, mode: str = "single") -> None:
+        from library.inference.family_runtime import validate_family_inference_options
+
+        validate_family_inference_options(args, "qwen_image_2_1")
         validate_qwen_image_2_1_inference_args(args, mode=mode)
 
     @staticmethod
@@ -100,7 +103,13 @@ _UNSUPPORTED_ANIMA_OPTIONS = {
     "dcw": "--dcw",
     "pooled_text_proj": "--pooled_text_proj",
     "ip_adapter_weight": "--ip_adapter_weight",
+    "ip_image": "--ip_image",
+    "ip_scale": "--ip_scale",
+    "ip_image_match_size": "--ip_image_match_size",
     "easycontrol_weight": "--easycontrol_weight",
+    "easycontrol_image": "--easycontrol_image",
+    "easycontrol_scale": "--easycontrol_scale",
+    "easycontrol_image_match_size": "--easycontrol_image_match_size",
     "soft_tokens_weight": "--soft_tokens_weight",
     "smc_cfg": "--smc_cfg",
     "compile": "--compile",

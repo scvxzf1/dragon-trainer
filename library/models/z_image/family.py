@@ -141,6 +141,6 @@ def compute_noise_pred_and_target(
 ):
     from library.models.family_registry import get_family_plugin
 
-    return get_family_plugin("z_image").compute_noise_pred_and_target(
+    return get_family_plugin("z_image", capability="flow").compute_noise_pred_and_target(
         trainer, ctx, latents, batch, text_encoder_conds, is_train=is_train
     )

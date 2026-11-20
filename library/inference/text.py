@@ -72,6 +72,32 @@ def ensure_text_strategies(
         )
 
 
+@torch.no_grad()
+def encode_anima_prompt(prompt, text_encoder):
+    tokenizer = text_strategies.TokenizeStrategy.get_strategy()
+    encoder = text_strategies.TextEncodingStrategy.get_strategy()
+    return encoder.encode_tokens(tokenizer, [text_encoder], tokenizer.tokenize(prompt))
+
+
+@torch.no_grad()
+def prepare_anima_prompt_context(anima, embedding):
+    hidden, source_mask, target_ids, target_mask = (
+        value.to(anima.device) for value in embedding[:4]
+    )
+    crossattn_emb, _ = anima._preprocess_text_embeds(
+        source_hidden_states=hidden,
+        target_input_ids=target_ids,
+        target_attention_mask=target_mask,
+        source_attention_mask=source_mask,
+    )
+    crossattn_emb[~target_mask.bool()] = 0
+    if crossattn_emb.shape[1] < MAX_CROSSATTN_TOKENS:
+        crossattn_emb = torch.nn.functional.pad(
+            crossattn_emb, (0, 0, 0, MAX_CROSSATTN_TOKENS - crossattn_emb.shape[1]),
+        )
+    return crossattn_emb
+
+
 def prepare_text_inputs(
     args,
     device: torch.device,

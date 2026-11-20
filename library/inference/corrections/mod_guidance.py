@@ -77,6 +77,8 @@ def setup_mod_guidance(
     anima: anima_models.Anima,
     device: torch.device,
     shared_models: Optional[Dict] = None,
+    *,
+    crossattn_pair: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> None:
     """Compute Phase 2 modulation guidance delta and per-block schedule.
 
@@ -92,22 +94,25 @@ def setup_mod_guidance(
     mod_neg = args.mod_neg_prompt
 
     # Load text encoder (reuse shared if available, otherwise load temporarily)
-    if shared_models and "text_encoder" in shared_models:
-        text_encoder = shared_models["text_encoder"]
-        text_encoder.to(device)
-        loaded_locally = False
-    else:
-        text_encoder_dtype = resolve_text_encoder_dtype(args)
-        text_encoder = load_text_encoder(args, dtype=text_encoder_dtype, device=device)
-        text_encoder.eval()
-        loaded_locally = True
-
     logger.info(f"Computing modulation guidance delta (w={mod_w})")
     logger.info(f"  pos: {mod_pos}")
     logger.info(f"  neg: {mod_neg}")
 
-    pos_crossattn = _encode_prompt_for_mod(mod_pos, anima, text_encoder, device)
-    neg_crossattn = _encode_prompt_for_mod(mod_neg, anima, text_encoder, device)
+    text_encoder = None
+    loaded_locally = False
+    if crossattn_pair is None:
+        if shared_models and "text_encoder" in shared_models:
+            text_encoder = shared_models["text_encoder"]
+            text_encoder.to(device)
+        else:
+            text_encoder_dtype = resolve_text_encoder_dtype(args)
+            text_encoder = load_text_encoder(args, dtype=text_encoder_dtype, device=device)
+            text_encoder.eval()
+            loaded_locally = True
+        pos_crossattn = _encode_prompt_for_mod(mod_pos, anima, text_encoder, device)
+        neg_crossattn = _encode_prompt_for_mod(mod_neg, anima, text_encoder, device)
+    else:
+        pos_crossattn, neg_crossattn = crossattn_pair
 
     # Pool and project through trained pooled_text_proj. Note: unit delta -- the
     # per-block weight comes from the schedule, not baked in here.
@@ -153,5 +158,5 @@ def setup_mod_guidance(
         del text_encoder
         gc.collect()
         clean_memory_on_device(device)
-    else:
+    elif text_encoder is not None:
         text_encoder.to("cpu")

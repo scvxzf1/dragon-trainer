@@ -101,6 +101,11 @@ def inspect_mixed_nf4(path, *, family=None):
             # The established Krea format has its own strict loader and namespaced state.
             if metadata.get('krea2_nf4_format') == 'krea2_raw_nf4':
                 return None
+            # Legacy Anima artifacts use ``anima.mixed_nf4.manifest`` and are
+            # validated by the Anima-specific loader.  They must not enter the
+            # canonical four-family preflight contract.
+            if any(str(key).startswith('anima.mixed_nf4') for key in metadata):
+                return None
             if (any(k.startswith('diffusion.mixed_nf4') for k in metadata)
                     or any('.weight.' + suffix in k for k in keys for suffix in STATE_KEYS)):
                 raise ValueError('Packed tensors require a mixed NF4 manifest')

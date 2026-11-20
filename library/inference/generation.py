@@ -935,7 +935,11 @@ def generate(
         getattr(args, "pooled_text_proj", None) is not None
         and getattr(args, "mod_w", 0.0) != 0.0
     ):
-        setup_mod_guidance(args, anima, device, shared_models)
+        mod_guidance = (precomputed_text_data or {}).get("mod_guidance")
+        if mod_guidance is None:
+            setup_mod_guidance(args, anima, device, shared_models)
+        else:
+            setup_mod_guidance(args, anima, device, shared_models, crossattn_pair=mod_guidance)
     else:
         anima.reset_mod_guidance()
 
@@ -1056,37 +1060,20 @@ def _setup_easycontrol(args, anima, device, shared_models):
     (K_c, V_c) tensors for every step and every CFG branch — the patched
     Block.forward then bypasses the cond stream entirely.
     """
-    ec_weight = getattr(args, "easycontrol_weight", None)
-    ec_image = getattr(args, "easycontrol_image", None)
-    if ec_weight is None and ec_image is None:
+    from library.anima.inference_references import (
+        easycontrol_reference, encode_easycontrol_reference, load_easycontrol_vae,
+        select_easycontrol_size,
+    )
+
+    ec_image = easycontrol_reference(args)
+    if ec_image is None:
         return None
-    if ec_weight is None or ec_image is None:
-        raise ValueError(
-            "--easycontrol_weight and --easycontrol_image must be passed together "
-            f"(got easycontrol_weight={ec_weight!r}, easycontrol_image={ec_image!r})"
-        )
-
-    from PIL import Image
-    from torchvision import transforms
-
+    ec_weight = args.easycontrol_weight
     from networks.methods.easycontrol import create_network_from_weights
-    from library.models import qwen_vae as qwen_image_autoencoder_kl
     runtime_dtype = resolve_runtime_dtype(args)
-
-    if getattr(args, "easycontrol_image_match_size", False):
-        from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
-
-        with Image.open(ec_image) as _ref_for_size:
-            _rw, _rh = _ref_for_size.size
-        _target = _rw / _rh
-        _best_wh = min(
-            CONSTANT_TOKEN_BUCKETS, key=lambda wh: abs((wh[0] / wh[1]) - _target)
-        )
-        args.image_size = [_best_wh[1], _best_wh[0]]
-        logger.info(
-            f"EasyControl: image_size auto-picked from ref (aspect w/h={_target:.3f}) "
-            f"-> {tuple(args.image_size)} (HxW)"
-        )
+    cond_latent = (shared_models or {}).get("easycontrol_latent")
+    if cond_latent is None:
+        select_easycontrol_size(args, ec_image)
 
     create_kwargs = {}
     if getattr(args, "easycontrol_scale", None) is not None:
@@ -1104,39 +1091,16 @@ def _setup_easycontrol(args, anima, device, shared_models):
     network.to(device, dtype=runtime_dtype)
     network.apply_to(text_encoders=None, unet=anima)
 
-    # VAE-encode the reference image -> 4D latent.
-    # Resize to args.image_size first so the cond bucket matches the target.
-    h_pix, w_pix = args.image_size
-    img = Image.open(ec_image).convert("RGB").resize((w_pix, h_pix), Image.LANCZOS)
-    tfm = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
-    )
-    img_t = (
-        tfm(img).unsqueeze(0).to(device, dtype=runtime_dtype)
-    )  # [1,3,H,W] in [-1,1]
-
-    vae = (shared_models or {}).get("vae")
-    vae_was_shared = vae is not None
-    if vae is None:
-        vae = qwen_image_autoencoder_kl.load_vae(
-            args.vae,
-            device="cpu",
-            disable_mmap=True,
-            spatial_chunk_size=getattr(args, "vae_chunk_size", None),
-            disable_cache=getattr(args, "vae_disable_cache", False),
-        )
-        vae.to(dtype=runtime_dtype)
-        vae.eval()
-        vae.to(device)
-
-    with torch.no_grad():
-        cond_latent_5d = vae.encode_pixels_to_latents(img_t)  # [1, C, 1, H', W']
-        cond_latent = cond_latent_5d.squeeze(2)  # [1, C, H', W']
-
-    if not vae_was_shared:
-        vae.to("cpu")
-        del vae
-        torch.cuda.empty_cache()
+    if cond_latent is None:
+        shared_vae = (shared_models or {}).get("vae")
+        vae = shared_vae if shared_vae is not None else load_easycontrol_vae(args, device, runtime_dtype)
+        try:
+            cond_latent = encode_easycontrol_reference(args, ec_image, vae, device, runtime_dtype)
+        finally:
+            if shared_vae is None:
+                vae.to("cpu")
+                del vae
+                torch.cuda.empty_cache()
 
     network.set_cond(cond_latent.to(device, dtype=runtime_dtype))
     # KV cache: walk the cond stream once and pin per-block (K_c, V_c). Every

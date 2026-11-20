@@ -86,7 +86,7 @@ def compute_noise_pred_and_target(
     return run_family_flow_step(
         trainer,
         ctx,
-        get_family_plugin("moss_image"),
+        get_family_plugin("moss_image", capability="flow"),
         latents,
         batch,
         text_encoder_conds,

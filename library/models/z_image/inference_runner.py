@@ -17,6 +17,7 @@ from library.models.z_image.weights import (
 )
 from library.training.preview_decode import decode_z_image_latent
 from library.inference.precision import resolve_runtime_dtype, resolve_text_encoder_dtype
+from library.inference.family_runtime import validate_family_inference_options
 from library.runtime.device import clean_memory_on_device
 
 
@@ -26,6 +27,7 @@ class ZImageInferenceRunner:
 
     @staticmethod
     def validate(args, *, mode: str = "single") -> None:
+        validate_family_inference_options(args, "z_image")
         if mode != "single":
             raise SystemExit("Z-Image standalone inference supports only single-prompt mode.")
         if str(getattr(args, "sampler", "euler") or "euler").lower() != "euler":

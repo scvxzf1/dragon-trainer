@@ -56,6 +56,9 @@ class Krea2InferenceRunner:
 
     @staticmethod
     def validate(args, *, mode: str = "single") -> None:
+        from library.inference.family_runtime import validate_family_inference_options
+
+        validate_family_inference_options(args, "krea2_raw")
         validate_krea2_inference_args(args, mode=mode)
 
     @staticmethod
@@ -118,7 +121,13 @@ _KREA2_UNSUPPORTED_ANIMA_ONLY = {
     "dcw": "--dcw (bias correction fusion head)",
     "pooled_text_proj": "--pooled_text_proj (modulation guidance)",
     "ip_adapter_weight": "--ip_adapter_weight (IP-Adapter)",
+    "ip_image": "--ip_image (IP-Adapter)",
+    "ip_scale": "--ip_scale (IP-Adapter)",
+    "ip_image_match_size": "--ip_image_match_size (IP-Adapter)",
     "easycontrol_weight": "--easycontrol_weight (EasyControl)",
+    "easycontrol_image": "--easycontrol_image (EasyControl)",
+    "easycontrol_scale": "--easycontrol_scale (EasyControl)",
+    "easycontrol_image_match_size": "--easycontrol_image_match_size (EasyControl)",
     "soft_tokens_weight": "--soft_tokens_weight (Soft Tokens)",
 }
 

@@ -41,13 +41,18 @@ Standalone CLI inference (`inference.py`) is registered per model family in
 - **`krea2_raw`**: `single` mode + `euler` sampler (`library/models/krea2_raw/inference_runner.py`).
 - **`qwen_image_2_1`**: `single` mode + `euler` sampler for T2I, Edit (1–4 references), and saved-latent decoding.
 - **`z_image`**: `single` mode + `euler` sampler through `library/models/z_image/inference_runner.py`; `batch`/`interactive` and LoRA are not implemented.
-- **`moss_image`**: `single` mode + `euler` sampler through `library/models/moss_image/inference_runner.py`; `batch`/`interactive` and LoRA are not implemented.
+- **`moss_image`**: `single` mode + `euler` sampler through `library/models/moss_image/inference_runner.py`; `batch`/`interactive` and LoRA are not implemented. Text-encoder quantization is selected with `--moss_te_quantization {nf4,bf16}` (default `nf4`). NF4 requires the TE stage on CUDA; CPU inference (`--device cpu` or `--text_encoder_cpu`) must explicitly use `--moss_te_quantization bf16` and BF16 TE compute. No implicit precision fallback is applied.
 
 All five standalone runners are constructed through their family plugin. The
-generic entrypoint owns only mode dispatch and calls `validate`, `prepare`,
-`generate_latent`, and `save_output`; it does not contain a five-family handler
-table. WebUI `image-test` remains a separate integration surface and is not
-implied by CLI support.
+generic entrypoint owns mode dispatch and calls the family runner's `validate`
+and `prepare` hooks. The runner-owned generation lifecycle currently covers
+`single` only: `generate_latent` and `save_output` are called in that branch.
+Anima `batch`/`interactive` remain legacy `process_batch_prompts` /
+`process_interactive` paths and do not use the runner generation methods; do not
+describe other families or modes as runner-backed until a dedicated batch /
+interactive runner contract exists. The entrypoint does not contain a
+five-family handler table. WebUI `image-test` remains a separate integration
+surface and is not implied by CLI support.
 
 ### Krea-2-Raw standalone inference
 

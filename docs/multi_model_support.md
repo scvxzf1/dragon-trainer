@@ -19,7 +19,7 @@
 | `moss_image` | `moss`, `moss_image` | 文生图 plain LoRA 首版（T2I） | `plain_lora_only=True`：仅 `lora` | 支持（T2I，Euler shift=5） | `single` + `euler`（族 runner 入口） | `torch` / `sdpa` | **已接线**（42 `layers` 21/21 均分） |
 
 说明：
-- WebUI 模型选择下拉框暴露全部 5 个模型族；独立 CLI 推理目前只开放各族 runner 声明的 `single` 模式，`batch`/`interactive` 仍仅 Anima 支持，WebUI `image-test` 的族接线需单独验收。
+- WebUI 模型选择下拉框暴露全部 5 个模型族；独立 CLI 推理目前只开放各族 runner 声明的 `single` 模式，`batch`/`interactive` 仍仅 Anima 支持，且这两个 Anima 模式继续走入口内 legacy `process_batch_prompts` / `process_interactive`，不经过 runner 的 `generate_latent` / `save_output`。WebUI `image-test` 的族接线需单独验收。
 - Anima、Krea-2 与 Z-Image 的 `supported_network_specs=None` 表示接口层允许尝试网络变体（不套用“非 Anima 仅 plain LoRA”白名单），不代表所有变体组合已完成长训质量验收；`supports_method_adapters=False` 仍拦截 IP-Adapter、EasyControl、BYG 等依赖专属训练 hook 的方法。
 
 ## Pipeline Parallel（PP v0）现状与契约
@@ -82,7 +82,7 @@ LoRA checkpoint 通过 `ss_model_family` metadata stamp（未标记旧权重视�
 ### MOSS-Image (`moss_image`)
 - 起始配置：`configs/methods/moss_image_lora.toml`（及分辨率/文本上限档位 `_t768`、`_t512`、`_tecap1024`，完整使用说明见 [MOSS-Image 配置](configuration/moss-image.md)）。
 - 42-layer 4D DiT（training shift=1，预览 Euler shift=5），仅支持文生图 plain LoRA、`torch`/`sdpa` attention、full checkpoint、`blocks_to_swap = 0..40` 及全层级 `caption_dropout_rate = 0`。
-- 文本编码器默认 `moss_te_quantization="nf4"`（可选 `"bf16"`），缓存保存真实 token 长度并将 `max_token_length`（`1..4096`）写入 `moss_image_te_v2` 身份；切换量化方式或 `max_token_length` 必须重建文本缓存。支持双卡 1F1B PP 训练会话，不支持 `torch.compile` 或 DiT NF4。独立 CLI 推理走 `library/models/moss_image/inference_runner.py`，仅 `single` + `euler`，不支持 LoRA 与 `batch`/`interactive`。
+- 文本编码器默认 `moss_te_quantization="nf4"`（可选 `"bf16"`），缓存保存真实 token 长度并将 `max_token_length`（`1..4096`）写入 `moss_image_te_v2` 身份；切换量化方式或 `max_token_length` 必须重建文本缓存。支持双卡 1F1B PP 训练会话，不支持 `torch.compile` 或 DiT NF4。独立 CLI 推理走 `library/models/moss_image/inference_runner.py`，仅 `single` + `euler`，不支持 LoRA 与 `batch`/`interactive`；TE 量化由 `--moss_te_quantization` 控制（默认 `nf4`），NF4 要求 TE stage 位于 CUDA，CPU 推理必须显式使用 `--moss_te_quantization bf16`，不会隐式回退精度。
 
 ## 仍存在的架构耦合与修改清单
 

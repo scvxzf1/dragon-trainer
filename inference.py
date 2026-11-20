@@ -78,6 +78,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Unset falls back to env ANIMA_MODEL_FAMILY then 'anima'.",
     )
     parser.add_argument("--qwen_image_2_1_task", choices=["t2i", "edit"], default=None)
+    parser.add_argument(
+        "--moss_te_quantization",
+        type=str,
+        default="nf4",
+        choices=("nf4", "bf16"),
+        help="MOSS-Image text encoder quantization. NF4 requires a CUDA text-encoder "
+        "stage; use bf16 together with --text_encoder_cpu/--device cpu for CPU "
+        "inference.",
+    )
     references = parser.add_mutually_exclusive_group()
     references.add_argument("--reference_image", type=str, default=None)
     references.add_argument("--reference_images", nargs="+", default=None)

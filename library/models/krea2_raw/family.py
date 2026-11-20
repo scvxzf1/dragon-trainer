@@ -185,7 +185,7 @@ def compute_noise_pred_and_target(
     return run_family_flow_step(
         trainer,
         ctx,
-        get_family_plugin("krea2_raw"),
+        get_family_plugin("krea2_raw", capability="flow"),
         latents,
         batch,
         text_encoder_conds,

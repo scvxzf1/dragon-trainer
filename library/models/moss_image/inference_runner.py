@@ -8,6 +8,7 @@ from library.inference.family_runner import FamilyInferenceRunner
 from library.inference.family_output import save_pil_image
 from library.inference.output import _build_png_info
 from library.inference.precision import resolve_runtime_dtype, resolve_text_encoder_dtype
+from library.inference.family_runtime import validate_family_inference_options
 from library.models.moss_image.sampling import generate_moss_image
 from library.models.moss_image.strategy import MossImageTextEncodingStrategy, MossImageTokenizeStrategy
 from library.models.moss_image.text_encoder_runtime import load_moss_text_encoder
@@ -22,6 +23,7 @@ class MossImageInferenceRunner:
 
     @staticmethod
     def validate(args, *, mode: str = "single") -> None:
+        validate_family_inference_options(args, "moss_image")
         if mode != "single":
             raise SystemExit("MOSS-Image standalone inference supports only single-prompt mode.")
         if str(getattr(args, "sampler", "euler") or "euler").lower() != "euler":
@@ -31,17 +33,52 @@ class MossImageInferenceRunner:
         height, width = (int(value) for value in args.image_size)
         if height <= 0 or width <= 0 or height % 16 or width % 16:
             raise ValueError("MOSS-Image image_size must be positive and divisible by 16")
+        configured_device = getattr(args, "device", None)
+        if configured_device is not None:
+            MossImageInferenceRunner._validate_text_encoder_config(
+                args,
+                MossImageInferenceRunner._resolve_text_encoder_device(
+                    args,
+                    configured_device,
+                ),
+            )
 
     @staticmethod
     def prepare(args, *, mode: str = "single") -> None:
         return None
 
     @staticmethod
-    def _load_text_encoder(args):
+    def _resolve_text_encoder_device(args, fallback_device):
+        if getattr(args, "text_encoder_cpu", False):
+            return torch.device("cpu")
+        return torch.device(fallback_device)
+
+    @staticmethod
+    def _validate_text_encoder_config(args, text_encoder_device):
+        quantization = str(
+            getattr(args, "moss_te_quantization", "nf4") or "nf4"
+        ).lower()
+        if quantization not in {"nf4", "bf16"}:
+            raise ValueError(
+                "MOSS-Image text encoder quantization must be 'nf4' or 'bf16'"
+            )
+        if resolve_text_encoder_dtype(args) != torch.bfloat16:
+            raise SystemExit(
+                "MOSS-Image text encoding requires BF16 compute; "
+                "set --text_encoder_dtype bf16."
+            )
+        if quantization == "nf4" and text_encoder_device.type != "cuda":
+            raise SystemExit(
+                "MOSS-Image NF4 text encoding requires a CUDA text-encoder "
+                "stage; use --moss_te_quantization bf16 for CPU inference."
+            )
+
+    @staticmethod
+    def _load_text_encoder(args, text_encoder_device):
         return load_moss_text_encoder(
             args.text_encoder,
             dtype=resolve_text_encoder_dtype(args),
-            device="cpu",
+            device=text_encoder_device,
             quantization=getattr(args, "moss_te_quantization", "nf4"),
         )
 
@@ -84,13 +121,15 @@ class MossImageInferenceRunner:
         self.validate(args)
         device = gen_settings.device
         dtype = gen_settings.runtime_dtype
+        text_encoder_device = self._resolve_text_encoder_device(args, device)
+        self._validate_text_encoder_config(args, text_encoder_device)
         runtime = FamilyInferenceRunner(
             self.family,
             device,
             cleanup=clean_memory_on_device,
         )
         cond, uncond = runtime.run_text(
-            lambda: self._load_text_encoder(args),
+            lambda: self._load_text_encoder(args, text_encoder_device),
             lambda encoder: self._encode_conditions(
                 encoder,
                 args,
