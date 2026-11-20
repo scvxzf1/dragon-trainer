@@ -77,7 +77,7 @@
 | `library/training/flow_step.py:131` | sigmas（钩子返回） | 输入侧 | isfinite + [0,1] 范围 | 否（合法 fp16 sigma 不受影响） |
 | `library/training/flow_step.py:143` / `:167` | timesteps（模型 timestep） | 输入侧 | isfinite（逐分支） | 否 |
 | `library/training/flow_step.py:186-193` | prediction | 输出侧 | 仅 shape，无 isfinite | 否 |
-| `library/training/flow_step.py:208-219` | loss weighting | 输出侧 | 仅 shape/device，无 isfinite | 否（不拦 GradScaler 溢出跳步） |
+| `library/training/flow_step.py:208-219` | loss weighting（由 sigma 派生） | 输入侧 | 仅 shape/device，无 isfinite | 否（不拦 GradScaler 溢出跳步） |
 | `library/training/flow_step.py:225` | CUDA 分支 | 输入侧 | `torch._assert_async`（设备端） | 否；注意延迟显形与进程级毒化语义（见下） |
 
 CUDA 语义备注：CUDA 分支走 `torch._assert_async`，坏值不立即抛 Python 异常，而是在后续 synchronize/CUDA 调用时以 `AcceleratorError`/device-side assert 显形，且会毒化整个 CUDA 上下文 —— 因此 GPU 用例必须独立子进程隔离并在用例末显式 synchronize（冒烟已按此执行）。
